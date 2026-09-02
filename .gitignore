@@ -1,0 +1,15 @@
+.pio/
+.vscode/
+
+*.bin
+*.elf
+*.map
+*.hex
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+*.swp
+*.swo
+*~
