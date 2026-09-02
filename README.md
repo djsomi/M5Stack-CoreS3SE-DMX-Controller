@@ -6,12 +6,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 
-A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the
-**M5Stack CoreS3SE**. It provides a battery-powered touchscreen interface for
-controlling a full **512-channel DMX universe**, with presets, blackout,
-battery monitoring and support for **M5Stack Unit DMX** and **DMX Base** hardware.
-
-The project started from M5Stack's official **DMX512Tools** example and has been extensively modified into a practical standalone controller with a redesigned touchscreen UI, persistent presets, blackout, battery monitoring, settings, and support for two DMX hardware profiles.
+A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the **M5Stack CoreS3SE**. It provides a battery-powered touchscreen interface for controlling a full **512-channel DMX universe**, with presets, blackout, battery monitoring and support for **M5Stack Unit DMX** and **DMX Base** hardware. 
 
 > [!IMPORTANT]
 > **Recommended / tested setup:** M5Stack CoreS3SE + M5Stack Unit DMX (U183) + M5GO Bottom3.
@@ -87,16 +82,13 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 - Preset **copy** and **clear**
 - **Blackout** with double-tap protection
 - DMX activity / heartbeat indicator
-- Battery percentage display
-- Charging and external-power indication
+- Battery percentage display with charging and external-power indication
 - Battery runtime estimation after calibration
 - Low-battery visual and audible warnings
-- Persistent display brightness setting
-- Persistent screen timeout setting
-- Persistent UI volume setting
+- Persistent settings storage
 - Screen always-on option
-- Startup sound / chime
-- Software **RESTART, POWER OFF** with Double-tap protection
+- Touch and statup sounds
+- Software RESTART, POWER OFF with Double-tap protection
 - Separate hardware profiles for:
   - **M5Stack Unit DMX U183**
   - **M5Stack Base DMX**
@@ -302,7 +294,7 @@ enablePin   = GPIO_NUM_6;
 
 ## PlatformIO Build Environments
 
-Suggested environment names:
+Environment names: (unit is default)
 
 ```text
 cores3se_unit
