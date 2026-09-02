@@ -96,9 +96,7 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 - Persistent UI volume setting
 - Screen always-on option
 - Startup sound / chime
-- Software **RESTART**
-- Software **POWER OFF**
-- Double-tap protection for restart and power-off
+- Software **RESTART, POWER OFF** with Double-tap protection
 - Separate hardware profiles for:
   - **M5Stack Unit DMX U183**
   - **M5Stack Base DMX**
@@ -113,11 +111,17 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 - [M5Stack Unit DMX U183](https://docs.m5stack.com/en/unit/Unit-DMX)
 - [M5Stack M5GO Bottom3](https://docs.m5stack.com/en/module/M5GO3%20Bottom)
 
-The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controller configuration, practical runtime was approximately **5 hours**, depending on display brightness, activity and battery condition. **Note that, battery is required for DMX operation!**
-
-### Experimental Hardware
-
+**Experimental Hardware**
 - [M5Stack Base DMX](https://docs.m5stack.com/en/base/DMX_Base)
+
+
+The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controller configuration, practical runtime was approximately **5 hours**, depending on display brightness, activity and battery condition.
+
+> [!WARNING]
+> **Note that, battery is required for Unit DMX and an external PSU for Base DMX to to power DMX hardware!**
+
+
+
 
 ---
 # Functions
