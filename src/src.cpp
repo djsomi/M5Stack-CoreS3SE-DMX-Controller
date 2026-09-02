@@ -1,5 +1,6 @@
 
 #include "common.h"
+#include "dmx_hardware.h"
 #include <esp_system.h>
 #include "view_receiver.h"
 #include "view_sender.h"
@@ -739,15 +740,9 @@ int enablePin   = GPIO_NUM_27;
 
 if (M5.getBoard() == m5::board_t::board_M5StackCoreS3 ||
     M5.getBoard() == m5::board_t::board_M5StackCoreS3SE) {
-    /// M5Stack CoreS3 pin setting: TX:7  RX:10  EN:6
-    // Unit DMX connected to CoreS3SE PORT A
-    //
-    // GPIO2 TX -> Unit UART_RX
-    // GPIO1 RX <- Unit UART_TX
-    // Unit DMX handles direction automatically
-    transmitPin = GPIO_NUM_2;
-    receivePin  = GPIO_NUM_1;
-    enablePin   = -1;
+    transmitPin = DMX_TX_PIN;
+    receivePin  = DMX_RX_PIN;
+    enablePin   = DMX_EN_PIN;
 }
 else if (M5.getBoard() == m5::board_t::board_M5Stack) {
     /// M5Stack(BASIC/GRAY/GO/FIRE) pin setting: TX:13  RX:35  EN:12
