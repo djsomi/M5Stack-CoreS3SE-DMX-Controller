@@ -5,7 +5,11 @@
 ![M5Stack](https://img.shields.io/badge/Hardware-M5Stack-red)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A compact, ESP32 based battery-powered **DMX512 touchscreen controller** built around the **M5Stack CoreS3SE**.
+
+A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the
+**M5Stack CoreS3SE**. It provides a battery-powered touchscreen interface for
+controlling a full **512-channel DMX universe**, with presets, blackout,
+battery monitoring and support for **M5Stack Unit DMX** and **DMX Base** hardware.
 
 The project started from M5Stack's official **DMX512Tools** example and has been extensively modified into a practical standalone controller with a redesigned touchscreen UI, persistent presets, blackout, battery monitoring, settings, software restart/power-off, and support for two DMX hardware profiles.
 
@@ -22,7 +26,10 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 <table>
   <tr>
     <td align="center">
-      <img src="docs/images/hero.jpg" width="625"><br>
+      <img
+  src="docs/images/hero.jpg"
+  width="625"
+  alt="Portable M5Stack CoreS3SE ESP32-S3 DMX512 touchscreen controller"><br>
       <b>CoreS3SE DMX Controller</b>
     </td>
   </tr>
@@ -31,11 +38,17 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 <table>
   <tr>
     <td align="center">
-      <img src="docs/images/unit-hardware.jpg" width="300"><br>
+      <img
+  src="docs/images/unit-hardware.jpg"
+  width="300"
+  alt="M5Stack CoreS3SE portable DMX controller with Unit DMX U183">><br>
       <b>CoreS3SE + Unit DMX</b>
     </td>
     <td align="center">
-      <img src="docs/images/base-hardware.jpg" width="300"><br>
+      <img
+  src="docs/images/base-hardware.jpg"
+  width="300"
+  alt="M5Stack CoreS3SE DMX controller with M5Stack DMX Base"><br>
       <b>CoreS3SE + Base DMX</b>
     </td>
   </tr>
