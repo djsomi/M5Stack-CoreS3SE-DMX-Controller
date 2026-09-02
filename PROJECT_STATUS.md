@@ -320,7 +320,9 @@ Startup duration:
 The startup screen includes:
 
 - `DMX CONTROLLER`
-- `CoreS3SE + Unit DMX`
+- the selected hardware profile:
+  - `UNIT DMX`
+  - `DMX BASE`
 - battery status
 - countdown
 - progress bar
@@ -638,7 +640,7 @@ GPIO6 remained permanently HIGH.
 
 The Base still produced glitches.
 
-This is an important diagnostic test and should be preserved in the public repository.
+This is an important diagnostic result. The exact historical source was not preserved as a verified archive, so it should not be published as reconstructed original test code.
 
 ---
 
