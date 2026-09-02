@@ -385,8 +385,6 @@ Possible future development:
 - Named channels
 - Preset export / import
 - Additional battery statistics
-- Automated GitHub Actions builds
-- Pre-built firmware attached automatically to GitHub Releases
 
 ---
 
@@ -423,8 +421,6 @@ Copyright (c) M5Stack
 Additional modifications and project-specific code:
 Copyright (c) 2026 Zoltan Somogyvari
 ```
-
-The exact upstream license text should be preserved in the repository `LICENSE` file.
 
 ---
 
