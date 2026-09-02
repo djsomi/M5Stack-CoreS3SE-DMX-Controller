@@ -116,7 +116,7 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 - [M5Stack Unit DMX U183](https://docs.m5stack.com/en/unit/Unit-DMX)
 - [M5Stack M5GO Bottom3](https://docs.m5stack.com/en/module/M5GO3%20Bottom)
 
-The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controller configuration, practical runtime was approximately **5 hours**, depending on display brightness, activity and battery condition. **Note that, battery is requered for DMX operation!**
+The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controller configuration, practical runtime was approximately **5 hours**, depending on display brightness, activity and battery condition. **Note that, battery is required for DMX operation!**
 
 ### Experimental Hardware
 
