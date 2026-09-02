@@ -713,7 +713,16 @@ void controllerPowerOff(void) {
 
 
 void setup(void) {
-    M5.begin();
+    auto cfg = M5.config();
+    cfg.output_power = false;
+    M5.begin(cfg);
+
+#if defined(DMX_HARDWARE_UNIT)
+    if (M5.Power.getType() == m5::Power_Class::pmic_t::pmic_axp2101 &&
+        M5.Power.Axp2101.getBatState()) {
+        M5.Power.setExtOutput(true);
+    }
+#endif
 
     // Restore brightness and screen-off time from NVS.
     loadUiSettings();
