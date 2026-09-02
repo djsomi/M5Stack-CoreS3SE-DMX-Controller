@@ -23,17 +23,14 @@ The project started from M5Stack's official **DMX512Tools** example and has been
 
 ---
 
-<table>
-  <tr>
-    <td align="center">
-      <img
-  src="docs/images/hero.jpg"
-  width="625"
-  alt="Portable M5Stack CoreS3SE ESP32-S3 DMX512 touchscreen controller"><br>
-      <b>CoreS3SE DMX Controller</b>
-    </td>
-  </tr>
-</table>
+
+
+<p align="center">
+  <img
+    src="docs/images/hero.jpg"
+    width="100%"
+    alt="Portable M5Stack CoreS3SE ESP32-S3 DMX512 touchscreen controller">
+</p>
 
 <table>
   <tr>
@@ -41,7 +38,7 @@ The project started from M5Stack's official **DMX512Tools** example and has been
       <img
   src="docs/images/unit-hardware.jpg"
   width="300"
-  alt="M5Stack CoreS3SE portable DMX controller with Unit DMX U183">><br>
+  alt="M5Stack CoreS3SE portable DMX controller with Unit DMX U183"><br>
       <b>CoreS3SE + Unit DMX</b>
     </td>
     <td align="center">
