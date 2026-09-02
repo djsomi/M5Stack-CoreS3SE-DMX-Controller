@@ -78,9 +78,7 @@ Current application DMX library:
 esp_dmx v2.02
 ```
 
-A compatibility patch is required for ESP32-S3 / current framework headers.
-
-The patch currently exists locally in the downloaded dependency and must be converted into a reproducible repository solution before public release.
+A repository-local PlatformIO patch step applies the required ESP32-S3 compatibility changes to the downloaded `esp_dmx v2.02` dependency before it is compiled.
 
 ---
 
@@ -662,7 +660,55 @@ This strongly points toward the DMX Base hardware/output path rather than the ap
 
 ---
 
-# 21. Current Working Unit DMX Configuration
+# 21. Controlled Unit/Base Profile A/B Test
+
+Commit tested:
+
+```text
+cab7465
+```
+
+The same application source commit was used for both tests. Only the selected PlatformIO hardware profile differed.
+
+Profiles tested:
+
+```text
+cores3se_unit
+```
+
+```cpp
+TX = GPIO_NUM_2;
+RX = GPIO_NUM_1;
+EN = -1;
+```
+
+Result:
+
+```text
+CoreS3SE + Unit DMX U183: stable, no observed DMX glitches
+```
+
+```text
+cores3se_base
+```
+
+```cpp
+TX = GPIO_NUM_7;
+RX = GPIO_NUM_10;
+EN = GPIO_NUM_6;
+```
+
+Result:
+
+```text
+CoreS3SE + M5Stack DMX Base: connected moving-head spot fixture immediately showed the previously observed random DMX glitching
+```
+
+This controlled A/B test strengthens the conclusion that the glitching follows the DMX Base hardware/output path or its electrical interface, not a different application build or changed source logic.
+
+---
+
+# 22. Current Working Unit DMX Configuration
 
 For CoreS3SE:
 
@@ -687,7 +733,7 @@ This configuration should be preserved as the reference build.
 
 ---
 
-# 22. Current M5Stack Support Case
+# 23. Current M5Stack Support Case
 
 M5Stack Support has been contacted regarding the DMX Base glitches.
 
@@ -707,7 +753,7 @@ This still allows M5Stack engineers to compare the Unit and Base hardware profil
 
 ---
 
-# 23. Recommended Repository Architecture
+# 24. Recommended Repository Architecture
 
 Preferred structure:
 
@@ -738,7 +784,7 @@ Do not reorganize files until the known-good build has been committed and verifi
 
 ---
 
-# 24. Proposed PlatformIO Targets
+# 25. Proposed PlatformIO Targets
 
 Desired result:
 
@@ -763,7 +809,7 @@ Both should compile the same application source.
 
 ---
 
-# 25. GitHub Release Plan
+# 26. GitHub Release Plan
 
 Proposed repository:
 
@@ -787,7 +833,7 @@ The project is functional but still evolving, so v0.1.0 is preferred over v1.0.
 
 ---
 
-# 26. Git Migration Plan
+# 27. Git Migration Plan
 
 Before cleanup:
 
@@ -815,7 +861,7 @@ Before publishing:
 
 ---
 
-# 27. Immediate Next Steps
+# 28. Immediate Next Steps
 
 A new coding session should proceed in this order:
 
@@ -836,7 +882,7 @@ A new coding session should proceed in this order:
 
 ---
 
-# 28. Longer-Term Development Ideas
+# 29. Longer-Term Development Ideas
 
 These are future ideas only and should not be mixed into the GitHub cleanup unless explicitly requested.
 
