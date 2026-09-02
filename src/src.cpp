@@ -639,7 +639,11 @@ static void drawStartupScreen(void) {
 
     M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextColor(TFT_DARKGRAY, TFT_BLACK);
-    M5.Display.drawString("CoreS3SE + Unit DMX", 160, 78);
+#if defined(DMX_HARDWARE_UNIT)
+    M5.Display.drawString("UNIT DMX", 160, 78);
+#elif defined(DMX_HARDWARE_BASE)
+    M5.Display.drawString("DMX BASE", 160, 78);
+#endif
 
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
