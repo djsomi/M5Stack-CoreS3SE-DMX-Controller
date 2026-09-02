@@ -123,6 +123,7 @@ The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controlle
 - [M5Stack Base DMX](https://docs.m5stack.com/en/base/DMX_Base)
 
 ---
+# Functions
 
 ## Presets
 
