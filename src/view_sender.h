@@ -628,6 +628,7 @@ class view_sender_t : public view_t {
     // is detected, so each new discharge cycle can warn once again.
     bool warning_20_sent = false;
     bool warning_10_sent = false;
+    int last_warning_battery_level = -1;
 
     // ==========================
     // DMX ACTIVITY INDICATOR
@@ -2620,6 +2621,9 @@ bool loadPreset(uint8_t slot) {
             if (charging || external_power) {
                 warning_20_sent = false;
                 warning_10_sent = false;
+                last_warning_battery_level = -1;
+            } else if (level < 0) {
+                last_warning_battery_level = -1;
             }
 
             return;
@@ -2634,20 +2638,34 @@ bool loadPreset(uint8_t slot) {
         //
         // Do not interrupt an existing speaker sound. If the speaker is
         // busy, this check will retry on the next monitor update.
-        if (level <= 10) {
+        bool warning_pending = false;
+
+        if (last_warning_battery_level >= 0 &&
+            last_warning_battery_level > 10 &&
+            level <= 10) {
             if (!warning_10_sent && !M5.Speaker.isPlaying()) {
                 // Critical warning always plays at 80%, independent of
                 // the normal UI volume slider.
                 playBatteryWarningTone(900, 350);
                 warning_10_sent = true;
                 warning_20_sent = true;
+            } else if (!warning_10_sent) {
+                warning_pending = true;
             }
-        } else if (level <= 20) {
+        } else if (last_warning_battery_level >= 0 &&
+                   last_warning_battery_level > 20 &&
+                   level <= 20) {
             if (!warning_20_sent && !M5.Speaker.isPlaying()) {
                 // Low-battery warning always plays at 80%.
                 playBatteryWarningTone(1800, 140);
                 warning_20_sent = true;
+            } else if (!warning_20_sent) {
+                warning_pending = true;
             }
+        }
+
+        if (!warning_pending) {
+            last_warning_battery_level = level;
         }
 
         // ------------------------------------------------------
