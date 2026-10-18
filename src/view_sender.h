@@ -107,6 +107,21 @@ class view_sender_t : public view_t {
             return true;
         }
 
+        // Full-screen precision channel editor has exclusive touch control.
+        // DMX transmission at the top of loop() continues normally.
+        if (precision_editor_screen) {
+            handlePrecisionEditorTouch(tp);
+
+            if (precision_redraw_pending &&
+                !M5.Speaker.isPlaying()) {
+
+                drawPrecisionEditor();
+            }
+
+            delay(1);
+            return true;
+        }
+
 
         // Full-screen preset manager has exclusive touch control.
         // DMX transmission at the top of loop() continues normally.
@@ -191,6 +206,19 @@ class view_sender_t : public view_t {
             return true;
         }
 
+        if (main_touch_consume_release) {
+            if (!tp.state) {
+                main_touch_consume_release = false;
+            }
+
+            delay(1);
+            return true;
+        }
+
+        if (!tp.state) {
+            main_value_slider_dragging = false;
+        }
+
         if (tp.state) {
             if (tp.base_y < scroll_height &&
                 tp.base_x <
@@ -262,10 +290,34 @@ class view_sender_t : public view_t {
                     }
                 } else if (ui_mode == ui_mode_t::mode_value_setting) {
                     int new_value = target_value;
-                    if (tp.base_y >= slider_y && tp.base_y - 128 < slider_y) {
+
+                    if (tp.wasClicked() &&
+                        tp.base_x >= value_edit_button_x &&
+                        tp.base_x < value_edit_button_x + value_edit_button_w &&
+                        tp.base_y >= value_edit_button_y &&
+                        tp.base_y < value_edit_button_y + value_edit_button_h) {
+
+                        main_value_slider_dragging = false;
+                        openPrecisionEditor();
+                        modified = true;
+                    } else {
+                        bool slider_hit =
+                            pointInRect(
+                                tp.base_x,
+                                tp.base_y,
+                                value_slider_touch_x,
+                                value_slider_touch_y,
+                                value_slider_touch_w,
+                                value_slider_touch_h
+                            );
+
+                        if (tp.wasPressed()) {
+                            main_value_slider_dragging = slider_hit;
+                        }
+                    }
+
+                    if (main_value_slider_dragging) {
                         new_value = 255 - ((tp.y - slider_y) << 1);
-                    } else if (tp.wasPressed() || tp.isHolding()) {
-                        new_value += (tp.base_y < slider_y) ? 1 : -1;
                     }
 
                     if (new_value < 0) {
@@ -388,6 +440,7 @@ class view_sender_t : public view_t {
         for (auto& tmp : canvas) {
             tmp.deleteSprite();
         }
+        fullscreen_canvas.deleteSprite();
     }
 
 
@@ -408,12 +461,38 @@ class view_sender_t : public view_t {
     M5Canvas canvas[2];
     bool canvas_flip;
 
-    // Full-screen off-screen buffer for SETTINGS.
-    // The complete frame is composed here first, then pushed to the LCD
-    // in one operation. This prevents visible black/redraw flashing.
-    M5Canvas settings_canvas;
-    bool settings_canvas_ready = false;
+    enum fullscreen_page_t {
+        fullscreen_page_none,
+        fullscreen_page_settings,
+        fullscreen_page_precision,
+        fullscreen_page_keypad,
+        fullscreen_page_preset
+    };
+
+    fullscreen_page_t active_fullscreen_page = fullscreen_page_none;
+
+    // Shared full-screen off-screen buffer for mutually exclusive pages.
+    // 320x240 RGB565 is about 153,600 bytes, so Settings and Precision/Keypad
+    // must not keep separate persistent sprites.
+    M5Canvas fullscreen_canvas;
+    bool fullscreen_canvas_ready = false;
+    void* fullscreen_canvas_buffer = nullptr;
     bool settings_redraw_pending = false;
+
+    bool precision_editor_screen = false;
+    bool precision_keypad_screen = false;
+    bool precision_redraw_pending = false;
+    bool precision_consume_release = false;
+    bool main_touch_consume_release = false;
+    bool main_value_slider_dragging = false;
+    bool precision_slider_dragging = false;
+    int precision_step = 1;
+    int precision_repeat_dir = 0;
+    uint32_t precision_repeat_started_ms = 0;
+    uint32_t precision_repeat_last_ms = 0;
+    char keypad_value[4] = "";
+    uint8_t keypad_len = 0;
+    bool keypad_invalid = false;
 
     uint16_t enable_channels[DMX_MAX_PACKET_SIZE];
     uint16_t enable_channel_count;
@@ -433,8 +512,63 @@ class view_sender_t : public view_t {
     static constexpr uint8_t channel_item_height = 54;
     static constexpr uint16_t slider_x           = scroll_width + 28;
     static constexpr uint8_t slider_w            = 16;
-    static constexpr uint8_t slider_y            = 72;  // 40;
+    static constexpr uint8_t slider_y            = 42;
     static constexpr uint8_t slider_btn_height   = 32;
+
+    static constexpr int value_slider_touch_x = slider_x - 12;
+    static constexpr int value_slider_touch_y = slider_y - 8;
+    static constexpr int value_slider_touch_w = slider_w + 24;
+    static constexpr int value_slider_touch_h = 144;
+
+    static constexpr int value_edit_button_x = scroll_width + 5;
+    static constexpr int value_edit_button_y = 182;
+    static constexpr int value_edit_button_w = 320 - scroll_width - 10;
+    static constexpr int value_edit_button_h = 50;
+
+    static constexpr int precision_back_x = scroll_width + 5;
+    static constexpr int precision_back_y = 182;
+    static constexpr int precision_back_w = 320 - scroll_width - 10;
+    static constexpr int precision_back_h = 50;
+
+    static constexpr int precision_minus_x = 16;
+    static constexpr int precision_minus_y = 104;
+    static constexpr int precision_button_w = 98;
+    static constexpr int precision_button_h = 45;
+    static constexpr int precision_plus_x = 136;
+    static constexpr int precision_plus_y = precision_minus_y;
+
+    static constexpr int precision_value_x = 57;
+    static constexpr int precision_value_y = 36;
+    static constexpr int precision_value_w = 136;
+    static constexpr int precision_value_h = 54;
+
+    static constexpr int precision_slider_x = slider_x;
+    static constexpr int precision_slider_y = slider_y;
+    static constexpr int precision_slider_w = slider_w;
+    static constexpr int precision_slider_h = 128;
+
+    static constexpr int precision_step_y = precision_back_y;
+    static constexpr int precision_step_w = 54;
+    static constexpr int precision_step_h = 36;
+    static constexpr int precision_step_gap = 6;
+    static constexpr int precision_step_x0 = 10;
+
+    static constexpr int keypad_digit_x0 = 12;
+    static constexpr int keypad_digit_y0 = 78;
+    static constexpr int keypad_digit_w = 66;
+    static constexpr int keypad_digit_h = 30;
+    static constexpr int keypad_digit_gap_x = 8;
+    static constexpr int keypad_digit_gap_y = 8;
+
+    static constexpr int keypad_action_x = precision_back_x;
+    static constexpr int keypad_action_w = precision_back_w;
+    static constexpr int keypad_action_h = precision_back_h;
+    static constexpr int keypad_clr_y = 54;
+    static constexpr int keypad_ok_y = 118;
+
+    static constexpr uint32_t precision_hold_start_ms = 350;
+    static constexpr uint32_t precision_repeat_slow_ms = 180;
+    static constexpr uint32_t precision_repeat_fast_ms = 65;
 
     // ==========================
     // PRESET UI
@@ -1802,6 +1936,11 @@ bool loadPreset(uint8_t slot) {
 
 
     void drawSettingsScreen(void) {
+        if (active_fullscreen_page != fullscreen_page_settings) {
+            settings_redraw_pending = false;
+            return;
+        }
+
         // Protect short speaker tones from the relatively heavy full-screen
         // canvas transfer. The next UI loop will redraw once audio finishes.
         if (M5.Speaker.isPlaying()) {
@@ -1809,18 +1948,17 @@ bool loadPreset(uint8_t slot) {
             return;
         }
 
-        // Allocate the Settings framebuffer once and reuse it.
-        // 320x240 at RGB565 is about 150 KB and avoids repeated LCD clears.
-        if (!settings_canvas_ready) {
-            settings_canvas.setColorDepth(16);
-            settings_canvas.createSprite(
-                M5.Display.width(),
-                M5.Display.height()
-            );
-            settings_canvas_ready = true;
+        M5Canvas* frame = getFullscreenCanvas(
+            fullscreen_page_settings,
+            "SETTINGS"
+        );
+
+        if (frame == nullptr) {
+            settings_redraw_pending = true;
+            return;
         }
 
-        auto& c = settings_canvas;
+        auto& c = *frame;
 
         // IMPORTANT: this clear happens OFF-SCREEN.
         // The physical LCD keeps showing the previous complete frame.
@@ -2133,19 +2271,18 @@ bool loadPreset(uint8_t slot) {
 
         // One completed-frame transfer to the LCD.
         // No physical fillScreen() occurs between scroll frames.
-        M5.Display.startWrite();
-        c.pushSprite(
-            &M5.Display,
-            0,
-            0
+        pushFullscreenCanvas(
+            fullscreen_page_settings,
+            "SETTINGS"
         );
-        M5.Display.endWrite();
 
         settings_redraw_pending = false;
     }
 
 
     void openSettingsScreen(void) {
+        resetPrecisionState();
+        setActiveFullscreenPage(fullscreen_page_settings);
         settings_screen = true;
         settings_scroll_y = 0;
         settings_scroll_add = 0;
@@ -2165,6 +2302,7 @@ bool loadPreset(uint8_t slot) {
 
     void closeSettingsScreen(void) {
         settings_screen = false;
+        setActiveFullscreenPage(fullscreen_page_none);
         settings_scroll_add = 0;
         settings_redraw_pending = false;
         settings_drag_mode = settings_drag_none;
@@ -3112,6 +3250,8 @@ bool loadPreset(uint8_t slot) {
     }
 
     void openPresetScreen(void) {
+        resetPrecisionState();
+        setActiveFullscreenPage(fullscreen_page_preset);
         preset_screen = true;
         scroll_y_add = 0;
         preset_status[0] = '\0';
@@ -3141,6 +3281,7 @@ bool loadPreset(uint8_t slot) {
 
     void closePresetScreen(void) {
         preset_screen = false;
+        setActiveFullscreenPage(fullscreen_page_none);
 
         preset_save_holding = false;
         preset_save_completed = false;
@@ -3987,22 +4128,730 @@ bool loadPreset(uint8_t slot) {
         }
     }
 
+    int clampDmxValue(int value) {
+        if (value < 0) {
+            return 0;
+        }
+
+        if (value > 255) {
+            return 255;
+        }
+
+        return value;
+    }
+
+    bool pointInRect(int x, int y, int rx, int ry, int rw, int rh) {
+        return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+    }
+
+    void setActiveFullscreenPage(fullscreen_page_t page) {
+        active_fullscreen_page = page;
+
+        if (page != fullscreen_page_settings) {
+            settings_redraw_pending = false;
+        }
+
+        if (page != fullscreen_page_precision &&
+            page != fullscreen_page_keypad) {
+
+            precision_redraw_pending = false;
+        }
+    }
+
+    M5Canvas* getFullscreenCanvas(
+        fullscreen_page_t owner,
+        const char* label
+    ) {
+        if (active_fullscreen_page != owner) {
+            return nullptr;
+        }
+
+        if (!fullscreen_canvas_ready) {
+            uint32_t heap_before = ESP.getFreeHeap();
+            uint32_t psram_before = ESP.getFreePsram();
+
+            fullscreen_canvas.setColorDepth(16);
+            fullscreen_canvas_buffer = fullscreen_canvas.createSprite(
+                M5.Display.width(),
+                M5.Display.height()
+            );
+            fullscreen_canvas_ready = fullscreen_canvas_buffer != nullptr;
+
+            Serial.printf(
+                "fullscreen_canvas create for %s: buffer=%p heap %lu->%lu psram %lu->%lu active=%d settings=%d precision=%d keypad=%d preset=%d\n",
+                label,
+                fullscreen_canvas_buffer,
+                static_cast<unsigned long>(heap_before),
+                static_cast<unsigned long>(ESP.getFreeHeap()),
+                static_cast<unsigned long>(psram_before),
+                static_cast<unsigned long>(ESP.getFreePsram()),
+                static_cast<int>(active_fullscreen_page),
+                settings_screen ? 1 : 0,
+                precision_editor_screen ? 1 : 0,
+                precision_keypad_screen ? 1 : 0,
+                preset_screen ? 1 : 0
+            );
+        }
+
+        if (!fullscreen_canvas_ready) {
+            return nullptr;
+        }
+
+        return &fullscreen_canvas;
+    }
+
+    void pushFullscreenCanvas(
+        fullscreen_page_t owner,
+        const char* label
+    ) {
+        if (active_fullscreen_page != owner) {
+            return;
+        }
+
+        Serial.printf(
+            "fullscreen_canvas push %s: buffer=%p active=%d settings=%d precision=%d keypad=%d preset=%d\n",
+            label,
+            fullscreen_canvas_buffer,
+            static_cast<int>(active_fullscreen_page),
+            settings_screen ? 1 : 0,
+            precision_editor_screen ? 1 : 0,
+            precision_keypad_screen ? 1 : 0,
+            preset_screen ? 1 : 0
+        );
+
+        M5.Display.startWrite();
+        fullscreen_canvas.pushSprite(&M5.Display, 0, 0);
+        M5.Display.endWrite();
+    }
+
+    void applyLiveDmxValue(int value) {
+        int new_value = clampDmxValue(value);
+
+        if (new_value == target_value &&
+            data[data_idx][target_channel] == new_value) {
+            return;
+        }
+
+        target_value = new_value;
+        data_idx = 1 - data_idx;
+        data[data_idx][target_channel] =
+            static_cast<uint8_t>(target_value);
+
+        writeCurrentDmxOutput();
+
+        data[1 - data_idx][target_channel] =
+            static_cast<uint8_t>(target_value);
+
+        visible[target_channel] = true;
+    }
+
+    int precisionValueFromY(int y) {
+        if (y < precision_slider_y) {
+            y = precision_slider_y;
+        }
+
+        if (y > precision_slider_y + precision_slider_h) {
+            y = precision_slider_y + precision_slider_h;
+        }
+
+        return clampDmxValue(
+            255 - ((y - precision_slider_y) << 1)
+        );
+    }
+
+    void drawPrecisionButton(
+        LovyanGFX* gfx,
+        int x,
+        int y,
+        int w,
+        int h,
+        const char* label,
+        bool active = false,
+        bool large_label = false
+    ) {
+        uint16_t rim = active ? TFT_WHITE : TFT_DARKGRAY;
+        uint16_t bg = active ? TFT_WHITE : TFT_BLACK;
+        uint16_t fg = active ? TFT_BLACK : TFT_WHITE;
+
+        gfx->fillRoundRect(x, y, w, h, 5, bg);
+        gfx->drawRoundRect(x, y, w, h, 5, rim);
+        gfx->setTextDatum(textdatum_t::middle_center);
+        gfx->setTextColor(fg, bg);
+        if (large_label) {
+            gfx->setFont(&fonts::Font4);
+        } else {
+            gfx->setFont(&fonts::Font0);
+        }
+        gfx->drawString(label, x + (w >> 1), y + (h >> 1));
+    }
+
+    void drawValueSliderFull(
+        LovyanGFX* gfx,
+        int value,
+        size_t ch
+    ) {
+        int y = ((256 - clampDmxValue(value)) >> 1) + slider_y;
+        int bottom_y = slider_y + 128;
+
+        gfx->setColor(TFT_WHITE);
+        drawFocusBox(
+            gfx,
+            slider_x - 8,
+            slider_y - 5,
+            slider_w + 16,
+            128 + 10,
+            2
+        );
+
+        fillBar(
+            gfx,
+            slider_x,
+            slider_y,
+            slider_w,
+            y - slider_y,
+            ch
+        );
+
+        fillBar(
+            gfx,
+            slider_x,
+            bottom_y,
+            slider_w,
+            y - bottom_y,
+            ch
+        );
+    }
+
+    void resetPrecisionState(void) {
+        precision_editor_screen = false;
+        precision_keypad_screen = false;
+        precision_redraw_pending = false;
+        precision_consume_release = false;
+        precision_slider_dragging = false;
+        precision_repeat_dir = 0;
+        keypad_value[0] = '\0';
+        keypad_len = 0;
+        keypad_invalid = false;
+
+        if (active_fullscreen_page == fullscreen_page_precision ||
+            active_fullscreen_page == fullscreen_page_keypad) {
+
+            setActiveFullscreenPage(fullscreen_page_none);
+        }
+    }
+
+    void drawPrecisionKeypad(M5Canvas& c) {
+        c.fillScreen(TFT_BLACK);
+        c.setTextDatum(textdatum_t::middle_center);
+        c.setTextColor(TFT_WHITE, TFT_BLACK);
+        c.setFont(&fonts::Font2);
+        c.drawString("ENTER DMX VALUE", 125, 18);
+
+        c.setFont(&fonts::Font4);
+        c.drawRoundRect(
+            57,
+            36,
+            136,
+            36,
+            5,
+            keypad_invalid ? TFT_RED : TFT_DARKGRAY
+        );
+        c.setTextColor(
+            keypad_invalid ? TFT_RED : TFT_WHITE,
+            TFT_BLACK
+        );
+        c.drawString(keypad_len ? keypad_value : "---", 125, 54);
+        c.setTextColor(TFT_WHITE, TFT_BLACK);
+
+        if (keypad_invalid) {
+            c.setFont(&fonts::Font0);
+            c.drawString("MAX 255", 125, 72);
+        }
+
+        static constexpr const char* labels[10] = {
+            "1", "2", "3",
+            "4", "5", "6",
+            "7", "8", "9",
+            "0"
+        };
+
+        for (int i = 0; i < 10; ++i) {
+            int col = (i == 9) ? 1 : i % 3;
+            int row = (i == 9) ? 3 : i / 3;
+            int x = keypad_digit_x0 +
+                    col * (keypad_digit_w + keypad_digit_gap_x);
+            int y = keypad_digit_y0 +
+                    row * (keypad_digit_h + keypad_digit_gap_y);
+            drawPrecisionButton(
+                &c,
+                x,
+                y,
+                keypad_digit_w,
+                keypad_digit_h,
+                labels[i],
+                false
+            );
+        }
+
+        drawPrecisionButton(
+            &c,
+            keypad_action_x,
+            keypad_clr_y,
+            keypad_action_w,
+            keypad_action_h,
+            "CLR"
+        );
+        drawPrecisionButton(
+            &c,
+            keypad_action_x,
+            keypad_ok_y,
+            keypad_action_w,
+            keypad_action_h,
+            "OK",
+            true
+        );
+        drawPrecisionButton(
+            &c,
+            precision_back_x,
+            precision_back_y,
+            precision_back_w,
+            precision_back_h,
+            "BACK"
+        );
+    }
+
+    void drawPrecisionEditor(void) {
+        fullscreen_page_t owner =
+            precision_keypad_screen
+                ? fullscreen_page_keypad
+                : fullscreen_page_precision;
+
+        if (!precision_editor_screen ||
+            active_fullscreen_page != owner) {
+
+            precision_redraw_pending = false;
+            return;
+        }
+
+        if (M5.Speaker.isPlaying()) {
+            precision_redraw_pending = true;
+            return;
+        }
+
+        M5Canvas* frame = getFullscreenCanvas(owner, "PRECISION");
+
+        if (frame == nullptr) {
+            precision_redraw_pending = true;
+            return;
+        }
+
+        auto& c = *frame;
+
+        if (precision_keypad_screen) {
+            drawPrecisionKeypad(c);
+            pushFullscreenCanvas(owner, "KEYPAD");
+            precision_redraw_pending = false;
+            return;
+        }
+
+        c.fillScreen(TFT_BLACK);
+        c.setTextDatum(textdatum_t::middle_center);
+        c.setTextColor(TFT_WHITE, TFT_BLACK);
+
+        char text[20];
+        c.setFont(&fonts::Font2);
+        snprintf(text, sizeof(text), "CH %u", target_channel);
+        c.drawString(
+            text,
+            precision_back_x + (precision_back_w >> 1),
+            18
+        );
+
+        c.setFont(&fonts::Font7);
+        snprintf(text, sizeof(text), "%d", target_value);
+        c.drawRoundRect(
+            precision_value_x,
+            precision_value_y,
+            precision_value_w,
+            precision_value_h,
+            5,
+            TFT_DARKGRAY
+        );
+        c.drawString(
+            text,
+            precision_value_x + (precision_value_w >> 1),
+            precision_value_y + (precision_value_h >> 1)
+        );
+
+        drawPrecisionButton(
+            &c,
+            precision_minus_x,
+            precision_minus_y,
+            precision_button_w,
+            precision_button_h,
+            "-",
+            false,
+            true
+        );
+        drawPrecisionButton(
+            &c,
+            precision_plus_x,
+            precision_plus_y,
+            precision_button_w,
+            precision_button_h,
+            "+",
+            false,
+            true
+        );
+
+        static constexpr int steps[4] = {1, 5, 10, 25};
+        c.setFont(&fonts::Font0);
+        for (int i = 0; i < 4; ++i) {
+            int x =
+                precision_step_x0 +
+                i * (precision_step_w + precision_step_gap);
+            char step_text[4];
+            snprintf(step_text, sizeof(step_text), "%d", steps[i]);
+            drawPrecisionButton(
+                &c,
+                x,
+                precision_step_y,
+                precision_step_w,
+                precision_step_h,
+                step_text,
+                precision_step == steps[i]
+            );
+        }
+
+        drawValueSliderFull(&c, target_value, target_channel);
+
+        drawPrecisionButton(
+            &c,
+            precision_back_x,
+            precision_back_y,
+            precision_back_w,
+            precision_back_h,
+            "BACK"
+        );
+
+        pushFullscreenCanvas(owner, "PRECISION");
+        precision_redraw_pending = false;
+    }
+
+    void openPrecisionEditor(void) {
+        resetPrecisionState();
+        setActiveFullscreenPage(fullscreen_page_precision);
+        precision_editor_screen = true;
+        precision_consume_release = true;
+        target_value = data[data_idx][target_channel];
+        drawPrecisionEditor();
+    }
+
+    void closePrecisionEditor(void) {
+        resetPrecisionState();
+        setActiveFullscreenPage(fullscreen_page_none);
+        main_touch_consume_release = true;
+        M5.Display.fillScreen(TFT_BLACK);
+        updateDisplay(true);
+        drawUIValueSet(target_value, true);
+    }
+
+    void openPrecisionKeypad(void) {
+        setActiveFullscreenPage(fullscreen_page_keypad);
+        precision_keypad_screen = true;
+        precision_consume_release = true;
+        keypad_value[0] = '\0';
+        keypad_len = 0;
+        keypad_invalid = false;
+        drawPrecisionEditor();
+    }
+
+    void closePrecisionKeypad(bool apply_value) {
+        if (apply_value && keypad_len > 0) {
+            int value = atoi(keypad_value);
+            if (value <= 255) {
+                applyLiveDmxValue(value);
+            } else {
+                keypad_invalid = true;
+                drawPrecisionEditor();
+                return;
+            }
+        }
+
+        precision_keypad_screen = false;
+        setActiveFullscreenPage(fullscreen_page_precision);
+        precision_consume_release = true;
+        drawPrecisionEditor();
+    }
+
+    void appendKeypadDigit(char digit) {
+        if (keypad_len >= 3) {
+            return;
+        }
+
+        keypad_invalid = false;
+        keypad_value[keypad_len++] = digit;
+        keypad_value[keypad_len] = '\0';
+        drawPrecisionEditor();
+    }
+
+    void handlePrecisionKeypadTouch(int x, int y) {
+        if (pointInRect(
+                x,
+                y,
+                precision_back_x,
+                precision_back_y,
+                precision_back_w,
+                precision_back_h)) {
+
+            closePrecisionKeypad(false);
+            return;
+        }
+
+        if (pointInRect(
+                x,
+                y,
+                keypad_action_x,
+                keypad_clr_y,
+                keypad_action_w,
+                keypad_action_h)) {
+
+            keypad_len = 0;
+            keypad_value[0] = '\0';
+            keypad_invalid = false;
+            drawPrecisionEditor();
+            return;
+        }
+
+        if (pointInRect(
+                x,
+                y,
+                keypad_action_x,
+                keypad_ok_y,
+                keypad_action_w,
+                keypad_action_h)) {
+
+            closePrecisionKeypad(true);
+            return;
+        }
+
+        static constexpr const char keys[10] = {
+            '1', '2', '3',
+            '4', '5', '6',
+            '7', '8', '9',
+            '0'
+        };
+
+        for (int i = 0; i < 10; ++i) {
+            int col = (i == 9) ? 1 : i % 3;
+            int row = (i == 9) ? 3 : i / 3;
+            int bx = keypad_digit_x0 +
+                     col * (keypad_digit_w + keypad_digit_gap_x);
+            int by = keypad_digit_y0 +
+                     row * (keypad_digit_h + keypad_digit_gap_y);
+
+            if (!pointInRect(
+                    x,
+                    y,
+                    bx,
+                    by,
+                    keypad_digit_w,
+                    keypad_digit_h)) {
+                continue;
+            }
+
+            char key = keys[i];
+            appendKeypadDigit(key);
+            return;
+        }
+    }
+
+    void applyPrecisionStep(int dir) {
+        applyLiveDmxValue(target_value + dir * precision_step);
+        drawPrecisionEditor();
+    }
+
+    void handlePrecisionRepeat(const m5::touch_detail_t& tp) {
+        int dir = 0;
+
+        if (pointInRect(
+                tp.x,
+                tp.y,
+                precision_minus_x,
+                precision_minus_y,
+                precision_button_w,
+                precision_button_h)) {
+
+            dir = -1;
+        } else if (pointInRect(
+                       tp.x,
+                       tp.y,
+                       precision_plus_x,
+                       precision_plus_y,
+                       precision_button_w,
+                       precision_button_h)) {
+
+            dir = 1;
+        }
+
+        uint32_t now = millis();
+
+        if (!tp.state || dir == 0) {
+            precision_repeat_dir = 0;
+            return;
+        }
+
+        if (tp.wasPressed() || precision_repeat_dir != dir) {
+            precision_repeat_dir = dir;
+            precision_repeat_started_ms = now;
+            precision_repeat_last_ms = now;
+            applyPrecisionStep(dir);
+            return;
+        }
+
+        if (precision_repeat_dir == 0) {
+            return;
+        }
+
+        uint32_t held = now - precision_repeat_started_ms;
+        if (held < precision_hold_start_ms) {
+            return;
+        }
+
+        uint32_t interval = precision_repeat_slow_ms;
+        if (precision_step <= 5 && held > 1400) {
+            interval = precision_repeat_fast_ms;
+        }
+
+        if ((uint32_t)(now - precision_repeat_last_ms) >= interval) {
+            precision_repeat_last_ms = now;
+            applyPrecisionStep(dir);
+        }
+    }
+
+    void handlePrecisionEditorTouch(const m5::touch_detail_t& tp) {
+        if (precision_consume_release) {
+            if (!tp.state) {
+                precision_consume_release = false;
+            }
+            return;
+        }
+
+        if (precision_keypad_screen) {
+            if (tp.state && tp.wasClicked()) {
+                handlePrecisionKeypadTouch(tp.base_x, tp.base_y);
+            }
+            return;
+        }
+
+        handlePrecisionRepeat(tp);
+
+        if (!tp.state) {
+            precision_slider_dragging = false;
+            return;
+        }
+
+        if (tp.wasClicked()) {
+            if (pointInRect(
+                    tp.base_x,
+                    tp.base_y,
+                    precision_back_x,
+                    precision_back_y,
+                    precision_back_w,
+                    precision_back_h)) {
+
+                closePrecisionEditor();
+                return;
+            }
+
+            if (pointInRect(
+                    tp.base_x,
+                    tp.base_y,
+                    precision_value_x,
+                    precision_value_y,
+                    precision_value_w,
+                    precision_value_h)) {
+
+                openPrecisionKeypad();
+                return;
+            }
+
+            static constexpr int steps[4] = {1, 5, 10, 25};
+            for (int i = 0; i < 4; ++i) {
+                int x =
+                    precision_step_x0 +
+                    i * (precision_step_w + precision_step_gap);
+
+                if (pointInRect(
+                        tp.base_x,
+                        tp.base_y,
+                        x,
+                        precision_step_y,
+                        precision_step_w,
+                        precision_step_h)) {
+
+                    precision_step = steps[i];
+                    drawPrecisionEditor();
+                    return;
+                }
+            }
+        }
+
+        bool slider_hit =
+            pointInRect(
+                tp.base_x,
+                tp.base_y,
+                precision_slider_x - 12,
+                precision_slider_y - 8,
+                precision_slider_w + 24,
+                precision_slider_h + 16
+            );
+
+        if (tp.wasPressed() && slider_hit) {
+            precision_slider_dragging = true;
+        }
+
+        if (precision_slider_dragging) {
+            int value = precisionValueFromY(tp.y);
+            if (value != target_value) {
+                applyLiveDmxValue(value);
+                drawPrecisionEditor();
+            }
+        }
+    }
+
     void hideUIValueSet(void) {
         // Channel-select mode shows a PRESET button on the right.
         drawPresetOpenButton();
     }
 
     void drawUIValueUpDown(int sign = 0) {
-        int x = scroll_width + 10;
-        int w = 320 - scroll_width - 20;
-        // M5.Display.drawRoundRect(x,              2, w, slider_btn_height - 4,
-        // 4, sign > 0 ? TFT_WHITE : TFT_DARKGRAY);
-        M5.Display.drawRoundRect(x, slider_y - 10 - (slider_btn_height - 4), w,
-                                 slider_btn_height - 4, 4,
-                                 sign > 0 ? TFT_WHITE : TFT_DARKGRAY);
-        M5.Display.drawRoundRect(x, slider_y + 128 + 10, w,
-                                 slider_btn_height - 4, 4,
-                                 sign < 0 ? TFT_WHITE : TFT_DARKGRAY);
+        (void)sign;
+
+        M5.Display.fillRoundRect(
+            value_edit_button_x,
+            value_edit_button_y,
+            value_edit_button_w,
+            value_edit_button_h,
+            6,
+            TFT_BLACK
+        );
+        M5.Display.drawRoundRect(
+            value_edit_button_x,
+            value_edit_button_y,
+            value_edit_button_w,
+            value_edit_button_h,
+            6,
+            TFT_WHITE
+        );
+        M5.Display.setTextDatum(textdatum_t::middle_center);
+        M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+        M5.Display.setFont(&fonts::Font0);
+        M5.Display.drawString(
+            "EDIT",
+            value_edit_button_x + (value_edit_button_w >> 1),
+            value_edit_button_y + (value_edit_button_h >> 1)
+        );
     }
 
     void drawUIValueSet(uint16_t new_value, bool force_redraw = false) {
@@ -4010,38 +4859,30 @@ bool loadPreset(uint8_t slot) {
         M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
         M5.Display.setFont(&fonts::AsciiFont8x16);
         char str[8];
-        uint32_t color = bar_color_table[target_channel & 15];
 
         int y  = ((256 - new_value) >> 1) + slider_y;
         int py = ((256 - target_value) >> 1) + slider_y;
 
         int text_x = (scroll_width + M5.Display.width()) >> 1;
-        // int text_y = ((slider_y * 2 + 128)+M5.Display.height()) >> 1;
-        int text_y = 16;
+        int text_y = 18;
         if (force_redraw) {
             M5.Display.fillRect(scroll_width + 1, 0, 320 - scroll_width,
                                 M5.Display.height(), TFT_BLACK);
             py = 128 + slider_y;
 
-            M5.Display.setColor(TFT_WHITE);
-            drawFocusBox(&M5.Display, slider_x - 8, slider_y - 5, slider_w + 16,
-                         128 + 10, 2);
-
-            fillBar(&M5.Display, slider_x, slider_y, slider_w, y - slider_y,
-                    target_channel);
-
-            int text_x = (scroll_width + M5.Display.width()) >> 1;
-            M5.Display.drawString("+", text_x,
-                                  slider_y - 8 - (slider_btn_height >> 1));
-            M5.Display.drawString(
-                "-", text_x, slider_y + 128 + 8 + (slider_btn_height >> 1));
-            snprintf(str, sizeof(str), "%3dCH", target_channel);
-            M5.Display.drawString(str, text_x, text_y - 8);
+            drawValueSliderFull(
+                &M5.Display,
+                new_value,
+                target_channel
+            );
             drawUIValueUpDown();
         }
         if (force_redraw || target_value != new_value) {
-            snprintf(str, sizeof(str), "%3d", new_value);
-            M5.Display.drawString(str, text_x, text_y + 8);
+            M5.Display.fillRect(scroll_width + 2, 0,
+                                320 - scroll_width - 4, 34, TFT_BLACK);
+            M5.Display.setFont(&fonts::Font2);
+            snprintf(str, sizeof(str), "CH %u", target_channel);
+            M5.Display.drawString(str, text_x, text_y);
             target_value = new_value;
         }
 
