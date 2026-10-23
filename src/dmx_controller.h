@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "controller_types.h"
 
 class DmxPresetStorage {
  public:
@@ -25,7 +26,7 @@ class DmxController {
     static constexpr uint8_t preset_count = DmxPresetStorage::preset_count;
     enum class Result {
         ok, invalid_channel, invalid_value, invalid_slot, empty, same_slot,
-        occupied, corrupt, read_failed, write_failed, metadata_failed
+        occupied, corrupt, read_failed, write_failed, metadata_failed, invalid_patch
     };
     enum class ChangeKind { reset, channel, universe, blackout, preset };
     struct Change {
@@ -44,6 +45,7 @@ class DmxController {
     uint8_t channel(int channel) const;
     Result setChannel(int channel, int value);
     Result adjustChannel(int channel, int delta);
+    Result setChannels(const DmxChannelValue* values, size_t count);
     const uint8_t* workingPacket() const { return working_; }
     const uint8_t* outputPacket() const;
     bool blackoutActive() const { return blackout_; }

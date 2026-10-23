@@ -1,4 +1,5 @@
 #include "dmx_controller.h"
+#include "../support/fake_preset_storage.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -13,46 +14,6 @@
 
 using Result = DmxController::Result;
 using SlotState = DmxPresetStorage::SlotState;
-
-struct FakeStorage : DmxPresetStorage {
-    uint8_t packets[preset_count][packet_size] = {};
-    SlotState states[preset_count];
-    uint8_t mask = 0;
-    bool fail_load = false;
-    bool fail_save = false;
-    bool fail_metadata_read = false;
-    bool fail_metadata_write = false;
-    unsigned saves = 0;
-    unsigned metadata_writes = 0;
-
-    FakeStorage() {
-        for (auto& state : states) state = SlotState::missing;
-    }
-    SlotState inspect(uint8_t slot) override { return states[slot]; }
-    bool load(uint8_t slot, uint8_t* packet) override {
-        if (fail_load || states[slot] != SlotState::valid) return false;
-        memcpy(packet, packets[slot], packet_size);
-        return true;
-    }
-    bool save(uint8_t slot, const uint8_t* packet) override {
-        if (fail_save) return false;
-        memcpy(packets[slot], packet, packet_size);
-        states[slot] = SlotState::valid;
-        ++saves;
-        return true;
-    }
-    bool loadClearedMask(uint8_t& value) override {
-        if (fail_metadata_read) return false;
-        value = mask;
-        return true;
-    }
-    bool saveClearedMask(uint8_t value) override {
-        if (fail_metadata_write) return false;
-        mask = value;
-        ++metadata_writes;
-        return true;
-    }
-};
 
 // Same binding as the sender view: selection stays UI-local; each notification
 // refreshes its cached selected value from authoritative state.
@@ -142,6 +103,38 @@ static void everySlotAndValue() {
     }
     CHECK(storage.mask == 0);
     puts("PASS all 256 values and all eight preset/mask positions");
+}
+
+static void atomicPatchesAndNoOps() {
+    FakeStorage storage;
+    DmxController controller(storage);
+    Selection selected(controller);
+    CHECK(controller.setChannels(nullptr, 1) == Result::invalid_patch);
+    DmxChannelValue values[] = {{1, 100}, {512, 256}};
+    CHECK(controller.setChannels(values, 0) == Result::invalid_patch);
+    CHECK(controller.setChannels(values, 9) == Result::invalid_patch);
+    CHECK(controller.setChannels(values, 2) == Result::invalid_value);
+    CHECK(controller.channel(1) == 0 && controller.revision() == 0);
+    values[1] = {0, 255};
+    CHECK(controller.setChannels(values, 2) == Result::invalid_channel);
+    values[1] = {1, 255};
+    CHECK(controller.setChannels(values, 2) == Result::invalid_patch);
+    values[1] = {512, 255};
+    CHECK(controller.setChannels(values, 2) == Result::ok);
+    CHECK(controller.channel(1) == 100 && controller.channel(512) == 255);
+    CHECK(controller.revision() == 1 && selected.notifications == 1);
+    CHECK(controller.setChannels(values, 2) == Result::ok && controller.revision() == 1);
+    CHECK(controller.savePreset(0) == Result::ok);
+    const auto revision = controller.revision();
+    const auto saves = storage.saves;
+    CHECK(controller.savePreset(0) == Result::ok);
+    CHECK(controller.revision() == revision && storage.saves == saves);
+    controller.reset();
+    const auto reset_revision = controller.revision();
+    controller.reset();
+    CHECK(controller.revision() == reset_revision);
+    checkStartCode(controller);
+    puts("PASS Controller atomic patch validation and unchanged save/reset revisions");
 }
 
 static void blackoutRestore() {
@@ -280,6 +273,7 @@ static void presetFailures() {
 int main() {
     boundsAndRevision();
     everySlotAndValue();
+    atomicPatchesAndNoOps();
     blackoutRestore();
     presetsAndOccupancy();
     presetFailures();

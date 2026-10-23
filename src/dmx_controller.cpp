@@ -16,10 +16,12 @@ void DmxController::changed(ChangeKind kind, uint16_t channel, uint8_t slot) {
 }
 
 void DmxController::reset() {
+    bool dirty = blackout_;
+    for (size_t i = 0; i < packet_size; ++i) dirty = dirty || working_[i] || restore_[i];
     memset(working_, 0, sizeof(working_));
     memset(restore_, 0, sizeof(restore_));
     blackout_ = false;
-    changed(ChangeKind::reset);
+    if (dirty) changed(ChangeKind::reset);
 }
 
 uint8_t DmxController::channel(int index) const {
@@ -42,6 +44,25 @@ DmxController::Result DmxController::adjustChannel(int index, int delta) {
     if (value < 0) value = 0;
     if (value > 255) value = 255;
     return setChannel(index, static_cast<int>(value));
+}
+
+DmxController::Result DmxController::setChannels(const DmxChannelValue* values, size_t count) {
+    if (!values || count == 0 || count > dmx_max_patch_channels) return Result::invalid_patch;
+    for (size_t i = 0; i < count; ++i) {
+        if (values[i].channel < 1 || values[i].channel > static_cast<int>(channel_count))
+            return Result::invalid_channel;
+        if (values[i].value < 0 || values[i].value > 255) return Result::invalid_value;
+        for (size_t j = 0; j < i; ++j) {
+            if (values[i].channel == values[j].channel) return Result::invalid_patch;
+        }
+    }
+    bool dirty = false;
+    for (size_t i = 0; i < count; ++i) {
+        dirty = dirty || working_[values[i].channel] != values[i].value;
+        working_[values[i].channel] = static_cast<uint8_t>(values[i].value);
+    }
+    if (dirty) changed(ChangeKind::universe);
+    return Result::ok;
 }
 
 const uint8_t* DmxController::outputPacket() const {
@@ -114,6 +135,13 @@ DmxController::Result DmxController::loadPreset(uint8_t slot) {
 DmxController::Result DmxController::savePreset(uint8_t slot) {
     if (slot >= preset_count) return Result::invalid_slot;
     if (!loadMetadata()) return Result::metadata_failed;
+    const auto state = presetState(slot);
+    if (state == DmxPresetStorage::SlotState::error) return Result::read_failed;
+    if (state == DmxPresetStorage::SlotState::valid) {
+        uint8_t saved[packet_size] = {};
+        if (!storage_.load(slot, saved)) return Result::read_failed;
+        if (memcmp(saved, working_, packet_size) == 0) return Result::ok;
+    }
     if (!storage_.save(slot, working_)) return Result::write_failed;
     if (!markCleared(slot, false)) return Result::metadata_failed;
     changed(ChangeKind::preset, 0, slot);

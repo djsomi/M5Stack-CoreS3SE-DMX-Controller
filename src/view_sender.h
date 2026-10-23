@@ -4,6 +4,7 @@
 #include "common.h"
 #include "logo_sender.h"
 #include "dmx_controller.h"
+#include "command_dispatcher.h"
 #include "hardware_diagnostics.h"
 
 // Display settings are owned by src.cpp because the global safe-wake /
@@ -26,8 +27,10 @@ void controllerPowerOff(void);
 
 class view_sender_t : public view_t {
    public:
-    explicit view_sender_t(DmxController& controller) : controller(controller) {
+    view_sender_t(DmxController& controller, CommandDispatcher& dispatcher)
+        : controller(controller), dispatcher(dispatcher) {
         controller.setObserver(onControllerChange, this);
+        dispatcher.setPublisher(publishDmx, this);
     }
 
     void setup(void) override {
@@ -36,7 +39,8 @@ class view_sender_t : public view_t {
 #else
         dmx_set_mode(dmxPort, DMX_MODE_WRITE);
 #endif
-        controller.reset();
+        dispatcher.executeLocal(ControllerCommand::resetSenderCommand());
+        controller_redraw_pending = false;
         memset(rendered_values, 0, sizeof(rendered_values));
         dmx_write_packet(dmxPort, controller.workingPacket(), DMX_MAX_PACKET_SIZE);
 
@@ -58,6 +62,21 @@ class view_sender_t : public view_t {
 #if DMX_HW_DIAGNOSTICS
         recordHardwareDiagnostics("sender_enter");
 #endif
+    }
+
+    void serviceControllerChanges() {
+        if (!controller_redraw_pending || M5.Speaker.isPlaying()) return;
+        controller_redraw_pending = false;
+        if (settings_screen) return; // Return-to-Main already performs a full redraw.
+        if (precision_editor_screen) {
+            drawPrecisionEditor(); // Keeps keypad draft and existing owner checks.
+        } else if (preset_screen) {
+            if (!preset_options_screen) drawPresetScreen();
+        } else {
+            updateDisplay(true);
+            if (ui_mode == ui_mode_t::mode_value_setting) drawUIValueSet(target_value, true);
+            else drawBlackoutButton();
+        }
     }
 
     bool loop(void) override {
@@ -332,8 +351,8 @@ class view_sender_t : public view_t {
                         new_value = 255;
                     }
                     if (target_value != new_value) {
-                        drawUIValueSet(new_value);
-                        target_value = new_value;
+                        modified |= applyMainCommand(ControllerCommand::channelCommand(
+                            CommandType::set_channel, target_channel, new_value));
                     }
                 }
             }
@@ -375,33 +394,21 @@ class view_sender_t : public view_t {
             case mode_value_setting:
 
             {
-                int new_value = target_value;
+                int delta = 0;
                 if (M5.BtnA.wasPressed() || M5.BtnA.isHolding()) {
-                    --new_value;
+                    --delta;
                 }
                 if (M5.BtnC.wasPressed() || M5.BtnC.isHolding()) {
-                    ++new_value;
+                    ++delta;
                 }
-                if (new_value != target_value) {
-                    if (new_value <= 0) {
-                        new_value = 0;
-                    } else if (new_value > 255) {
-                        new_value = 255;
-                    }
-                    drawUIValueSet(new_value);
-                    target_value = new_value;
+                if (delta != 0) {
+                    modified |= applyMainCommand(ControllerCommand::channelCommand(
+                        CommandType::adjust_channel, target_channel, delta));
                 }
                 if (btnB_Clicked) {
                     setUIMode(ui_mode_t::mode_channel_select);
                 }
             }
-        }
-
-        if (target_value != controller.channel(target_channel)) {
-            controller.setChannel(target_channel, target_value);
-            writeCurrentDmxOutput();
-            updateDisplay();
-            modified                           = true;
         }
 
         if (scroll_y_add) {
@@ -458,10 +465,31 @@ class view_sender_t : public view_t {
     // CONTROLLER AND PRESET UI
     // ==========================
     DmxController& controller;
+    CommandDispatcher& dispatcher;
+    bool controller_redraw_pending = false;
+
+    static int publishDmx(void* context) {
+        return static_cast<view_sender_t*>(context)->writeCurrentDmxOutput();
+    }
 
     static void onControllerChange(void* context, const DmxController::Change&) {
         auto& view = *static_cast<view_sender_t*>(context);
         view.target_value = view.controller.channel(view.target_channel);
+        if (!view.dispatcher.executingLocal()) view.controller_redraw_pending = true;
+    }
+
+    bool applyMainCommand(const ControllerCommand& command) {
+        const int previous = target_value;
+        const auto revision = controller.revision();
+        dispatcher.executeLocal(command);
+        const int committed = controller.channel(target_channel);
+        // Incremental slider painting needs the old display value, never a write draft.
+        target_value = previous;
+        if (previous != committed) drawUIValueSet(committed);
+        target_value = committed;
+        if (controller.revision() == revision) return false;
+        updateDisplay();
+        return true;
     }
 
     bool preset_screen      = false;
@@ -857,24 +885,42 @@ const char* presetError(DmxController::Result result) {
     }
 }
 
+bool commandSucceeded(const CommandDispatcher::Result& result) {
+    return result.status == CommandStatus::applied || result.status == CommandStatus::no_change;
+}
+
+const char* commandError(const CommandDispatcher::Result& result) {
+    if (result.status == CommandStatus::busy) return "COMMAND BUSY";
+    if (result.status == CommandStatus::unsupported_mode) return "SENDER MODE REQUIRED";
+    if (result.status == CommandStatus::transport_error) return "DMX WRITE FAILED";
+    if (result.status == CommandStatus::invalid) return "INVALID COMMAND";
+    return presetError(result.domain);
+}
+
 bool clearPreset(uint8_t slot) {
     if (slot >= DmxController::preset_count) return false;
-    const auto result = controller.clearPreset(slot);
+    const auto outcome = dispatcher.executeLocal(ControllerCommand::presetCommand(CommandType::clear_preset, slot));
+    const auto result = outcome.domain;
     if (result == DmxController::Result::empty) {
         snprintf(preset_status, sizeof(preset_status), "P%u IS ALREADY EMPTY",
                  static_cast<unsigned>(slot + 1));
-    } else if (result == DmxController::Result::ok) {
+    } else if (commandSucceeded(outcome)) {
         snprintf(preset_status, sizeof(preset_status), "PRESET P%u CLEARED",
                  static_cast<unsigned>(slot + 1));
     } else {
-        snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+        snprintf(preset_status, sizeof(preset_status), "%s", commandError(outcome));
     }
-    return result == DmxController::Result::ok;
+    return commandSucceeded(outcome);
 }
 
 bool copyPreset(uint8_t source, uint8_t target) {
     if (source >= DmxController::preset_count || target >= DmxController::preset_count) return false;
-    const auto result = controller.copyPreset(source, target);
+    const auto outcome = dispatcher.executeLocal(ControllerCommand::presetCommand(CommandType::copy_preset, source, target));
+    const auto result = outcome.domain;
+    if (!commandSucceeded(outcome) && result == DmxController::Result::ok) {
+        snprintf(preset_status, sizeof(preset_status), "%s", commandError(outcome));
+        return false;
+    }
     switch (result) {
         case DmxController::Result::ok:
             snprintf(preset_status, sizeof(preset_status), "P%u COPIED TO P%u",
@@ -895,21 +941,21 @@ bool copyPreset(uint8_t source, uint8_t target) {
             snprintf(preset_status, sizeof(preset_status), "COPY FAILED");
             break;
         default:
-            snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+            snprintf(preset_status, sizeof(preset_status), "%s", commandError(outcome));
             break;
     }
-    return result == DmxController::Result::ok;
+    return commandSucceeded(outcome);
 }
 
 bool savePreset(uint8_t slot) {
     if (slot >= DmxController::preset_count) return false;
-    const auto result = controller.savePreset(slot);
-    const bool success = result == DmxController::Result::ok;
+    const auto outcome = dispatcher.executeLocal(ControllerCommand::presetCommand(CommandType::save_preset, slot));
+    const bool success = commandSucceeded(outcome);
     if (success) {
         snprintf(preset_status, sizeof(preset_status), "PRESET P%u SAVED",
                  static_cast<unsigned>(slot + 1));
     } else {
-        snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+        snprintf(preset_status, sizeof(preset_status), "%s", commandError(outcome));
     }
 #if DMX_HW_DIAGNOSTICS
     recordHardwareDiagnostics("preset_save", slot + 1, success ? ESP_OK : ESP_FAIL);
@@ -919,29 +965,21 @@ bool savePreset(uint8_t slot) {
 
 bool loadPreset(uint8_t slot) {
     if (slot >= DmxController::preset_count) return false;
-    const auto result = controller.loadPreset(slot);
-    if (result != DmxController::Result::ok) {
-        if (result == DmxController::Result::empty) {
+    const auto outcome = dispatcher.executeLocal(ControllerCommand::presetCommand(CommandType::load_preset, slot));
+    if (!commandSucceeded(outcome)) {
+        if (outcome.domain == DmxController::Result::empty) {
             snprintf(preset_status, sizeof(preset_status), "PRESET P%u IS EMPTY",
                      static_cast<unsigned>(slot + 1));
         } else {
-            snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+            snprintf(preset_status, sizeof(preset_status), "%s", commandError(outcome));
         }
 #if DMX_HW_DIAGNOSTICS
-        recordHardwareDiagnostics("preset_load", slot + 1, ESP_FAIL);
+        recordHardwareDiagnostics("preset_load", slot + 1,
+                                  outcome.transport_result ? outcome.transport_result : ESP_FAIL);
 #endif
         return false;
     }
 
-    // Keep the existing driver publication point, including during blackout.
-    esp_err_t write_result = writeCurrentDmxOutput();
-    if (write_result != ESP_OK) {
-        snprintf(preset_status, sizeof(preset_status), "DMX WRITE FAILED");
-#if DMX_HW_DIAGNOSTICS
-        recordHardwareDiagnostics("preset_load", slot + 1, write_result);
-#endif
-        return false;
-    }
     snprintf(preset_status, sizeof(preset_status), "PRESET P%u LOADED",
              static_cast<unsigned>(slot + 1));
 #if DMX_HW_DIAGNOSTICS
@@ -1153,15 +1191,13 @@ bool loadPreset(uint8_t slot) {
 
     void toggleBlackout(void) {
         if (!controller.blackoutActive()) {
-            controller.setBlackout(true);
-            writeCurrentDmxOutput();
+            dispatcher.executeLocal(ControllerCommand::blackoutCommand(true));
 
             if (!M5.Speaker.isPlaying()) {
                 M5.Speaker.tone(700, 180);
             }
         } else {
-            controller.setBlackout(false);
-            writeCurrentDmxOutput();
+            dispatcher.executeLocal(ControllerCommand::blackoutCommand(false));
 
             updateDisplay(true);
 
@@ -4067,9 +4103,9 @@ bool loadPreset(uint8_t slot) {
             return;
         }
 
-        controller.setChannel(target_channel, new_value);
+        dispatcher.executeLocal(ControllerCommand::channelCommand(
+            CommandType::set_channel, target_channel, new_value));
         target_value = controller.channel(target_channel);
-        writeCurrentDmxOutput();
 
         visible[target_channel] = true;
     }
@@ -4499,7 +4535,10 @@ bool loadPreset(uint8_t slot) {
     }
 
     void applyPrecisionStep(int dir) {
-        applyLiveDmxValue(target_value + dir * precision_step);
+        dispatcher.executeLocal(ControllerCommand::channelCommand(
+            CommandType::adjust_channel, target_channel, dir * precision_step));
+        target_value = controller.channel(target_channel);
+        visible[target_channel] = true;
         drawPrecisionEditor();
     }
 

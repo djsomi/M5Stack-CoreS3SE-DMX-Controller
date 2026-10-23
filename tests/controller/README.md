@@ -9,7 +9,7 @@ electrical output; those require the hardware checks in `docs/STAGE1_CONTROLLER.
 From the repository root with any C++11 compiler, for example:
 
 ```sh
-g++ -std=c++11 -Wall -Wextra -Werror -Isrc src/dmx_controller.cpp tests/controller/test_controller.cpp -o controller-tests
+g++ -std=c++11 -Wall -Wextra -Werror -Isrc -Iinclude src/dmx_controller.cpp tests/controller/test_controller.cpp -o controller-tests
 ./controller-tests
 ```
 
@@ -20,7 +20,7 @@ On the development Windows machine, the test compiler is isolated in ignored
 
 ```powershell
 python -m pip install --target dist/host-toolchain ziglang==0.13.0
-.\dist\host-toolchain\ziglang\zig.exe c++ -std=c++11 -Wall -Wextra -Werror -Isrc src/dmx_controller.cpp tests/controller/test_controller.cpp -o dist/controller-tests.exe
+.\dist\host-toolchain\ziglang\zig.exe c++ -std=c++11 -Wall -Wextra -Werror -Isrc -Iinclude src/dmx_controller.cpp tests/controller/test_controller.cpp -o dist/controller-tests.exe
 .\dist\controller-tests.exe
 ```
 

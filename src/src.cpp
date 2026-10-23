@@ -23,7 +23,8 @@ static ui_button_t btns[2]     = {{0, 200, 120, 40, "Receiver"},
 static view_receiver_t view_receiver;
 static PresetStore preset_store;
 static DmxController dmx_controller(preset_store);
-static view_sender_t view_sender(dmx_controller);
+static CommandDispatcher command_dispatcher(dmx_controller);
+static view_sender_t view_sender(dmx_controller, command_dispatcher);
 
 
 // ============================================================
@@ -366,6 +367,7 @@ static void serviceStartupSound(uint32_t now) {
 // ensuring that same press/release gesture cannot operate the Sender UI.
 static void enterSenderFromStartup(bool consume_touch) {
     scene_mode = mode_sender;
+    command_dispatcher.setSenderActive(true);
     view_sender.setup();
 
     last_display_activity_ms = millis();
@@ -633,6 +635,7 @@ static void drawStartupCountdown(
 
 static void drawStartupScreen(void) {
     scene_mode = mode_startup;
+    command_dispatcher.setSenderActive(false);
 
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setTextDatum(textdatum_t::middle_center);
@@ -689,6 +692,7 @@ static void handleStartupScreen(uint32_t now) {
 
 void drawSelectSetup(void) {
     scene_mode = mode_select;
+    command_dispatcher.setSenderActive(false);
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setTextDatum(textdatum_t::baseline_center);
     M5.Display.setFont(&fonts::Font4);
@@ -810,6 +814,11 @@ int focus_idx = -1;
 
 void loop(void) {
     M5.update();
+
+    // Owner-task servicing precedes every page/startup/wake early return.
+    command_dispatcher.setSenderActive(scene_mode == mode_sender);
+    command_dispatcher.process();
+    if (scene_mode == mode_sender) view_sender.serviceControllerChanges();
 
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::service();
@@ -965,6 +974,7 @@ void loop(void) {
 
     if (clicked_idx >= 0) {
         scene_mode = (clicked_idx == 0) ? mode_receiver : mode_sender;
+        command_dispatcher.setSenderActive(scene_mode == mode_sender);
         switch (scene_mode) {
             case mode_receiver:
                 view_receiver.setup();
