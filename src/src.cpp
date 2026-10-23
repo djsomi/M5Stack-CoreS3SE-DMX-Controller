@@ -1,9 +1,11 @@
 
 #include "common.h"
 #include "dmx_hardware.h"
+#include "hardware_diagnostics.h"
 #include <esp_system.h>
 #include "view_receiver.h"
 #include "view_sender.h"
+#include "preset_store.h"
 #include <Preferences.h>
 
 QueueHandle_t queue;
@@ -19,7 +21,9 @@ static scene_mode_t scene_mode = mode_startup;
 static ui_button_t btns[2]     = {{0, 200, 120, 40, "Receiver"},
                                   {200, 200, 120, 40, "Sender"}};
 static view_receiver_t view_receiver;
-static view_sender_t view_sender;
+static PresetStore preset_store;
+static DmxController dmx_controller(preset_store);
+static view_sender_t view_sender(dmx_controller);
 
 
 // ============================================================
@@ -775,6 +779,9 @@ dmx_set_pin(
                        dmxInterruptPriority);
 
     // Show startup information, then automatically enter Sender mode.
+#if DMX_HW_DIAGNOSTICS
+    hardware_diagnostics::begin();
+#endif
     startup_started_ms = millis();
 
     // Start the non-blocking boot chime at the same time.
@@ -785,6 +792,9 @@ dmx_set_pin(
 
     // Play the first note immediately instead of waiting for loop().
     serviceStartupSound(millis());
+#if DMX_HW_DIAGNOSTICS
+    hardware_diagnostics::capture("after_init", "startup", "none", false, nullptr);
+#endif
 }
 
 int getBtnIndex(int x, int y) {
@@ -800,6 +810,10 @@ int focus_idx = -1;
 
 void loop(void) {
     M5.update();
+
+#if DMX_HW_DIAGNOSTICS
+    hardware_diagnostics::service();
+#endif
 
     // Restore normal sound volume as soon as an 80% battery warning finishes.
     serviceSpeakerVolumeOverride();

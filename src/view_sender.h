@@ -3,8 +3,8 @@
 
 #include "common.h"
 #include "logo_sender.h"
-#include "preset_store.h"
-#include <Preferences.h>
+#include "dmx_controller.h"
+#include "hardware_diagnostics.h"
 
 // Display settings are owned by src.cpp because the global safe-wake /
 // auto-off logic lives there.
@@ -26,14 +26,19 @@ void controllerPowerOff(void);
 
 class view_sender_t : public view_t {
    public:
+    explicit view_sender_t(DmxController& controller) : controller(controller) {
+        controller.setObserver(onControllerChange, this);
+    }
+
     void setup(void) override {
 #if ESP_DMX_VERSION == 1
         dmx_set_mode(dmxPort, DMX_MODE_TX);
 #else
         dmx_set_mode(dmxPort, DMX_MODE_WRITE);
 #endif
-        memset(data, 0, sizeof(data));
-        dmx_write_packet(dmxPort, data[0], DMX_MAX_PACKET_SIZE);
+        controller.reset();
+        memset(rendered_values, 0, sizeof(rendered_values));
+        dmx_write_packet(dmxPort, controller.workingPacket(), DMX_MAX_PACKET_SIZE);
 
         M5.Display.setFont(&fonts::Font0);
         M5.Display.setTextDatum(textdatum_t::top_left);
@@ -45,13 +50,14 @@ class view_sender_t : public view_t {
             int ch             = i + 1;
             enable_channels[i] = ch;
             visible[ch]        = 1;
-            // data[0][ch] = rand();
-            // data[1][ch] = data[0][ch];
         }
         target_channel = enable_channels[target_channel_index];
 
         updateDisplay(true);
         hideUIValueSet();
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("sender_enter");
+#endif
     }
 
     bool loop(void) override {
@@ -242,7 +248,7 @@ class view_sender_t : public view_t {
                     } else if (target_channel_index != new_channel_index) {
                         target_channel_index = new_channel_index;
                         target_channel = enable_channels[new_channel_index];
-                        target_value   = data[data_idx][target_channel];
+                        target_value   = controller.channel(target_channel);
                         modified       = true;
                         ui_mode        = ui_mode_t::mode_channel_select;
                         setUIMode(ui_mode_t::mode_value_setting);
@@ -327,6 +333,7 @@ class view_sender_t : public view_t {
                     }
                     if (target_value != new_value) {
                         drawUIValueSet(new_value);
+                        target_value = new_value;
                     }
                 }
             }
@@ -352,7 +359,7 @@ class view_sender_t : public view_t {
                     int new_channel      = enable_channels[new_channel_index];
                     if (target_channel != new_channel) {
                         target_channel = new_channel;
-                        target_value   = data[data_idx][new_channel];
+                        target_value   = controller.channel(new_channel);
                         if (!scrollToTargetItem()) {
                             updateDisplay(true);
                         }
@@ -382,6 +389,7 @@ class view_sender_t : public view_t {
                         new_value = 255;
                     }
                     drawUIValueSet(new_value);
+                    target_value = new_value;
                 }
                 if (btnB_Clicked) {
                     setUIMode(ui_mode_t::mode_channel_select);
@@ -389,13 +397,11 @@ class view_sender_t : public view_t {
             }
         }
 
-        if (target_value != data[data_idx][target_channel]) {
-            data_idx                       = 1 - data_idx;
-            data[data_idx][target_channel] = target_value;
+        if (target_value != controller.channel(target_channel)) {
+            controller.setChannel(target_channel, target_value);
             writeCurrentDmxOutput();
             updateDisplay();
             modified                           = true;
-            data[1 - data_idx][target_channel] = target_value;
         }
 
         if (scroll_y_add) {
@@ -449,15 +455,19 @@ class view_sender_t : public view_t {
     static constexpr int CONSOLE_Y  = 88;
 
     // ==========================
-    // PRESET STORAGE
+    // CONTROLLER AND PRESET UI
     // ==========================
-    PresetStore presetStore;
+    DmxController& controller;
+
+    static void onControllerChange(void* context, const DmxController::Change&) {
+        auto& view = *static_cast<view_sender_t*>(context);
+        view.target_value = view.controller.channel(view.target_channel);
+    }
 
     bool preset_screen      = false;
     uint8_t selected_preset = 0;
     char preset_status[32]  = "";
 
-    size_t data_idx = 0;
     M5Canvas canvas[2];
     bool canvas_flip;
 
@@ -498,9 +508,10 @@ class view_sender_t : public view_t {
     uint16_t enable_channel_count;
 
     uint8_t visible[DMX_MAX_PACKET_SIZE];
-    uint8_t data[2][DMX_MAX_PACKET_SIZE];
+    // Last values painted into the grid; never an authoritative universe.
+    uint8_t rendered_values[DMX_MAX_PACKET_SIZE] = {};
     uint16_t target_channel_index = 0;
-    uint16_t target_channel;
+    uint16_t target_channel = 1;
     int16_t target_value                       = 0;
     int16_t scroll_y                           = 0;
     int16_t scroll_y_add                       = 0;
@@ -620,13 +631,8 @@ class view_sender_t : public view_t {
 
     static constexpr uint32_t blackout_double_tap_ms = 500;
 
-    bool blackout_active = false;
     bool blackout_tap_armed = false;
     uint32_t blackout_first_tap_ms = 0;
-
-    uint8_t blackout_packet[DMX_MAX_PACKET_SIZE] = {};
-    uint8_t blackout_restore[DMX_MAX_PACKET_SIZE] = {};
-
 
     // ==========================
     // SETTINGS SCREEN
@@ -815,13 +821,6 @@ class view_sender_t : public view_t {
     bool preset_clear_completed = false;
     uint32_t preset_clear_hold_start_ms = 0;
     int preset_clear_last_progress = -1;
-
-    // Persistent metadata mask for slots that the UI treats as cleared.
-    // This keeps compatibility with the existing PresetStore implementation.
-    // Saving/copying into a cleared slot removes its bit again.
-    bool preset_meta_loaded = false;
-    uint8_t preset_cleared_mask = 0;
-
     // Options-screen button geometry.
     static constexpr int preset_option_y = 166;
     static constexpr int preset_option_h = 54;
@@ -845,285 +844,109 @@ class view_sender_t : public view_t {
 // PRESET FUNCTIONS
 // ==========================
 
-void loadPresetMeta(void) {
-    if (preset_meta_loaded) {
-        return;
-    }
-
-    Preferences prefs;
-
-    if (prefs.begin("dmxmeta", true)) {
-        preset_cleared_mask =
-            prefs.getUChar("cleared", 0);
-
-        prefs.end();
-    } else {
-        preset_cleared_mask = 0;
-    }
-
-    preset_meta_loaded = true;
-}
-
-
-void savePresetMeta(void) {
-    Preferences prefs;
-
-    if (prefs.begin("dmxmeta", false)) {
-        prefs.putUChar(
-            "cleared",
-            preset_cleared_mask
-        );
-
-        prefs.end();
-    }
-}
-
-
 bool presetExists(uint8_t slot) {
-    if (slot >= PresetStore::PRESET_COUNT) {
-        return false;
-    }
-
-    loadPresetMeta();
-
-    uint8_t bit =
-        static_cast<uint8_t>(1U << slot);
-
-    if (preset_cleared_mask & bit) {
-        return false;
-    }
-
-    return presetStore.exists(slot);
+    return controller.presetExists(slot);
 }
 
-
-void markPresetCleared(
-    uint8_t slot,
-    bool cleared
-) {
-    if (slot >= PresetStore::PRESET_COUNT) {
-        return;
-    }
-
-    loadPresetMeta();
-
-    uint8_t bit =
-        static_cast<uint8_t>(1U << slot);
-
-    uint8_t old_mask = preset_cleared_mask;
-
-    if (cleared) {
-        preset_cleared_mask |= bit;
-    } else {
-        preset_cleared_mask &= ~bit;
-    }
-
-    if (preset_cleared_mask != old_mask) {
-        savePresetMeta();
+const char* presetError(DmxController::Result result) {
+    switch (result) {
+        case DmxController::Result::corrupt: return "PRESET CORRUPT";
+        case DmxController::Result::metadata_failed: return "PRESET METADATA FAILED";
+        case DmxController::Result::read_failed: return "PRESET READ FAILED";
+        default: return "SAVE FAILED";
     }
 }
-
 
 bool clearPreset(uint8_t slot) {
-    if (slot >= PresetStore::PRESET_COUNT) {
-        return false;
-    }
-
-    if (!presetExists(slot)) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "P%u IS ALREADY EMPTY",
-            static_cast<unsigned int>(slot + 1)
-        );
-
-        return false;
-    }
-
-    // Persistently mark this slot as empty.
-    // The existing preset bytes are left untouched for compatibility,
-    // but load/exists ignore them until this slot is saved again.
-    markPresetCleared(slot, true);
-
-    snprintf(
-        preset_status,
-        sizeof(preset_status),
-        "PRESET P%u CLEARED",
-        static_cast<unsigned int>(slot + 1)
-    );
-
-    return true;
-}
-
-
-bool copyPreset(
-    uint8_t source,
-    uint8_t target
-) {
-    if (source >= PresetStore::PRESET_COUNT ||
-        target >= PresetStore::PRESET_COUNT) {
-        return false;
-    }
-
-    if (!presetExists(source)) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "P%u IS EMPTY",
-            static_cast<unsigned int>(source + 1)
-        );
-
-        return false;
-    }
-
-    if (source == target) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "CHOOSE ANOTHER SLOT"
-        );
-
-        return false;
-    }
-
-    // Deliberately do not overwrite an occupied preset via COPY.
-    if (presetExists(target)) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "P%u OCCUPIED - CLEAR FIRST",
-            static_cast<unsigned int>(target + 1)
-        );
-
-        return false;
-    }
-
-    uint8_t packet[DMX_MAX_PACKET_SIZE] = {};
-
-    if (!presetStore.load(source, packet)) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "COPY SOURCE READ FAILED"
-        );
-
-        return false;
-    }
-
-    packet[0] = 0;
-
-    bool success =
-        presetStore.save(target, packet);
-
-    if (success) {
-        // Reactivate the target in case it had previously been cleared.
-        markPresetCleared(target, false);
-
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "P%u COPIED TO P%u",
-            static_cast<unsigned int>(source + 1),
-            static_cast<unsigned int>(target + 1)
-        );
+    if (slot >= DmxController::preset_count) return false;
+    const auto result = controller.clearPreset(slot);
+    if (result == DmxController::Result::empty) {
+        snprintf(preset_status, sizeof(preset_status), "P%u IS ALREADY EMPTY",
+                 static_cast<unsigned>(slot + 1));
+    } else if (result == DmxController::Result::ok) {
+        snprintf(preset_status, sizeof(preset_status), "PRESET P%u CLEARED",
+                 static_cast<unsigned>(slot + 1));
     } else {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "COPY FAILED"
-        );
+        snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
     }
-
-    return success;
+    return result == DmxController::Result::ok;
 }
 
+bool copyPreset(uint8_t source, uint8_t target) {
+    if (source >= DmxController::preset_count || target >= DmxController::preset_count) return false;
+    const auto result = controller.copyPreset(source, target);
+    switch (result) {
+        case DmxController::Result::ok:
+            snprintf(preset_status, sizeof(preset_status), "P%u COPIED TO P%u",
+                     static_cast<unsigned>(source + 1), static_cast<unsigned>(target + 1));
+            break;
+        case DmxController::Result::empty:
+            snprintf(preset_status, sizeof(preset_status), "P%u IS EMPTY",
+                     static_cast<unsigned>(source + 1));
+            break;
+        case DmxController::Result::same_slot:
+            snprintf(preset_status, sizeof(preset_status), "CHOOSE ANOTHER SLOT");
+            break;
+        case DmxController::Result::occupied:
+            snprintf(preset_status, sizeof(preset_status), "P%u OCCUPIED - CLEAR FIRST",
+                     static_cast<unsigned>(target + 1));
+            break;
+        case DmxController::Result::write_failed:
+            snprintf(preset_status, sizeof(preset_status), "COPY FAILED");
+            break;
+        default:
+            snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+            break;
+    }
+    return result == DmxController::Result::ok;
+}
 
 bool savePreset(uint8_t slot) {
-    if (slot >= PresetStore::PRESET_COUNT) {
-        return false;
-    }
-
-    bool success = presetStore.save(slot, data[data_idx]);
-
+    if (slot >= DmxController::preset_count) return false;
+    const auto result = controller.savePreset(slot);
+    const bool success = result == DmxController::Result::ok;
     if (success) {
-        // Saving into a previously cleared slot reactivates it.
-        markPresetCleared(slot, false);
+        snprintf(preset_status, sizeof(preset_status), "PRESET P%u SAVED",
+                 static_cast<unsigned>(slot + 1));
+    } else {
+        snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
     }
-
-    snprintf(
-        preset_status,
-        sizeof(preset_status),
-        success ? "PRESET P%u SAVED" : "SAVE FAILED",
-        static_cast<unsigned int>(slot + 1)
-    );
-
+#if DMX_HW_DIAGNOSTICS
+    recordHardwareDiagnostics("preset_save", slot + 1, success ? ESP_OK : ESP_FAIL);
+#endif
     return success;
 }
 
-
 bool loadPreset(uint8_t slot) {
-    if (slot >= PresetStore::PRESET_COUNT) {
+    if (slot >= DmxController::preset_count) return false;
+    const auto result = controller.loadPreset(slot);
+    if (result != DmxController::Result::ok) {
+        if (result == DmxController::Result::empty) {
+            snprintf(preset_status, sizeof(preset_status), "PRESET P%u IS EMPTY",
+                     static_cast<unsigned>(slot + 1));
+        } else {
+            snprintf(preset_status, sizeof(preset_status), "%s", presetError(result));
+        }
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("preset_load", slot + 1, ESP_FAIL);
+#endif
         return false;
     }
 
-    uint8_t restoredPacket[DMX_MAX_PACKET_SIZE] = {};
-
-    if (!presetExists(slot) ||
-        !presetStore.load(slot, restoredPacket)) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "PRESET P%u IS EMPTY",
-            static_cast<unsigned int>(slot + 1)
-        );
-
+    // Keep the existing driver publication point, including during blackout.
+    esp_err_t write_result = writeCurrentDmxOutput();
+    if (write_result != ESP_OK) {
+        snprintf(preset_status, sizeof(preset_status), "DMX WRITE FAILED");
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("preset_load", slot + 1, write_result);
+#endif
         return false;
     }
-
-    // DMX start code
-    restoredPacket[0] = 0;
-
-    // Copy loaded preset into both working buffers
-    memcpy(
-        data[0],
-        restoredPacket,
-        DMX_MAX_PACKET_SIZE
-    );
-
-    memcpy(
-        data[1],
-        restoredPacket,
-        DMX_MAX_PACKET_SIZE
-    );
-
-    data_idx = 0;
-
-    // Update selected channel value
-    target_value =
-        data[data_idx][target_channel];
-
-    // Send loaded preset to DMX driver.
-    // While BLACKOUT is active, the output remains zero.
-    esp_err_t result =
-        writeCurrentDmxOutput();
-
-    if (result != ESP_OK) {
-        snprintf(
-            preset_status,
-            sizeof(preset_status),
-            "DMX WRITE FAILED"
-        );
-
-        return false;
-    }
-
-    snprintf(
-        preset_status,
-        sizeof(preset_status),
-        "PRESET P%u LOADED",
-        static_cast<unsigned int>(slot + 1)
-    );
-
+    snprintf(preset_status, sizeof(preset_status), "PRESET P%u LOADED",
+             static_cast<unsigned>(slot + 1));
+#if DMX_HW_DIAGNOSTICS
+    recordHardwareDiagnostics("preset_load", slot + 1);
+#endif
     return true;
 }
 
@@ -1141,7 +964,7 @@ bool loadPreset(uint8_t slot) {
 
             case ui_mode_t::mode_value_setting:
                 // M5.Speaker.tone(880, 80);
-                target_value = data[data_idx][target_channel];
+                target_value = controller.channel(target_channel);
                 drawUIValueSet(target_value, true);
                 scrollToTargetItem();
                 break;
@@ -1190,17 +1013,9 @@ bool loadPreset(uint8_t slot) {
     // ========================================================
 
     esp_err_t writeCurrentDmxOutput(void) {
-        if (blackout_active) {
-            return dmx_write_packet(
-                dmxPort,
-                blackout_packet,
-                DMX_MAX_PACKET_SIZE
-            );
-        }
-
         return dmx_write_packet(
             dmxPort,
-            data[data_idx],
+            controller.outputPacket(),
             DMX_MAX_PACKET_SIZE
         );
     }
@@ -1267,7 +1082,7 @@ bool loadPreset(uint8_t slot) {
 
         M5.Display.setFont(&fonts::Font0);
 
-        if (blackout_active) {
+        if (controller.blackoutActive()) {
             // Active BLACKOUT is unmistakably solid red.
             M5.Display.fillRoundRect(
                 blackout_open_x,
@@ -1337,59 +1152,16 @@ bool loadPreset(uint8_t slot) {
 
 
     void toggleBlackout(void) {
-        if (!blackout_active) {
-            // Snapshot the exact current universe before forcing zero.
-            memcpy(
-                blackout_restore,
-                data[data_idx],
-                DMX_MAX_PACKET_SIZE
-            );
-
-            memset(
-                blackout_packet,
-                0,
-                sizeof(blackout_packet)
-            );
-
-            blackout_packet[0] = 0;
-
-            blackout_active = true;
-
-            dmx_write_packet(
-                dmxPort,
-                blackout_packet,
-                DMX_MAX_PACKET_SIZE
-            );
+        if (!controller.blackoutActive()) {
+            controller.setBlackout(true);
+            writeCurrentDmxOutput();
 
             if (!M5.Speaker.isPlaying()) {
                 M5.Speaker.tone(700, 180);
             }
         } else {
-            // Restore the exact pre-blackout universe.
-            memcpy(
-                data[0],
-                blackout_restore,
-                DMX_MAX_PACKET_SIZE
-            );
-
-            memcpy(
-                data[1],
-                blackout_restore,
-                DMX_MAX_PACKET_SIZE
-            );
-
-            data_idx = 0;
-
-            target_value =
-                data[data_idx][target_channel];
-
-            blackout_active = false;
-
-            dmx_write_packet(
-                dmxPort,
-                data[data_idx],
-                DMX_MAX_PACKET_SIZE
-            );
+            controller.setBlackout(false);
+            writeCurrentDmxOutput();
 
             updateDisplay(true);
 
@@ -2316,6 +2088,9 @@ bool loadPreset(uint8_t slot) {
 
         updateDisplay(true);
         hideUIValueSet();
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("return_main_settings");
+#endif
     }
 
 
@@ -3274,8 +3049,6 @@ bool loadPreset(uint8_t slot) {
         preset_clear_hold_start_ms = 0;
         preset_clear_last_progress = -1;
 
-        loadPresetMeta();
-
         drawPresetScreen();
     }
 
@@ -3304,10 +3077,13 @@ bool loadPreset(uint8_t slot) {
 
         // Restore normal DMX channel-select interface.
         ui_mode = ui_mode_t::mode_channel_select;
-        target_value = data[data_idx][target_channel];
+        target_value = controller.channel(target_channel);
 
         updateDisplay(true);
         hideUIValueSet();
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("return_main_presets");
+#endif
     }
 
     void drawPresetScreen(void) {
@@ -3324,7 +3100,7 @@ bool loadPreset(uint8_t slot) {
         }
 
         // P1-P8, arranged as 4 columns x 2 rows.
-        for (uint8_t slot = 0; slot < PresetStore::PRESET_COUNT; ++slot) {
+        for (uint8_t slot = 0; slot < DmxController::preset_count; ++slot) {
             int col = slot % 4;
             int row = slot / 4;
 
@@ -3459,7 +3235,7 @@ bool loadPreset(uint8_t slot) {
 
     int getPresetSlotAt(int touch_x, int touch_y) {
         for (uint8_t slot = 0;
-             slot < PresetStore::PRESET_COUNT;
+             slot < DmxController::preset_count;
              ++slot) {
 
             int col = slot % 4;
@@ -3670,15 +3446,16 @@ bool loadPreset(uint8_t slot) {
                 selected_preset =
                     preset_slot_hold_slot;
 
-                if (!presetExists(selected_preset)) {
-                    snprintf(
-                        preset_status,
-                        sizeof(preset_status),
-                        "P%u IS EMPTY",
-                        static_cast<unsigned int>(
-                            selected_preset + 1
-                        )
-                    );
+                const auto state = controller.presetState(selected_preset);
+                if (state != DmxPresetStorage::SlotState::valid) {
+                    if (state == DmxPresetStorage::SlotState::missing) {
+                        snprintf(preset_status, sizeof(preset_status), "P%u IS EMPTY",
+                                 static_cast<unsigned>(selected_preset + 1));
+                    } else {
+                        snprintf(preset_status, sizeof(preset_status), "%s",
+                                 state == DmxPresetStorage::SlotState::corrupt
+                                     ? "PRESET CORRUPT" : "PRESET READ FAILED");
+                    }
 
                     drawPresetScreen();
                     return true;
@@ -3797,7 +3574,9 @@ bool loadPreset(uint8_t slot) {
                 bool success =
                     clearPreset(cleared_slot);
 
+#if !DMX_HW_DIAGNOSTICS
                 Serial.println(preset_status);
+#endif
 
                 if (success &&
                     !M5.Speaker.isPlaying()) {
@@ -3977,7 +3756,9 @@ bool loadPreset(uint8_t slot) {
                 preset_save_completed = true;
 
                 savePreset(selected_preset);
+#if !DMX_HW_DIAGNOSTICS
                 Serial.println(preset_status);
+#endif
 
                 // Confirmation sound, but do not cut an existing sound.
                 if (!M5.Speaker.isPlaying()) {
@@ -4017,7 +3798,7 @@ bool loadPreset(uint8_t slot) {
         // ------------------------------------------------------
         // Select P1-P8
         // ------------------------------------------------------
-        for (uint8_t slot = 0; slot < PresetStore::PRESET_COUNT; ++slot) {
+        for (uint8_t slot = 0; slot < DmxController::preset_count; ++slot) {
             int col = slot % 4;
             int row = slot / 4;
 
@@ -4083,7 +3864,9 @@ bool loadPreset(uint8_t slot) {
 
                 loadPreset(selected_preset);
 
+#if !DMX_HW_DIAGNOSTICS
                 Serial.println(preset_status);
+#endif
 
                 drawPresetScreen();
                 return;
@@ -4158,6 +3941,34 @@ bool loadPreset(uint8_t slot) {
         }
     }
 
+#if DMX_HW_DIAGNOSTICS
+    bool diagnostics_settings_seen = false;
+    bool diagnostics_precision_seen = false;
+    bool diagnostics_keypad_seen = false;
+    bool diagnostics_allocation_failure_seen = false;
+
+    void recordHardwareDiagnostics(const char* event, uint8_t preset = 0,
+                                   int result = ESP_OK) {
+        const char* owner = "none";
+        switch (active_fullscreen_page) {
+            case fullscreen_page_settings: owner = "settings"; break;
+            case fullscreen_page_precision: owner = "precision"; break;
+            case fullscreen_page_keypad: owner = "keypad"; break;
+            case fullscreen_page_preset: owner = "presets"; break;
+            default: break;
+        }
+        const char* screen = owner;
+        if (active_fullscreen_page == fullscreen_page_none) {
+            screen = ui_mode == ui_mode_t::mode_value_setting ? "main_value" : "main";
+        } else if (preset_options_screen) {
+            screen = "preset_options";
+        }
+        hardware_diagnostics::capture(event, screen, owner, fullscreen_canvas_ready,
+                                      fullscreen_canvas_buffer, preset, result,
+                                      controller.blackoutActive());
+    }
+#endif
+
     M5Canvas* getFullscreenCanvas(
         fullscreen_page_t owner,
         const char* label
@@ -4167,8 +3978,10 @@ bool loadPreset(uint8_t slot) {
         }
 
         if (!fullscreen_canvas_ready) {
+#if !DMX_HW_DIAGNOSTICS
             uint32_t heap_before = ESP.getFreeHeap();
             uint32_t psram_before = ESP.getFreePsram();
+#endif
 
             fullscreen_canvas.setColorDepth(16);
             fullscreen_canvas_buffer = fullscreen_canvas.createSprite(
@@ -4177,6 +3990,7 @@ bool loadPreset(uint8_t slot) {
             );
             fullscreen_canvas_ready = fullscreen_canvas_buffer != nullptr;
 
+#if !DMX_HW_DIAGNOSTICS
             Serial.printf(
                 "fullscreen_canvas create for %s: buffer=%p heap %lu->%lu psram %lu->%lu active=%d settings=%d precision=%d keypad=%d preset=%d\n",
                 label,
@@ -4191,9 +4005,16 @@ bool loadPreset(uint8_t slot) {
                 precision_keypad_screen ? 1 : 0,
                 preset_screen ? 1 : 0
             );
+#endif
         }
 
         if (!fullscreen_canvas_ready) {
+#if DMX_HW_DIAGNOSTICS
+            if (!diagnostics_allocation_failure_seen) {
+                diagnostics_allocation_failure_seen = true;
+                recordHardwareDiagnostics("canvas_alloc_failed", 0, ESP_ERR_NO_MEM);
+            }
+#endif
             return nullptr;
         }
 
@@ -4208,6 +4029,7 @@ bool loadPreset(uint8_t slot) {
             return;
         }
 
+#if !DMX_HW_DIAGNOSTICS
         Serial.printf(
             "fullscreen_canvas push %s: buffer=%p active=%d settings=%d precision=%d keypad=%d preset=%d\n",
             label,
@@ -4218,29 +4040,36 @@ bool loadPreset(uint8_t slot) {
             precision_keypad_screen ? 1 : 0,
             preset_screen ? 1 : 0
         );
+#endif
 
         M5.Display.startWrite();
         fullscreen_canvas.pushSprite(&M5.Display, 0, 0);
         M5.Display.endWrite();
+#if DMX_HW_DIAGNOSTICS
+        if (owner == fullscreen_page_settings && !diagnostics_settings_seen) {
+            diagnostics_settings_seen = true;
+            recordHardwareDiagnostics("settings_first");
+        } else if (owner == fullscreen_page_precision && !diagnostics_precision_seen) {
+            diagnostics_precision_seen = true;
+            recordHardwareDiagnostics("precision_first");
+        } else if (owner == fullscreen_page_keypad && !diagnostics_keypad_seen) {
+            diagnostics_keypad_seen = true;
+            recordHardwareDiagnostics("keypad_first");
+        }
+#endif
     }
 
     void applyLiveDmxValue(int value) {
         int new_value = clampDmxValue(value);
 
         if (new_value == target_value &&
-            data[data_idx][target_channel] == new_value) {
+            controller.channel(target_channel) == new_value) {
             return;
         }
 
-        target_value = new_value;
-        data_idx = 1 - data_idx;
-        data[data_idx][target_channel] =
-            static_cast<uint8_t>(target_value);
-
+        controller.setChannel(target_channel, new_value);
+        target_value = controller.channel(target_channel);
         writeCurrentDmxOutput();
-
-        data[1 - data_idx][target_channel] =
-            static_cast<uint8_t>(target_value);
 
         visible[target_channel] = true;
     }
@@ -4543,7 +4372,7 @@ bool loadPreset(uint8_t slot) {
         setActiveFullscreenPage(fullscreen_page_precision);
         precision_editor_screen = true;
         precision_consume_release = true;
-        target_value = data[data_idx][target_channel];
+        target_value = controller.channel(target_channel);
         drawPrecisionEditor();
     }
 
@@ -4554,6 +4383,9 @@ bool loadPreset(uint8_t slot) {
         M5.Display.fillScreen(TFT_BLACK);
         updateDisplay(true);
         drawUIValueSet(target_value, true);
+#if DMX_HW_DIAGNOSTICS
+        recordHardwareDiagnostics("return_main_precision");
+#endif
     }
 
     void openPrecisionKeypad(void) {
@@ -4883,7 +4715,6 @@ bool loadPreset(uint8_t slot) {
             M5.Display.setFont(&fonts::Font2);
             snprintf(str, sizeof(str), "CH %u", target_channel);
             M5.Display.drawString(str, text_x, text_y);
-            target_value = new_value;
         }
 
         fillBar(&M5.Display, slider_x, py, slider_w, y - py, target_channel);
@@ -4929,7 +4760,7 @@ bool loadPreset(uint8_t slot) {
         size_t drawcount = 0;
         for (int ch = 1; ch < DMX_MAX_PACKET_SIZE; ++ch) {
             if (!visible[ch]) {
-                if (data[0][ch] == data[1][ch]) {
+                if (controller.channel(ch) == rendered_values[ch]) {
                     continue;
                 }
                 visible[ch] = true;
@@ -4948,8 +4779,8 @@ bool loadPreset(uint8_t slot) {
             uint32_t current_data = 0;
             uint32_t prev_data    = 0;
             if (ch < DMX_MAX_PACKET_SIZE) {
-                current_data = data[data_idx][ch];
-                prev_data    = data[!data_idx][ch];
+                current_data = controller.channel(ch);
+                prev_data    = rendered_values[ch];
             }
             if (full_redraw || current_data != prev_data) {
                 int y = (idx / channel_item_cols) * channel_item_height;
@@ -4996,6 +4827,9 @@ bool loadPreset(uint8_t slot) {
                                   color);
                     }
                     c.pushSprite(&M5.Display, x, y);
+                    if (ch < DMX_MAX_PACKET_SIZE) {
+                        rendered_values[ch] = static_cast<uint8_t>(current_data);
+                    }
                 }
             }
             ++idx;
