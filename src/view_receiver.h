@@ -1,15 +1,13 @@
 #pragma once
 
 #include "common.h"
+#include "dmx_transport.h"
 
 class view_receiver_t : public view_t {
    public:
+    explicit view_receiver_t(DmxTransport& transport) : transport(transport) {}
     void setup(void) override {
-#if ESP_DMX_VERSION == 1
-        dmx_set_mode(dmxPort, DMX_MODE_RX);
-#else
-        dmx_set_mode(dmxPort, DMX_MODE_READ);
-#endif
+        transport.requestSender(false);
         memset(data, 0, sizeof(data));
 
         M5.Display.setFont(&fonts::Font0);
@@ -28,6 +26,7 @@ class view_receiver_t : public view_t {
     }
 
     bool loop(void) override {
+        if (!transport.receiverReady()) return true;
         bool change_view = M5.BtnB.wasClicked();
         if (!change_view) {
             auto td     = M5.Touch.getDetail();
@@ -65,6 +64,7 @@ class view_receiver_t : public view_t {
     }
 
    private:
+    DmxTransport& transport;
     static constexpr int BAR_HEIGHT = 128;
     static constexpr int CONSOLE_Y  = 152;
 

@@ -135,7 +135,7 @@ CommandDispatcher::Result CommandDispatcher::apply(const ControllerCommand& c, u
          (changed && (c.type == CommandType::set_channel || c.type == CommandType::adjust_channel ||
                       c.type == CommandType::set_channels || c.type == CommandType::set_blackout)));
     if (publish && publisher_) {
-        result.transport_result = publisher_(publisher_context_);
+        result.transport_result = publisher_(publisher_context_, c);
         if (result.transport_result != 0) result.status = CommandStatus::transport_error;
     }
     return result;
@@ -158,6 +158,9 @@ size_t CommandDispatcher::process(size_t budget) {
     size_t done = 0;
     if (budget > capacity) budget = capacity;
     while (count_ && done < budget) {
+        const auto& command = queue_[head_].command;
+        if (validate(command) == CommandStatus::accepted && admission_ &&
+            !admission_(admission_context_, command)) break;
         processOne(false);
         ++done;
     }
@@ -173,6 +176,11 @@ CommandDispatcher::Result CommandDispatcher::executeLocal(const ControllerComman
     // Preserve FIFO barriers. At most 32 older commands plus this local command;
     // no waiting, coalescing, heap allocation, or second application path.
     process(capacity);
+    if (count_ || (admission_ && !admission_(admission_context_, command))) {
+        result.status = CommandStatus::busy;
+        result.revision_after = controller_.revision();
+        return result;
+    }
     const Submission admission = submit(command);
     if (admission.status != CommandStatus::accepted) {
         result.status = admission.status;

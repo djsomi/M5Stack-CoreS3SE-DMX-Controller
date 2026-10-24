@@ -5,6 +5,7 @@
 #include "logo_sender.h"
 #include "dmx_controller.h"
 #include "command_dispatcher.h"
+#include "dmx_transport.h"
 #include "hardware_diagnostics.h"
 
 // Display settings are owned by src.cpp because the global safe-wake /
@@ -27,22 +28,19 @@ void controllerPowerOff(void);
 
 class view_sender_t : public view_t {
    public:
-    view_sender_t(DmxController& controller, CommandDispatcher& dispatcher)
-        : controller(controller), dispatcher(dispatcher) {
+    view_sender_t(DmxController& controller, CommandDispatcher& dispatcher, DmxTransport& transport)
+        : controller(controller), dispatcher(dispatcher), transport(transport) {
         controller.setObserver(onControllerChange, this);
         dispatcher.setPublisher(publishDmx, this);
+        dispatcher.setAdmission(admitDmx, this);
     }
 
     void setup(void) override {
-#if ESP_DMX_VERSION == 1
-        dmx_set_mode(dmxPort, DMX_MODE_TX);
-#else
-        dmx_set_mode(dmxPort, DMX_MODE_WRITE);
-#endif
+        transport.requestSender(true);
         dispatcher.executeLocal(ControllerCommand::resetSenderCommand());
         controller_redraw_pending = false;
         memset(rendered_values, 0, sizeof(rendered_values));
-        dmx_write_packet(dmxPort, controller.workingPacket(), DMX_MAX_PACKET_SIZE);
+        transport.stage(controller.outputPacket(), DMX_MAX_PACKET_SIZE);
 
         M5.Display.setFont(&fonts::Font0);
         M5.Display.setTextDatum(textdatum_t::top_left);
@@ -80,17 +78,7 @@ class view_sender_t : public view_t {
     }
 
     bool loop(void) override {
-#if ESP_DMX_VERSION == 1
-        if (ESP_ERR_TIMEOUT != dmx_wait_tx_done(dmxPort, 0)) {
-            dmx_tx_packet(dmxPort);
-            dmx_last_activity_ms = millis();
-        }
-#else
-        if (ESP_ERR_TIMEOUT != dmx_wait_send_done(dmxPort, 0)) {
-            dmx_send_packet(dmxPort, DMX_MAX_PACKET_SIZE);
-            dmx_last_activity_ms = millis();
-        }
-#endif
+        serviceDmxOutput();
 
         // Keep battery ETA/warnings active in every Sender UI screen,
         // including the full-screen preset manager.
@@ -450,10 +438,15 @@ class view_sender_t : public view_t {
     }
 
     void close(void) override {
+        transport.requestSender(false);
         for (auto& tmp : canvas) {
             tmp.deleteSprite();
         }
         fullscreen_canvas.deleteSprite();
+    }
+
+    void serviceDmxOutput() {
+        if (transport.serviceTx(esp_timer_get_time())) dmx_last_activity_ms = millis();
     }
 
 
@@ -466,10 +459,27 @@ class view_sender_t : public view_t {
     // ==========================
     DmxController& controller;
     CommandDispatcher& dispatcher;
+    DmxTransport& transport;
     bool controller_redraw_pending = false;
 
-    static int publishDmx(void* context) {
-        return static_cast<view_sender_t*>(context)->writeCurrentDmxOutput();
+    static int publishDmx(void* context, const ControllerCommand& command) {
+        return static_cast<view_sender_t*>(context)->writeCurrentDmxOutput(
+            command.type == CommandType::set_blackout);
+    }
+
+    static bool admitDmx(void* context, const ControllerCommand& command) {
+        auto& view = *static_cast<view_sender_t*>(context);
+        const bool edge = command.type == CommandType::set_blackout &&
+            (command.payload.blackout != 0) != view.controller.blackoutActive();
+        switch (command.type) {
+            case CommandType::set_blackout:
+            case CommandType::set_channel:
+            case CommandType::adjust_channel:
+            case CommandType::set_channels:
+            case CommandType::load_preset:
+                return view.transport.canStage(edge);
+            default: return true;
+        }
     }
 
     static void onControllerChange(void* context, const DmxController::Change&) {
@@ -1050,12 +1060,9 @@ bool loadPreset(uint8_t slot) {
     // DMX OUTPUT / BLACKOUT
     // ========================================================
 
-    esp_err_t writeCurrentDmxOutput(void) {
-        return dmx_write_packet(
-            dmxPort,
-            controller.outputPacket(),
-            DMX_MAX_PACKET_SIZE
-        );
+    esp_err_t writeCurrentDmxOutput(bool barrier) {
+        return transport.stage(controller.outputPacket(), DMX_MAX_PACKET_SIZE, barrier)
+            ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
 
 
@@ -1624,17 +1631,13 @@ bool loadPreset(uint8_t slot) {
 
 
     void sendDmxZeroBeforePowerAction(void) {
-        // Send several all-zero DMX frames before restart/power-off so
-        // fixtures are not intentionally left at the last active values.
+        // Legacy staging/wait sequence, NOT a guarantee of three zero frames.
+        // Do not add new starts or change power-action timing in this milestone.
         uint8_t zero_packet[DMX_MAX_PACKET_SIZE] = {};
         zero_packet[0] = 0;
 
         for (int i = 0; i < 3; ++i) {
-            dmx_write_packet(
-                dmxPort,
-                zero_packet,
-                DMX_MAX_PACKET_SIZE
-            );
+            transport.stage(zero_packet, DMX_MAX_PACKET_SIZE);
 
 #if ESP_DMX_VERSION == 1
             dmx_wait_tx_done(

@@ -54,7 +54,7 @@ struct Harness {
             CHECK(h.controller.channel(512) == 255);
         }
     }
-    static int publish(void* context) {
+    static int publish(void* context, const Command&) {
         auto& h = *static_cast<Harness*>(context);
         CHECK(h.controller.workingPacket()[0] == 0);
         CHECK(h.controller.outputPacket()[0] == 0);

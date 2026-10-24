@@ -2,6 +2,7 @@
 #include "common.h"
 #include "dmx_hardware.h"
 #include "hardware_diagnostics.h"
+#include "dmx_transport_esp_dmx.h"
 #include <esp_system.h>
 #include "view_receiver.h"
 #include "view_sender.h"
@@ -20,11 +21,13 @@ enum scene_mode_t {
 static scene_mode_t scene_mode = mode_startup;
 static ui_button_t btns[2]     = {{0, 200, 120, 40, "Receiver"},
                                   {200, 200, 120, 40, "Sender"}};
-static view_receiver_t view_receiver;
+static EspDmxTransportDriver transport_driver(dmxPort);
+static DmxTransport dmx_transport(transport_driver);
+static view_receiver_t view_receiver(dmx_transport);
 static PresetStore preset_store;
 static DmxController dmx_controller(preset_store);
 static CommandDispatcher command_dispatcher(dmx_controller);
-static view_sender_t view_sender(dmx_controller, command_dispatcher);
+static view_sender_t view_sender(dmx_controller, command_dispatcher, dmx_transport);
 
 
 // ============================================================
@@ -300,15 +303,23 @@ static void serviceDmxDuringWakeTouch(void) {
         return;
     }
 
-#if ESP_DMX_VERSION == 1
-    if (ESP_ERR_TIMEOUT != dmx_wait_tx_done(dmxPort, 0)) {
-        dmx_tx_packet(dmxPort);
+    view_sender.serviceDmxOutput();
+}
+
+static void serviceDmxTransportDiagnostics() {
+    static uint32_t reported_errors = 0;
+    const auto& health = dmx_transport.health();
+    if (health.errors == reported_errors) return;
+    char message[80];
+    const int length = snprintf(message, sizeof(message),
+        "[DMX TX] errors=%lu result=%u phase=%u stopped=%u\n",
+        static_cast<unsigned long>(health.errors), unsigned(health.last_error),
+        unsigned(health.driver_phase), unsigned(health.fault_stopped));
+    // Best-effort error-only output. Never initialize USB or wait for a host.
+    if (length > 0 && length < int(sizeof(message)) && Serial.availableForWrite() >= length) {
+        Serial.write(reinterpret_cast<const uint8_t*>(message), length);
+        reported_errors = health.errors;
     }
-#else
-    if (ESP_ERR_TIMEOUT != dmx_wait_send_done(dmxPort, 0)) {
-        dmx_send_packet(dmxPort, DMX_MAX_PACKET_SIZE);
-    }
-#endif
 }
 
 
@@ -816,6 +827,8 @@ void loop(void) {
     M5.update();
 
     // Owner-task servicing precedes every page/startup/wake early return.
+    dmx_transport.poll(esp_timer_get_time());
+    serviceDmxTransportDiagnostics();
     command_dispatcher.setSenderActive(scene_mode == mode_sender);
     command_dispatcher.process();
     if (scene_mode == mode_sender) view_sender.serviceControllerChanges();

@@ -21,7 +21,8 @@ class CommandDispatcher {
         uint64_t revision_after = 0;
         int transport_result = 0;
     };
-    using Publisher = int (*)(void*);
+    using Publisher = int (*)(void*, const ControllerCommand&);
+    using Admission = bool (*)(void*, const ControllerCommand&);
     using Completion = void (*)(void*, const ControllerCommand&, const Result&);
 
     explicit CommandDispatcher(DmxController& controller) : controller_(controller) {}
@@ -29,6 +30,7 @@ class CommandDispatcher {
     CommandDispatcher& operator=(const CommandDispatcher&) = delete;
     void setSenderActive(bool active) { sender_active_ = active; }
     void setPublisher(Publisher publisher, void* context);
+    void setAdmission(Admission admission, void* context) { admission_ = admission; admission_context_ = context; }
     void setCompletion(Completion completion, void* context);
     Submission submit(const ControllerCommand& command);
     size_t process(size_t budget = default_budget);
@@ -55,6 +57,8 @@ class CommandDispatcher {
     bool local_execution_ = false;
     Publisher publisher_ = nullptr;
     void* publisher_context_ = nullptr;
+    Admission admission_ = nullptr;
+    void* admission_context_ = nullptr;
     Completion completion_ = nullptr;
     void* completion_context_ = nullptr;
 };

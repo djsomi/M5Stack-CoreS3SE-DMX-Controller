@@ -44,7 +44,6 @@ for start, end in [
     ("    void handlePrecisionRepeat(", "    void handlePrecisionEditorTouch("),
     ("    void handlePrecisionEditorTouch(", "    void hideUIValueSet("),
     ("    void updateBatteryMonitor(", "    void formatBatteryRuntime("),
-    ("    void sendDmxZeroBeforePowerAction(", "    void updateSettingsPowerArmState("),
     ("    void drawSettingsScreen(", "    void openSettingsScreen("),
     ("    void drawUIValueSet(", "    uint32_t getBarColor("),
     ("    M5Canvas* getFullscreenCanvas(", "    void pushFullscreenCanvas("),
@@ -52,19 +51,23 @@ for start, end in [
     assert start in view and end in view, f"Missing guard boundary: {start}"
     assert section(view, start, end) == section(old_view, start, end), f"Unexpected UI/power change: {start}"
 
-for start, end in [
-    ("static void serviceDmxDuringWakeTouch(", "static void serviceStartupSound("),
-]:
-    assert section(app, start, end) == section(baseline("src/src.cpp"), start, end)
+assert "view_sender.serviceDmxOutput();" in section(app, "static void serviceDmxDuringWakeTouch(", "static void serviceDmxTransportDiagnostics(")
+assert loop.index("dmx_transport.poll(") < loop.index("command_dispatcher.process();")
+assert view.index("serviceDmxOutput();", view.index("bool loop(void) override")) < view.index("if (settings_screen)", view.index("bool loop(void) override"))
+shutdown = section(view, "    void sendDmxZeroBeforePowerAction(", "    void updateSettingsPowerArmState(")
+assert "for (int i = 0; i < 3; ++i)" in shutdown
+assert "transport.stage(zero_packet, DMX_MAX_PACKET_SIZE);" in shutdown
+assert "dmx_wait_send_done(" in shutdown and "50" in shutdown and "delay(10);" in shutdown
+assert "dmx_send_packet" not in shutdown and "serviceTx" not in shutdown
 
-for path in ["platformio.ini", "include/dmx_hardware.h", "src/preset_store.h",
+for path in ["include/dmx_hardware.h", "src/preset_store.h",
              "include/hardware_diagnostics.h", "src/hardware_diagnostics.cpp",
              "scripts/patch_esp_dmx_v202.py"]:
     assert (root / path).read_text(encoding="utf-8") == baseline(path), f"Unexpected protected-file change: {path}"
 
-send_start = "#if ESP_DMX_VERSION == 1"
-send_end = "// Keep battery ETA/warnings active"
-assert section(view.split("    bool loop(void) override", 1)[1], send_start, send_end) == section(
-    old_view.split("    bool loop(void) override", 1)[1], send_start, send_end)
+config = (root / "platformio.ini").read_text(encoding="utf-8")
+assert config.replace("    pre:scripts/patch_esp_dmx_tx_ownership.py\n", "") == baseline("platformio.ini")
+assert "dmx_write_packet(" not in app + view
+assert "dmx_send_packet(" not in app + view
 print("PASS application-loop service before page/wake returns; mode gates; no mutation bypass")
-print("PASS unchanged transport service, shutdown sequence, critical UI geometry, holds, battery and canvas")
+print("PASS scoped transport integration, legacy shutdown limitation, unchanged critical UI, holds, battery, canvas, USB and S3 patch")
