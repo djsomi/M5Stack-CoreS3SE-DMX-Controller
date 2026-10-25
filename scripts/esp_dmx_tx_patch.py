@@ -17,7 +17,7 @@ READ_ONLY = {
 AFTER = {
     "esp_dmx.c": "18aa8e6ad3653a5c944cdeb5aaf1f5aba76c03531debfeba353d071f9d40d2c8",
     "impl/driver.h": "f6b70348340143a66bd8d91a23297191eba01cef7e5eef4987d0962b39e5ddcc",
-    "impl/intr_handlers.h": "e9d9218a6a9eed6b06a086a916cfe24dee5e0eb6422050d423e41b0957f12aa4",
+    "impl/intr_handlers.h": "bf70e7f284012c5b346386402ecbf92b646f7a9eb93be9b36f1157b5de814441",
 }
 COPIES = {"dmx_tx_contract.h": "dmx_tx_contract.h",
           "impl/tx_core.h": "tx_core.h", "impl/tx_service.h": "tx_service.h"}
@@ -26,7 +26,7 @@ ASSET_SHA256 = {
     "tx_api.inc": "23d8c9c404b4ddef24af970503545ed487965136715f076c10d2de5c25b903e4",
     "tx_core.h": "0172fb43efbf1020defd97b7adefd78c8931d9339c837b332752a598d7842c01",
     "tx_mode.inc": "717b060d84b514d2d065c0273345e794e6f9bbe277ba9b3ffff190d3cfe55caa",
-    "tx_service.h": "c910081236a4ada269ee79caebdc533e26453c7624edf02d36eadf121378a004",
+    "tx_service.h": "9ab0ca6c877c0684c7398a6ef9a5687aa53094a67b2303d04d9558cb740d3030",
 }
 
 
@@ -93,8 +93,10 @@ def transform(name, text):
         dmx_hal_disable_intr_mask(&dmx_context[dmx_num].hal, DMX_INTR_TX_ALL);
         dmx_hal_clr_intsts_mask(&dmx_context[dmx_num].hal, DMX_INTR_TX_ALL);
       } else {
+        /* Plain DMX: a delivered/stale RX/TX compare flag is not TX failure.
+           It never qualifies completion; progress/raw DONE/idle still do that. */
         if (uart_intr_status & UART_INTR_RS485_CLASH)
-          dmx_tx_fail(&p_dmx->tx, DMX_TX_COLLISION, now);
+          dmx_hal_clr_intsts_mask(&dmx_context[dmx_num].hal, UART_INTR_RS485_CLASH);
         if (uart_intr_status & UART_INTR_TXFIFO_EMPTY)
           dmx_tx_fill_locked(p_dmx, now);
         dmx_tx_poll_locked(p_dmx, now);

@@ -97,6 +97,7 @@ static void underrunAndPrematureDone() {
         Fixture f;
         f.start(11);
         f.object.tx.queued = queued;
+        hw.int_raw.val |= UART_INTR_RS485_CLASH;
         f.drain(128, false);
         const unsigned reads = hw.snapshot_reads;
         f.irq();
@@ -111,6 +112,7 @@ static void underrunAndPrematureDone() {
     f.object.tx.queued = 512;
     f.drain(121, false);
     hw.inject_done_in_write = true;
+    hw.inject_clash_in_write = true;
     f.irq();
     CHECK(f.object.tx.queued == 513 && f.object.tx.result == DMX_TX_UNDERRUN);
     CHECK(f.object.tx.phase == DMX_TX_RETIRING);
@@ -130,6 +132,7 @@ static void underrunAndPrematureDone() {
 static void timeoutsAndFailedRetirement() {
     Fixture f;
     f.start(29);
+    hw.int_raw.val |= UART_INTR_RS485_CLASH;
     hw.now += 4 * f.object.tx.frame_us;
     dmx_tx_status_t s;
     CHECK(dmx_tx_poll(1, &s) == ESP_OK);
@@ -365,7 +368,191 @@ static void retryModesAndShutdown() {
     puts("PASS bounded retry exhaustion, barrier retention, mode retirement, legacy shutdown limitation");
 }
 
+
+static void finishWithClashes(Fixture& f) {
+    uint8_t frozen[513];memcpy(frozen,f.active,513);
+    for(int i=0;i<1024 && f.object.tx.phase!=DMX_TX_READY;++i) {
+        // Model repeated compare indications, including forced delivery from
+        // stale/unexpected enables and simultaneous refill/final-DONE delivery.
+        hw.int_raw.val|=UART_INTR_RS485_CLASH;
+        if(i%17==0) hw.enabled|=UART_INTR_RS485_CLASH;
+        f.drain(1);
+        dmx_tx_status_t status;
+        CHECK(dmx_tx_poll(1,&status)==ESP_OK);
+        CHECK(!(hw.enabled & UART_INTR_RS485_CLASH));
+        CHECK(status.tx.queued<=513 && memcmp(frozen,f.active,513)==0);
+        CHECK(status.tx.result==DMX_TX_PENDING || status.tx.result==DMX_TX_COMPLETE);
+    }
+    CHECK(f.object.tx.phase==DMX_TX_READY && f.object.tx.result==DMX_TX_COMPLETE);
+    CHECK(f.object.tx.queued==513 && f.object.tx.done_seen);
+}
+static void clashInitialFillAndNoFalseCompletion() {
+    Fixture f;
+    hw.inject_clash_in_write=true;
+    f.start(83);
+    CHECK(f.object.tx.phase==DMX_TX_FEEDING && f.object.tx.queued==128);
+    CHECK(f.object.tx.result==DMX_TX_PENDING && (hw.int_raw.val & UART_INTR_RS485_CLASH));
+    CHECK(!(hw.enabled & UART_INTR_RS485_CLASH));
+    const auto reads=hw.snapshot_reads;
+    for(int i=0;i<100;++i) {
+        hw.enabled|=UART_INTR_RS485_CLASH; // Exercise the defensive ACK branch.
+        hw.int_raw.val|=UART_INTR_RS485_CLASH;
+        f.irq();
+        CHECK(f.object.tx.phase==DMX_TX_FEEDING && f.object.tx.result==DMX_TX_PENDING);
+        CHECK(!(hw.int_raw.val & UART_INTR_RS485_CLASH));
+        CHECK(!(hw.enabled & UART_INTR_RS485_CLASH));
+    }
+    CHECK(hw.snapshot_reads==reads && hw.wire.empty());
+    CHECK(dmx_wait_send_done(1,0)==ESP_ERR_TIMEOUT);
+    CHECK(dmx_tx_start(1,513,nullptr)!=ESP_OK);
+    finishWithClashes(f);
+    CHECK(hw.wire.size()==513 && hw.wire[0]==0);
+    for(size_t i=1;i<513;++i) CHECK(hw.wire[i]==83);
+    puts("PASS CLASH during first FIFO fill/repeated delivery: no false fault, refill, completion or snapshot mutation");
+}
+static void clashNoReceiverAndBlackout() {
+    Integration h;
+    h.command(setValue(37));
+    for(int frame=0;frame<100;++frame) {
+        hw.inject_clash_in_write=true;
+        CHECK(h.transport.serviceTx(hw.now));
+        if(frame==0) for(int value=38;value<=49;++value) h.command(setValue(value));
+        finishWithClashes(h.f);
+        h.transport.poll(hw.now);
+        const size_t offset=frame*513;
+        CHECK(hw.wire[offset]==0);
+        for(size_t ch=1;ch<513;++ch)
+            CHECK(hw.wire[offset+ch]==(ch==21 ? (frame==0 ? 37 : 49) : 0));
+    }
+    CHECK(!h.transport.health().errors && !h.transport.health().fault_stopped);
+    CHECK(h.transport.health().completed==h.transport.health().requested);
+    h.command(Command::blackoutCommand(true));
+    h.command(Command::blackoutCommand(false));
+    CHECK(h.transport.pendingBarriers()==2);
+    for(int edge=0;edge<2;++edge) {
+        CHECK(h.transport.serviceTx(hw.now));
+        finishWithClashes(h.f);h.transport.poll(hw.now);
+        const size_t offset=(100+edge)*513;
+        CHECK(hw.wire[offset]==0);
+        for(size_t ch=1;ch<513;++ch)
+            CHECK(hw.wire[offset+ch]==(edge==1 && ch==21 ? 49 : 0));
+        CHECK(h.transport.pendingBarriers()==size_t(1-edge));
+    }
+    CHECK(!h.transport.health().errors && !h.transport.health().fault_stopped);
+    puts("PASS no-receiver startup/reconnect model: 102 coherent full frames under repeated CLASH, final value and ordered blackout ON/OFF");
+}
+static void clashReceiverIsolation() {
+    Fixture f;
+    f.start(58);f.finish();
+    CHECK(dmx_set_mode(1,DMX_MODE_READ)==ESP_OK);
+    const auto before=f.object.tx;
+    const auto reads=hw.snapshot_reads;
+    uint8_t frozen[513];memcpy(frozen,f.active,513);
+    hw.enabled|=UART_INTR_RS485_CLASH|UART_INTR_TX_DONE;
+    hw.int_raw.val|=UART_INTR_RS485_CLASH|UART_INTR_TX_DONE|UART_INTR_BRK_DET;
+    f.irq();
+    CHECK(f.object.mode==DMX_MODE_READ && memcmp(&before,&f.object.tx,sizeof(before))==0);
+    CHECK(hw.snapshot_reads==reads && memcmp(frozen,f.active,513)==0);
+    CHECK((hw.enabled & DMX_INTR_RX_ALL)==DMX_INTR_RX_ALL);
+    CHECK(!(hw.enabled & DMX_INTR_TX_ALL));
+    CHECK(!(hw.int_raw.val & (UART_INTR_RS485_CLASH|UART_INTR_TX_DONE|UART_INTR_BRK_DET)));
+    CHECK(f.object.rx_last_brk_ts==hw.now);
+    CHECK(dmx_tx_start(1,513,nullptr)!=ESP_OK);
+    puts("PASS Receiver mode: stale TX/CLASH discarded, RX break still handled, no TX/snapshot ownership mutation");
+}
+
+
+
+// No RX input, receiver presence or ACK exists in this HAL model.
+// Hardware confirmed CLASH; actual incomplete sends must still fail.
+static void auditNoReceiver() {
+    Integration h;
+    h.command(setValue(37));
+    for (int i = 0; i < 100; ++i) h.frame();
+    CHECK(hw.wire.size() == 100 * 513);
+    CHECK(h.transport.health().errors == 0);
+    CHECK(!h.transport.health().fault_stopped);
+    printf("AUDIT no receiver input: 100 complete frames, errors=0, no latch\n");
+}
+static void auditIncompleteLatchAndReconnect() {
+    Integration h;
+    h.command(setValue(91));
+    h.command(Command::blackoutCommand(true));
+    h.command(Command::blackoutCommand(false));
+    for (unsigned i=1; i<=3; ++i) {
+        CHECK(h.transport.serviceTx(hw.now));
+        uint8_t frozen[513]; memcpy(frozen,h.f.active,513);
+        hw.int_raw.val |= UART_INTR_RS485_CLASH;
+        h.f.drain(128,false); // Actual FIFO underrun, in addition to masked CLASH.
+        // Hold the shifter busy to prove failed storage cannot be reused yet.
+        hw.idle=false;
+        h.f.irq();
+        CHECK(h.f.object.tx.result == DMX_TX_UNDERRUN);
+        CHECK(h.f.object.tx.phase == DMX_TX_RETIRING);
+        CHECK(dmx_tx_owned(&h.f.object.tx));
+        CHECK(!h.transport.serviceTx(hw.now));
+        CHECK(memcmp(frozen,h.f.active,513)==0);
+        hw.idle=true;
+        h.transport.poll(hw.now);
+        CHECK(h.f.object.tx.phase == DMX_TX_READY);
+        CHECK(h.transport.health().errors == i);
+        CHECK(h.transport.health().consecutive_failures == i);
+        CHECK(h.transport.pendingBarriers() == 2);
+        CHECK(h.transport.health().completed == 0);
+        printf("AUDIT actual incomplete frame: t=%lld attempt=%u queued=%u result=%u driver_phase=%u failures=%u stopped=%u\n",
+            (long long)hw.now,h.f.object.tx.attempt,h.f.object.tx.queued,
+            unsigned(h.f.object.tx.result),unsigned(h.f.object.tx.phase),
+            h.transport.health().consecutive_failures,unsigned(h.transport.health().fault_stopped));
+        hw.now += DmxTransport::nominal_frame_us;
+    }
+    dmx_tx_status_t status;
+    CHECK(dmx_tx_poll(1,&status)==ESP_OK && status.can_start);
+    CHECK(!dmx_tx_owned(&status.tx));
+    const auto reads=hw.snapshot_reads;
+    hw.int_raw.val=0; hw.idle=true; // Model disturbance removed / cable reconnected.
+    for (int i=0;i<100;++i) {hw.now+=100000; CHECK(!h.transport.serviceTx(hw.now));}
+    CHECK(hw.snapshot_reads==reads && h.transport.pendingBarriers()==2);
+    puts("AUDIT disturbance removed: driver quiescent/available, application stays latched, barriers retained");
+}
+static void auditSingleIncompleteRecovery() {
+    Integration h;
+    h.command(Command::blackoutCommand(true));
+    h.command(Command::blackoutCommand(false));
+    CHECK(h.transport.serviceTx(hw.now));
+    hw.int_raw.val|=UART_INTR_RS485_CLASH;
+    h.f.drain(128,false); h.f.irq(); h.transport.poll(hw.now);
+    CHECK(!h.transport.health().fault_stopped);
+    hw.now+=DmxTransport::nominal_frame_us;
+    h.frame();
+    CHECK(h.transport.pendingBarriers()==1);
+    CHECK(h.transport.health().consecutive_failures==0);
+    h.frame(); CHECK(h.transport.pendingBarriers()==0);
+    puts("AUDIT one safely retired incomplete frame: retry succeeds, consecutive count resets, ON/OFF order retained");
+}
+static void auditLateOwnerPoll() {
+    Integration h;
+    CHECK(h.transport.serviceTx(hw.now));
+    while(h.f.object.tx.phase==DMX_TX_FEEDING) h.f.drain(1);
+    h.f.drain(128,false);
+    CHECK(hw.wire.size()==513 && hw.idle);
+    hw.now+=10*DmxTransport::nominal_frame_us;
+    h.transport.poll(hw.now);
+    CHECK(h.f.object.tx.result==DMX_TX_COMPLETE);
+    CHECK(h.transport.health().errors==0);
+    puts("AUDIT late owner poll >91.04ms after fully drained frame: COMPLETE wins, no false timeout");
+}
+
+
+
+
 int main() {
+    clashInitialFillAndNoFalseCompletion();
+    clashNoReceiverAndBlackout();
+    clashReceiverIsolation();
+    auditNoReceiver();
+    auditIncompleteLatchAndReconnect();
+    auditSingleIncompleteRecovery();
+    auditLateOwnerPoll();
     (void)&dmx_timing_intr_handler;
     normalAndSnapshot();
     underrunAndPrematureDone();

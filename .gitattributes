@@ -1,0 +1,2 @@
+web/generated/*.gz binary
+web/generated/manifest.json text eol=lf

@@ -9,10 +9,12 @@ static inline __attribute__((always_inline)) bool dmx_tx_idle(dmx_port_t n) {
 static void IRAM_ATTR dmx_tx_masks(dmx_obj_t *o) {
   uart_hal_context_t *h = &dmx_context[o->dmx_num].hal;
   dmx_hal_disable_intr_mask(h, DMX_INTR_TX_ALL);
+  /* Plain DMX has no TX echo/ACK contract. Do not enable the RDM clash source.
+     Keep it in DMX_INTR_TX_ALL so quiescence/mode changes still mask/clear it. */
   if (o->tx.phase == DMX_TX_FEEDING)
-    dmx_hal_ena_intr_mask(h, UART_INTR_TXFIFO_EMPTY | UART_INTR_RS485_CLASH);
+    dmx_hal_ena_intr_mask(h, UART_INTR_TXFIFO_EMPTY);
   else if (o->tx.phase == DMX_TX_DRAINING && !o->tx.done_seen)
-    dmx_hal_ena_intr_mask(h, UART_INTR_TX_DONE | UART_INTR_RS485_CLASH);
+    dmx_hal_ena_intr_mask(h, UART_INTR_TX_DONE);
 }
 static void IRAM_ATTR dmx_tx_fill_locked(dmx_obj_t *o, int64_t now) {
   const dmx_port_t n = o->dmx_num;

@@ -1,0 +1,43 @@
+{
+  "assets": [
+    {
+      "content_encoding": "gzip",
+      "content_type": "text/html; charset=utf-8",
+      "file": "index.html.gz",
+      "gzip_size": 338,
+      "original_size": 497,
+      "path": "/",
+      "sha256": "1e512a53f47f4d9d8e6764eb37c974e181e45aa4cbbae4feec88487fb01704f1",
+      "source": "index.html",
+      "source_sha256": "0e61829d0b9c311542a2e0546fef05459bafa3663ee4f703e9ec99894c8a8a9c"
+    },
+    {
+      "content_encoding": "gzip",
+      "content_type": "text/css; charset=utf-8",
+      "file": "style.css.gz",
+      "gzip_size": 196,
+      "original_size": 250,
+      "path": "/style.92e2a9129f30b2a7.css",
+      "sha256": "8c3658155afe22264ab4224a9501eff01488a3241ee3bc16a525c50f6e7cee9b",
+      "source": "style.css",
+      "source_sha256": "92e2a9129f30b2a791368db7e406f767a589600ed8d46b2e845bf7ae3c1c91d3"
+    },
+    {
+      "content_encoding": "gzip",
+      "content_type": "text/javascript; charset=utf-8",
+      "file": "app.js.gz",
+      "gzip_size": 140,
+      "original_size": 151,
+      "path": "/app.7b97491c3c3059fb.js",
+      "sha256": "7351150722df327baab2d6bfed6e1e584142db3a58245a05c128a17805393bae",
+      "source": "app.js",
+      "source_sha256": "7b97491c3c3059fb815842a337c59e2c7c95f1877fcd5b5ffc397ed2506219ec"
+    }
+  ],
+  "bundle_sha256": "5ae4ba7f7ea51bcd054f92bbd3e549efccddf41008a28e8840a8c6235a44c7e9",
+  "generator": {
+    "python": "3.11.7",
+    "zlib": "1.2.13"
+  },
+  "schema": 1
+}

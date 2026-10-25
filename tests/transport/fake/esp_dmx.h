@@ -33,7 +33,7 @@ struct FakeUart {
     struct { uint32_t val = 0; } int_raw;
     uint32_t enabled = 0;
     bool idle = true, inject_done_in_write = false, inverted = false;
-    bool fail_fifo_write = false;
+    bool fail_fifo_write = false, inject_clash_in_write = false;
     bool inject_done_on_enable = false;
     unsigned snapshot_reads = 0;
     int64_t now = 0;

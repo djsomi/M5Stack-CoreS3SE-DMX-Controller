@@ -1,0 +1,5 @@
+:root { color-scheme: dark; font: 16px system-ui, sans-serif; }
+body { margin: 0; background: #101820; color: #eef5fa; }
+main { max-width: 38rem; margin: 10vh auto; padding: 1.5rem; }
+h1 { color: #74dac6; font-size: 1.7rem; }
+p { line-height: 1.6; }

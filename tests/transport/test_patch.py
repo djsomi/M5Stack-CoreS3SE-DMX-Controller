@@ -71,10 +71,14 @@ with tempfile.TemporaryDirectory(prefix="tx-patch-", dir=ROOT / "dist") as temp:
     data["version"] = "4.1.0"
     manifest.write_text(json.dumps(data), encoding="utf-8")
     rejects(wrong_version)
+    if len(sys.argv) > 2:
+        previous = temp / "previous-tx-policy"
+        shutil.copytree(Path(sys.argv[2]).resolve(), previous)
+        rejects(previous)  # Reject outdated complete fatal-CLASH installations.
     assets = temp / "assets"
     shutil.copytree(patch.ASSETS, assets)
     patch.ASSETS = assets
     with (assets / "tx_api.inc").open("a", encoding="utf-8") as out:
         out.write("\n/* unreviewed template */\n")
     rejects(clean)  # Even a fully installed old patch cannot hide changed repository templates.
-print("PASS fresh/repeated patch, unchanged S3 getters, atomic prevalidation, mixed/missing/unknown/version/template rejection")
+print("PASS fresh/repeated patch, unchanged S3 getters, atomic prevalidation, mixed/missing/unknown/version/template and prior-revision rejection")

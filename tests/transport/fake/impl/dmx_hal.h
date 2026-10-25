@@ -17,6 +17,10 @@ static inline void dmx_hal_ena_intr_mask(uart_hal_context_t* h, uint32_t m) {
 static inline void dmx_hal_clr_intsts_mask(uart_hal_context_t* h, uint32_t m) { h->dev->int_raw.val &= ~m; }
 static inline void dmx_hal_write_txfifo(uart_hal_context_t* h, const uint8_t* data, uint32_t n, uint32_t* written) {
     ++h->dev->snapshot_reads;
+    if (h->dev->inject_clash_in_write) {
+        h->dev->int_raw.val |= (1u << 17);
+        h->dev->inject_clash_in_write = false;
+    }
     if (h->dev->fail_fifo_write) { *written = 0; return; }
     if (h->dev->inject_done_in_write) {
         h->dev->int_raw.val |= (1u << 14);

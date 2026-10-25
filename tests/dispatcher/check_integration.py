@@ -66,7 +66,13 @@ for path in ["include/dmx_hardware.h", "src/preset_store.h",
     assert (root / path).read_text(encoding="utf-8") == baseline(path), f"Unexpected protected-file change: {path}"
 
 config = (root / "platformio.ini").read_text(encoding="utf-8")
-assert config.replace("    pre:scripts/patch_esp_dmx_tx_ownership.py\n", "") == baseline("platformio.ini")
+for addition in ("    pre:scripts/patch_esp_dmx_tx_ownership.py\n",
+                 "board_upload.flash_size = 16MB\n",
+                 "board_build.partitions = partitions/cores3se_16mb_ota.csv\n",
+                 "    pre:scripts/embed_web_assets.py\n"):
+    assert config.count(addition) == 1
+    config = config.replace(addition, "")
+assert config == baseline("platformio.ini")
 assert "dmx_write_packet(" not in app + view
 assert "dmx_send_packet(" not in app + view
 print("PASS application-loop service before page/wake returns; mode gates; no mutation bypass")

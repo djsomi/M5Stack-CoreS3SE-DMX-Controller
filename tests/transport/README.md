@@ -54,3 +54,16 @@ model. They do not establish actual MMIO event latency/order, electrical DMX
 integrity, break/MAB duration, analog RS-485 quality, fixture acceptance or the
 absence of experimental Base glitches. Follow the separate hardware checklist
 in `docs/STAGE3_TRANSPORT_IMPLEMENTATION.md` before committing this candidate.
+
+## Sender CLASH policy regression
+
+Permanent tests exercise CLASH during the initial FIFO write, repeated raw and
+unexpected delivered indications during refill/drain, and READ-mode isolation.
+They check 513-byte completion, no false success or snapshot mutation, final-state
+delivery and ordered blackout. Genuine underruns/premature DONE/timeout remain
+errors; three actual failures still latch and a successful retry resets the count.
+No temporary event-history or USB diagnostics are part of this suite/hotfix.
+
+An optional second argument to `test_patch.py` supplies a previous fully patched
+library to verify rejection without writes of the old fatal-CLASH revision.
+See `docs/STAGE3E_PRODUCTION_HOTFIX.md` for scope and validation.
