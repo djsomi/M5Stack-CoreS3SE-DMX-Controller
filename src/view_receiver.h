@@ -6,6 +6,11 @@
 class view_receiver_t : public view_t {
    public:
     explicit view_receiver_t(DmxTransport& transport) : transport(transport) {}
+    bool reserveNetworkCanvas() {
+        canvas.setColorDepth(8);
+        network_canvas_reserved = canvas.createSprite(M5.Display.width(), M5.Display.height() - CONSOLE_Y) != nullptr;
+        return network_canvas_reserved;
+    }
     void setup(void) override {
         transport.requestSender(false);
         memset(data, 0, sizeof(data));
@@ -60,7 +65,7 @@ class view_receiver_t : public view_t {
     }
 
     void close(void) override {
-        canvas.deleteSprite();
+        if (!network_canvas_reserved) canvas.deleteSprite();
     }
 
    private:
@@ -71,6 +76,7 @@ class view_receiver_t : public view_t {
     uint32_t timer;
     size_t data_idx = 0;
     M5Canvas canvas;
+    bool network_canvas_reserved = false;
     bool graph_view = false;
     uint8_t visible[DMX_MAX_PACKET_SIZE];
     uint8_t data[2][DMX_MAX_PACKET_SIZE];

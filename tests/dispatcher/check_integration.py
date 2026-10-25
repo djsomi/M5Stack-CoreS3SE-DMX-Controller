@@ -2,8 +2,12 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / "tests/network"))
+from canvas_guard_support import stage5a_view
+from softap_guard_support import stage5b_view
 stage1_commit = "0e43640e57519e47177b08fae9c0b86ff8b0e9d9"
 app = (root / "src/src.cpp").read_text(encoding="utf-8")
 view = (root / "src/view_sender.h").read_text(encoding="utf-8")
@@ -38,6 +42,8 @@ for path in (root / "src").iterdir():
 assert "if (target_value != controller.channel(target_channel))" not in view
 
 old_view = baseline("src/view_sender.h")
+# Approved Settings and Stage5B allocation changes are independently guarded by network tests.
+view_for_guard = re.sub(r"        // Stage 5 local network information begin.*?        // Stage 5 local network information end.\n\n", "", stage5a_view(stage5b_view(view)), flags=re.S)
 for start, end in [
     ("    void drawPrecisionEditor(void)", "    void openPrecisionEditor(void)"),
     ("    void drawPrecisionKeypad(", "    void drawPrecisionEditor(void)"),
@@ -49,7 +55,7 @@ for start, end in [
     ("    M5Canvas* getFullscreenCanvas(", "    void pushFullscreenCanvas("),
 ]:
     assert start in view and end in view, f"Missing guard boundary: {start}"
-    assert section(view, start, end) == section(old_view, start, end), f"Unexpected UI/power change: {start}"
+    assert section(view_for_guard, start, end) == section(old_view, start, end), f"Unexpected UI/power change: {start}"
 
 assert "view_sender.serviceDmxOutput();" in section(app, "static void serviceDmxDuringWakeTouch(", "static void serviceDmxTransportDiagnostics(")
 assert loop.index("dmx_transport.poll(") < loop.index("command_dispatcher.process();")

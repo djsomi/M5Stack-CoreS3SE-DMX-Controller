@@ -2,6 +2,11 @@
 .vscode/
 dist/
 
+# Private device captures and generated Python caches stay local.
+/logs/
+__pycache__/
+*.py[cod]
+
 *.bin
 *.elf
 *.map

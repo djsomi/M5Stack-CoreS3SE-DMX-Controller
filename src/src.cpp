@@ -2,6 +2,7 @@
 #include "common.h"
 #include "dmx_hardware.h"
 #include "hardware_diagnostics.h"
+#include "network_service.h"
 #include "dmx_transport_esp_dmx.h"
 #include <esp_system.h>
 #include "view_receiver.h"
@@ -736,9 +737,14 @@ void controllerPowerOff(void) {
 
 
 void setup(void) {
+    wifi_startup_trace::capture("setup.enter");
+    network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.
+    wifi_startup_trace::capture("credentials.after");
     auto cfg = M5.config();
     cfg.output_power = false;
+    wifi_startup_trace::capture("M5.begin.before", 0, false, nullptr, 0, true);
     M5.begin(cfg);
+    wifi_startup_trace::capture("M5.begin.after");
 
 #if defined(DMX_HARDWARE_UNIT)
     if (M5.Power.getType() == m5::Power_Class::pmic_t::pmic_axp2101 &&
@@ -746,6 +752,14 @@ void setup(void) {
         M5.Power.setExtOutput(true);
     }
 #endif
+
+    // Reserve the EXISTING UI buffers before any radio allocation. No page switch.
+    const bool sender_canvas_reserved = view_sender.reserveNetworkCanvas();
+    wifi_startup_trace::capture("sender.cells.after", 0, false, nullptr, sender_canvas_reserved);
+    wifi_startup_trace::capture("receiver.canvas.before", 0, false, nullptr, 0, true);
+    const bool receiver_canvas_reserved = view_receiver.reserveNetworkCanvas();
+    wifi_startup_trace::capture("receiver.canvas.after", 0, false, nullptr, receiver_canvas_reserved);
+    const bool network_canvas_reserved = sender_canvas_reserved && receiver_canvas_reserved;
 
     // Restore brightness and screen-off time from NVS.
     loadUiSettings();
@@ -762,6 +776,7 @@ void setup(void) {
     /* Configure the DMX hardware to the default DMX settings and tell the DMX
       driver which hardware pins we are using. */
     dmx_config_t dmxConfig = DMX_DEFAULT_CONFIG;
+    wifi_startup_trace::capture("dmx.startup.before", 0, false, nullptr, 0, true);
     dmx_param_config(dmxPort, &dmxConfig);
 
     /// For M5Stack Core2/Tough pin setting: TX:19  RX:35  EN:27
@@ -792,11 +807,13 @@ dmx_set_pin(
 
     dmx_driver_install(dmxPort, DMX_MAX_PACKET_SIZE, dmxQueueSize, &queue,
                        dmxInterruptPriority);
+    wifi_startup_trace::capture("dmx.startup.after");
 
     // Show startup information, then automatically enter Sender mode.
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::begin();
 #endif
+    network_service::launch(network_canvas_reserved);
     startup_started_ms = millis();
 
     // Start the non-blocking boot chime at the same time.
@@ -828,6 +845,8 @@ void loop(void) {
 
     // Owner-task servicing precedes every page/startup/wake early return.
     dmx_transport.poll(esp_timer_get_time());
+    network_service::ownerTick(esp_timer_get_time(), dmx_transport.health().errors,
+                               dmx_transport.health().fault_stopped);
     serviceDmxTransportDiagnostics();
     command_dispatcher.setSenderActive(scene_mode == mode_sender);
     command_dispatcher.process();

@@ -7,6 +7,9 @@
 #include "command_dispatcher.h"
 #include "dmx_transport.h"
 #include "hardware_diagnostics.h"
+#include "network_service.h"
+#include "fullscreen_canvas_memory.h"
+#include <soc/soc_memory_types.h>
 
 // Display settings are owned by src.cpp because the global safe-wake /
 // auto-off logic lives there.
@@ -33,6 +36,16 @@ class view_sender_t : public view_t {
         controller.setObserver(onControllerChange, this);
         dispatcher.setPublisher(publishDmx, this);
         dispatcher.setAdmission(admitDmx, this);
+    }
+
+    bool reserveNetworkCanvas() {
+        wifi_startup_trace::capture("fullscreen.before", 0, false, nullptr, 0, true);
+        network_canvas_reserved = getFullscreenCanvas(active_fullscreen_page, "NETWORK RESERVE") != nullptr;
+        wifi_startup_trace::capture("fullscreen.after", 0, false, fullscreen_canvas_buffer, network_canvas_reserved);
+        for (auto& item : canvas) {
+            if (!item.createSprite(channel_item_width, channel_item_height)) network_canvas_reserved = false;
+        }
+        return network_canvas_reserved;
     }
 
     void setup(void) override {
@@ -93,6 +106,9 @@ class view_sender_t : public view_t {
         // DMX transmission at the top of loop() continues normally.
         if (settings_screen) {
             handleSettingsTouch(tp);
+            // Stage 5C Settings network refresh begin.
+            serviceSettingsNetwork();
+            // Stage 5C Settings network refresh end.
 
             // Continue a flick after finger release, just like the main
             // DMX channel list, with gradual deceleration.
@@ -439,10 +455,15 @@ class view_sender_t : public view_t {
 
     void close(void) override {
         transport.requestSender(false);
-        for (auto& tmp : canvas) {
-            tmp.deleteSprite();
+        // Keep the existing UI buffers reserved across mode switches while Wi-Fi exists.
+        if (!network_canvas_reserved) {
+            for (auto& tmp : canvas) {
+                tmp.deleteSprite();
+            }
+            fullscreen_canvas.deleteSprite();
+            fullscreen_canvas_ready = false;
+            fullscreen_canvas_buffer = nullptr;
         }
-        fullscreen_canvas.deleteSprite();
     }
 
     void serviceDmxOutput() {
@@ -524,8 +545,16 @@ class view_sender_t : public view_t {
     // must not keep separate persistent sprites.
     M5Canvas fullscreen_canvas;
     bool fullscreen_canvas_ready = false;
+    bool fullscreen_canvas_allocation_attempted = false;
+    bool network_canvas_reserved = false;
     void* fullscreen_canvas_buffer = nullptr;
     bool settings_redraw_pending = false;
+    // Stage 5C Settings network fields begin.
+    uint32_t settings_network_revision = UINT32_MAX;
+    bool wifi_reset_active = false, wifi_reset_canceled = false, wifi_reset_completed = false;
+    bool wifi_reset_failed = false;
+    uint32_t wifi_reset_started_ms = 0;
+    // Stage 5C Settings network fields end.
 
     bool precision_editor_screen = false;
     bool precision_keypad_screen = false;
@@ -680,7 +709,7 @@ class view_sender_t : public view_t {
 
     // Settings are drawn in a vertically scrollable content area.
     // More settings can simply be added lower down later.
-    static constexpr int settings_content_h = 300;
+    static constexpr int settings_content_h = 540;
     static constexpr int settings_view_h = 240;
     static constexpr int settings_scroll_max =
         settings_content_h - settings_view_h;
@@ -1958,6 +1987,38 @@ bool loadPreset(uint8_t slot) {
             );
         }
 
+        // Stage 5 local network information begin (no HTTP/log credentials).
+        const auto network = network_service::status();
+        c.setFont(&fonts::Font0);
+        c.setTextDatum(textdatum_t::middle_center);
+        c.setTextColor(TFT_WHITE, TFT_BLACK);
+        char network_line[64];
+        auto networkText = [&](const char* text, int y) {
+            const int screen_y = sy(y);
+            if (screen_y > -10 && screen_y < 250) c.drawString(text, settings_content_center_x, screen_y);
+        };
+        settings_network_revision = network.ui_revision;
+        if (network.phase == network_service::Phase::ready)
+            snprintf(network_line, sizeof(network_line), "WiFi %s - Clients %lu/%lu", network_service::phaseName(network.phase), (unsigned long)network.clients, (unsigned long)network.max_clients);
+        else
+            snprintf(network_line, sizeof(network_line), "WiFi %s (%d)", network_service::phaseName(network.phase), network.error);
+        networkText(network_line, 316);
+        networkText(network_service::ssid(), 334);
+        snprintf(network_line, sizeof(network_line), "KEY %s", network_service::password());
+        networkText(network_line, 352);
+        snprintf(network_line, sizeof(network_line), "http://%s/", network.ip[0] ? network.ip : "not-ready");
+        networkText(network_line, 370);
+        networkText(!strcmp(network_service::credentialMode(), "LEGACY") ? "LEGACY KEY: RESET WIFI TO CHANGE" : "DEFAULT KEY IS PREDICTABLE", 388);
+        snprintf(network_line, sizeof(network_line), "INT %lu DMA %lu", (unsigned long)network.current.internal, (unsigned long)network.current.dma);
+        networkText(network_line, 406);
+        networkText("/status FOR MEMORY HISTORY", 424);
+        const int reset_y = sy(450);
+        c.drawRoundRect(24, reset_y, 216, 28, 5, wifi_reset_active ? TFT_GREEN : TFT_WHITE);
+        networkText(wifi_reset_active && !wifi_reset_canceled && !wifi_reset_completed ? "KEEP HOLDING..." : "HOLD RESET WIFI 2s", 464);
+        networkText(network.reset_pending ? "RESET SAVED: RESTART TO APPLY" : (wifi_reset_failed ? "RESET FAILED - TRY AGAIN" : "WIFI RESET APPLIES NEXT BOOT"), 492);
+        networkText("WIFI ONLY - PRESETS ARE KEPT", 510);
+        // Stage 5 local network information end.
+
         // Battery is a fixed status element and must remain completely
         // identical to the normal Sender screen. Force a redraw here because
         // fillScreen() above erased it even if the battery state did not change.
@@ -2133,6 +2194,36 @@ bool loadPreset(uint8_t slot) {
     }
 
 
+    // Stage 5C Settings network methods begin.
+    void serviceSettingsNetwork() {
+        const uint32_t revision = network_service::uiRevision();
+        if (revision == settings_network_revision) return;
+        settings_network_revision = revision;
+        const int status_y = 316 - settings_scroll_y;
+        if (status_y >= 0 && status_y < 240) settings_redraw_pending = true;
+    }
+
+    bool handleWifiResetTouch(const decltype(M5.Touch.getDetail())& tp, int content_y) {
+        const bool inside = tp.x >= 24 && tp.x < 240 && content_y >= 450 && content_y < 478;
+        if (tp.wasPressed() && inside) {
+            wifi_reset_active = true; wifi_reset_canceled = wifi_reset_completed = wifi_reset_failed = false;
+            wifi_reset_started_ms = millis();
+            settings_scroll_add = 0; settings_drag_mode = settings_drag_none;
+            drawSettingsScreen();
+        }
+        if (!wifi_reset_active) return false;
+        if (tp.state && (!inside || abs(tp.x - tp.base_x) >= settings_gesture_threshold || abs(tp.y - tp.base_y) >= settings_gesture_threshold))
+            wifi_reset_canceled = true;
+        if (tp.state && !wifi_reset_canceled && !wifi_reset_completed && uint32_t(millis() - wifi_reset_started_ms) >= 2000) {
+            wifi_reset_completed = true;
+            wifi_reset_failed = !network_service::requestFactoryReset();
+            drawSettingsScreen();
+        }
+        if (!tp.state) { wifi_reset_active = false; drawSettingsScreen(); }
+        return true; // Consume press/hold/release, including canceled gestures.
+    }
+    // Stage 5C Settings network methods end.
+
     void handleSettingsTouch(
         const decltype(M5.Touch.getDetail())& tp
     ) {
@@ -2140,6 +2231,10 @@ bool loadPreset(uint8_t slot) {
         int touch_y = tp.y;
         int content_y =
             touch_y + settings_scroll_y;
+
+        // Stage 5C Settings network touch begin.
+        if (handleWifiResetTouch(tp, content_y)) return;
+        // Stage 5C Settings network touch end.
 
         // ----------------------------------------------------
         // FIXED POWER CONTROL BUTTONS
@@ -4016,16 +4111,18 @@ bool loadPreset(uint8_t slot) {
             return nullptr;
         }
 
-        if (!fullscreen_canvas_ready) {
+        if (!fullscreen_canvas_ready && !fullscreen_canvas_allocation_attempted) {
 #if !DMX_HW_DIAGNOSTICS
             uint32_t heap_before = ESP.getFreeHeap();
             uint32_t psram_before = ESP.getFreePsram();
 #endif
 
-            fullscreen_canvas.setColorDepth(16);
-            fullscreen_canvas_buffer = fullscreen_canvas.createSprite(
+            fullscreen_canvas_buffer = fullscreen_canvas_memory::allocateOnce(
+                fullscreen_canvas,
+                fullscreen_canvas_allocation_attempted,
                 M5.Display.width(),
-                M5.Display.height()
+                M5.Display.height(),
+                esp_ptr_external_ram
             );
             fullscreen_canvas_ready = fullscreen_canvas_buffer != nullptr;
 

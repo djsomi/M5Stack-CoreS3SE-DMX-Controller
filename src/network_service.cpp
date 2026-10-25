@@ -1,0 +1,437 @@
+#include "network_service.h"
+#include "http_policy.h"
+#include "web_assets.h"
+#include "softap_policy.h"
+#include <Preferences.h>
+#include <esp_event.h>
+#include <esp_wifi.h>
+#include <esp_wifi_default.h>
+#include <esp_netif.h>
+#include <esp_heap_caps.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#include <esp_http_server.h>
+#include <lwip/sockets.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <algorithm>
+
+namespace network_service {
+namespace {
+constexpr unsigned max_stations = DMX_WIFI_MAX_STATIONS, max_sessions = 3;
+static_assert(max_stations<=CONFIG_LWIP_DHCPS_MAX_STATION_NUM,"AP limit exceeds DHCP lease capacity");
+// Provisional fail-closed guardrails, NOT measured safe Wi-Fi budgets.
+constexpr size_t minimum_internal = 32768, minimum_dma = 16384;
+softap_policy::Credentials credentials{};
+uint8_t ap_mac[6]{};
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+Status shared{};
+struct Sample { Memory memory; unsigned event, clients, requests; } samples[8]{};
+unsigned sample_count = 0;
+TaskHandle_t worker_task = nullptr;
+TaskHandle_t application_owner = nullptr;
+httpd_handle_t server = nullptr;
+struct Session { int fd = -1; stage5::Budget budget; bool handled=false, closing=false; } sessions[max_sessions];
+int64_t request_window = 0;
+unsigned window_requests = 0;
+bool launched = false;
+bool sweep_pending = false;
+softap_policy::Stations stations;
+uint32_t station_generation=0;
+
+// Caller holds mux. Wi-Fi associations are independent of HTTP socket sessions.
+void publishStations() {
+    if(shared.clients!=stations.count()) {shared.clients=stations.count();++shared.ui_revision;}
+}
+void stationEvent(void*,esp_event_base_t,int32_t event,void* data) {
+    if(event!=WIFI_EVENT_AP_STACONNECTED && event!=WIFI_EVENT_AP_STADISCONNECTED && event!=WIFI_EVENT_AP_STOP) return;
+    portENTER_CRITICAL(&mux);
+    if(event==WIFI_EVENT_AP_STOP) stations.clear();
+    else if(data && event==WIFI_EVENT_AP_STACONNECTED)
+        stations.connect(static_cast<wifi_event_ap_staconnected_t*>(data)->mac);
+    else if(data) stations.disconnect(static_cast<wifi_event_ap_stadisconnected_t*>(data)->mac);
+    ++station_generation;publishStations();
+    portEXIT_CRITICAL(&mux);
+    // No M5, Controller, storage, printing or driver query in the callback.
+}
+
+Memory memory() {
+    return {static_cast<uint32_t>(esp_timer_get_time()/1000),
+        static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)),
+        static_cast<uint32_t>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)),
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)),
+        static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA)),
+        static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM))};
+}
+bool safe(const Memory& m) { return m.internal >= minimum_internal && m.dma >= minimum_dma; }
+template<class Function> esp_err_t traced(const char* api,Function function,esp_err_t allowed=ESP_OK) {
+    // Before/after for allocation phases; exact return checkpoint for every
+    // intermediate API. Keep the temporary evidence buffer small.
+    if(!strcmp(api,"esp_netif_init") || !strcmp(api,"esp_wifi_init") ||
+       !strcmp(api,"esp_wifi_set_mode") || !strcmp(api,"esp_wifi_start") || !strcmp(api,"httpd_start"))
+        wifi_startup_trace::capture(api,0,false,nullptr,0,true);
+    const esp_err_t result=function();
+    wifi_startup_trace::capture(api,result,result!=ESP_OK && result!=allowed);
+    return result;
+}
+void phase(Phase p, int error=0) {
+    if(p==Phase::failed) {
+        wifi_startup_trace::capture("phase.FAILED",error,true);
+        wifi_startup_trace::release();
+    }
+    portENTER_CRITICAL(&mux);
+    if(shared.phase!=p || shared.error!=error) ++shared.ui_revision;
+    shared.phase=p;shared.error=error;shared.max_clients=max_stations;
+    portEXIT_CRITICAL(&mux);
+}
+void record(unsigned event, unsigned clients) {
+    const Memory m=memory();
+    const auto stack=uxTaskGetStackHighWaterMark(nullptr);
+    portENTER_CRITICAL(&mux);
+    (void)clients;shared.current=m;shared.worker_stack=stack;
+    if(event==1) shared.before=m;
+    if(event==2) shared.after=m;
+    if(event!=7) { samples[sample_count%8]={m,event,shared.clients,shared.requests}; ++sample_count; }
+    portEXIT_CRITICAL(&mux);
+}
+Session* session(int fd) {
+    for(auto& s:sessions) if(s.fd==fd) return &s;
+    return nullptr;
+}
+int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writing) {
+    Session* s=session(fd);
+    if(!s || !s->budget.allow(esp_timer_get_time(),0,writing)) return HTTPD_SOCK_ERR_FAIL;
+    const size_t used=writing?s->budget.sent:s->budget.received;
+    const size_t limit=writing?stage5::max_tx_bytes:stage5::max_rx_bytes;
+    const size_t amount=std::min(size_t(256),std::min(length,limit-used));
+    if(!amount) return HTTPD_SOCK_ERR_FAIL;
+    const int64_t remaining=stage5::session_us-(esp_timer_get_time()-s->budget.opened);
+    if(remaining<=0) return HTTPD_SOCK_ERR_FAIL;
+    const int64_t wait=std::min(int64_t(1000000),remaining);
+    timeval timeout{static_cast<long>(wait/1000000),static_cast<long>(wait%1000000)};
+    if(setsockopt(fd,SOL_SOCKET,writing?SO_SNDTIMEO:SO_RCVTIMEO,&timeout,sizeof(timeout))) return HTTPD_SOCK_ERR_FAIL;
+    const int n=writing?send(fd,data,amount,flags):recv(fd,data,amount,flags);
+    if(n>0) {
+        if(!s->budget.allow(esp_timer_get_time(),static_cast<size_t>(n),writing)) return HTTPD_SOCK_ERR_FAIL;
+        return n;
+    }
+    if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK || errno==EINTR)) return HTTPD_SOCK_ERR_TIMEOUT;
+    return !writing && n==0 ? 0 : HTTPD_SOCK_ERR_FAIL;
+}
+int receive(httpd_handle_t h,int fd,char* p,size_t n,int f) { return io(h,fd,p,n,f,false); }
+int transmit(httpd_handle_t h,int fd,const char* p,size_t n,int f) { return io(h,fd,const_cast<char*>(p),n,f,true); }
+esp_err_t opened(httpd_handle_t h,int fd) {
+    for(auto& s:sessions) if(s.fd==-1) {
+        s.fd=fd; s.budget={};s.budget.opened=esp_timer_get_time();s.handled=s.closing=false;
+        if(httpd_sess_set_recv_override(h,fd,receive)!=ESP_OK || httpd_sess_set_send_override(h,fd,transmit)!=ESP_OK) {
+            s.fd=-1; return ESP_FAIL;
+        }
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}
+void closed(httpd_handle_t,int fd) { if(auto* s=session(fd)) s->fd=-1; close(fd); }
+void sweep(void*) {
+    const auto now=esp_timer_get_time();
+    for(auto& s:sessions) if(s.fd>=0 && !s.closing && now-s.budget.opened>=stage5::session_us) {
+        // IDF 4.4.7 skips queued closes with zero LRU (new, never-read socket).
+        // Refresh it in the HTTP task before queuing this same live session.
+        httpd_sess_update_lru_counter(server,s.fd);
+        if(httpd_sess_trigger_close(server,s.fd)==ESP_OK) s.closing=true;
+        else shutdown(s.fd,SHUT_RDWR); // Wake select; native session cleanup owns close.
+    }
+    portENTER_CRITICAL(&mux);sweep_pending=false;portEXIT_CRITICAL(&mux);
+}
+esp_err_t finish(httpd_req_t* r,esp_err_t result) {
+    Session* s=session(httpd_req_to_sockfd(r));
+    if(result!=ESP_OK || !s) return ESP_FAIL;
+    s->closing=true;
+    return httpd_sess_trigger_close(r->handle,s->fd); // Supported server-task close, no success-as-error log.
+}
+bool header(httpd_req_t* r,const char* key,char* value,size_t capacity,bool required=false) {
+    const size_t length=httpd_req_get_hdr_value_len(r,key);
+    if(!length) {value[0]=0;return !required;}
+    return length<capacity && httpd_req_get_hdr_value_str(r,key,value,capacity)==ESP_OK;
+}
+void security(httpd_req_t* r,const char* cache="no-store") {
+    httpd_resp_set_hdr(r,"Connection","close");
+    httpd_resp_set_hdr(r,"X-Content-Type-Options","nosniff");
+    httpd_resp_set_hdr(r,"Content-Security-Policy","default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+    httpd_resp_set_hdr(r,"Referrer-Policy","no-referrer");
+    httpd_resp_set_hdr(r,"Cache-Control",cache);
+}
+esp_err_t reject(httpd_req_t* r,const char* code) {
+    portENTER_CRITICAL(&mux);++shared.rejected;portEXIT_CRITICAL(&mux);
+    security(r);httpd_resp_set_status(r,code);httpd_resp_set_type(r,"text/plain; charset=utf-8");
+    return finish(r,httpd_resp_send(r,code,strlen(code)));
+}
+esp_err_t serve(httpd_req_t* r) {
+    auto* connection=session(httpd_req_to_sockfd(r));
+    if(!connection || connection->handled) return ESP_FAIL;
+    connection->handled=true;
+    const auto hwm=uxTaskGetStackHighWaterMark(nullptr);
+    portENTER_CRITICAL(&mux);++shared.requests;shared.http_stack=hwm;portEXIT_CRITICAL(&mux);
+    char host[65],origin[65],encoding[stage5::max_header_value+1];
+    if(!header(r,"Host",host,sizeof(host),true) || !stage5::allowedHost(host) ||
+       !header(r,"Origin",origin,sizeof(origin)) || !stage5::allowedOrigin(origin)) return reject(r,"403 Forbidden");
+    if(r->content_len) return reject(r,"413 Payload Too Large");
+    const auto now=esp_timer_get_time();
+    if(now-request_window>=1000000) {request_window=now;window_requests=0;}
+    if(++window_requests>12) return reject(r,"429 Too Many Requests");
+    if(!strcmp(r->uri,"/status")) {
+        security(r);
+        const auto s=status();
+        char json[3072];
+        int n=snprintf(json,sizeof(json),
+            "{\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
+            phaseName(s.phase),s.ip,(unsigned long)s.clients,(unsigned long)s.max_clients,s.router_option_disabled?"false":"true",
+            (unsigned long)s.requests,(unsigned long)s.rejected,
+            (unsigned long)s.max_loop_gap_us,(unsigned long)s.tx_errors,s.tx_stopped?"true":"false",
+            (unsigned long)s.worker_stack,(unsigned long)s.http_stack);
+        // Baseline/after-AP samples persist even after the event ring wraps.
+        const Memory fixed[]={s.before,s.after,s.current};
+        for(unsigned i=0;i<3;++i) {
+            const auto& m=fixed[i];
+            n+=snprintf(json+n,sizeof(json)-n,
+                "%s{\"event\":%u,\"ms\":%lu,\"internal\":%lu,\"minimum\":%lu,\"largest\":%lu,\"dma\":%lu,\"psram\":%lu}",
+                i?",":"",90+i,(unsigned long)m.at_ms,(unsigned long)m.internal,(unsigned long)m.minimum,
+                (unsigned long)m.largest,(unsigned long)m.dma,(unsigned long)m.psram);
+        }
+        unsigned count;
+        portENTER_CRITICAL(&mux);count=sample_count;portEXIT_CRITICAL(&mux);
+        const unsigned begin=count>8?count-8:0;
+        for(unsigned i=begin;i<count;++i) {
+            Sample sample;
+            portENTER_CRITICAL(&mux);sample=samples[i%8];portEXIT_CRITICAL(&mux);
+            const auto& m=sample.memory;
+            if(n<0 || size_t(n)>=sizeof(json)) return reject(r,"503 Service Unavailable");
+            n+=snprintf(json+n,sizeof(json)-n,
+                "%s{\"event\":%u,\"ms\":%lu,\"clients\":%u,\"requests\":%u,\"internal\":%lu,\"minimum\":%lu,\"largest\":%lu,\"dma\":%lu,\"psram\":%lu}",
+                ",",sample.event,(unsigned long)m.at_ms,sample.clients,sample.requests,
+                (unsigned long)m.internal,(unsigned long)m.minimum,(unsigned long)m.largest,(unsigned long)m.dma,(unsigned long)m.psram);
+        }
+        if(n<0 || size_t(n)+3>=sizeof(json)) return reject(r,"503 Service Unavailable");
+        json[n++]=']';json[n++]='}';json[n]=0;
+        httpd_resp_set_type(r,"application/json");return finish(r,httpd_resp_send(r,json,n));
+    }
+    if(!header(r,"Accept-Encoding",encoding,sizeof(encoding))) return reject(r,"431 Request Header Fields Too Large");
+    const auto response=stage5::assetResponse(r->uri,encoding);
+    if(response.status==404) return reject(r,"404 Not Found");
+    if(response.status==406) return reject(r,"406 Not Acceptable");
+    if(response.status!=200) return reject(r,"503 Service Unavailable");
+    const auto* asset=response.asset;
+    security(r,response.cache);
+    httpd_resp_set_type(r,asset->content_type);
+    httpd_resp_set_hdr(r,"Content-Encoding","gzip");
+    httpd_resp_set_hdr(r,"Vary","Accept-Encoding");
+    // Library emits exact Content-Length; fixed const flash bytes, no inflation/copy.
+    return finish(r,httpd_resp_send(r,reinterpret_cast<const char*>(asset->data),asset->size));
+}
+
+void worker(void*) {
+    esp_netif_t* netif=nullptr;bool initialized=false,started=false;
+    esp_event_handler_instance_t station_handler=nullptr;
+    esp_err_t error=ESP_OK;
+    phase(Phase::starting);
+    auto check=[&](esp_err_t e){if(e!=ESP_OK) error=e;return e==ESP_OK;};
+    do {
+        if(!safe(memory())) {wifi_startup_trace::capture("guard.worker.entry",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
+        if(!check(traced("esp_netif_init",[]{return esp_netif_init();}))) break;
+        const auto event_error=traced("esp_event_loop_create_default",[]{return esp_event_loop_create_default();},ESP_ERR_INVALID_STATE);
+        if(event_error!=ESP_OK && event_error!=ESP_ERR_INVALID_STATE) {error=event_error;break;}
+        esp_netif_config_t netcfg=ESP_NETIF_DEFAULT_WIFI_AP();
+        wifi_startup_trace::capture("esp_netif_new",0,false,nullptr,0,true);
+        netif=esp_netif_new(&netcfg);
+        wifi_startup_trace::capture("esp_netif_new",netif?ESP_OK:ESP_ERR_NO_MEM,!netif);
+        if(!netif) {error=ESP_ERR_NO_MEM;break;}
+        if(!check(traced("esp_netif_attach_wifi_ap",[&]{return esp_netif_attach_wifi_ap(netif);}))) break;
+        if(!check(traced("esp_wifi_set_default_wifi_ap_handlers",[]{return esp_wifi_set_default_wifi_ap_handlers();}))) break;
+        wifi_init_config_t cfg=WIFI_INIT_CONFIG_DEFAULT();cfg.nvs_enable=0;
+        wifi_startup_trace::capture("cfg.srx_drx_stx_cache",0,false,nullptr,uint32_t(cfg.static_rx_buf_num)|(uint32_t(cfg.dynamic_rx_buf_num)<<8)|(uint32_t(cfg.static_tx_buf_num)<<16)|(uint32_t(cfg.cache_tx_buf_num)<<24));
+        wifi_startup_trace::capture("cfg.txType_dtx_mgmt_nvs",0,false,nullptr,uint32_t(cfg.tx_buf_type)|(uint32_t(cfg.dynamic_tx_buf_num)<<8)|(uint32_t(cfg.mgmt_sbuf_num)<<16)|(uint32_t(cfg.nvs_enable)<<24));
+        wifi_startup_trace::capture("cfg.ampduRx_ba_mgmtType_count",0,false,nullptr,uint32_t(cfg.ampdu_rx_enable)|(uint32_t(cfg.rx_ba_win)<<8)|(uint32_t(cfg.rx_mgmt_buf_type)<<16)|(uint32_t(cfg.rx_mgmt_buf_num)<<24));
+        if(!check(traced("esp_wifi_init",[&]{return esp_wifi_init(&cfg);}))) break;initialized=true;
+        if(!check(traced("esp_wifi_set_storage",[]{return esp_wifi_set_storage(WIFI_STORAGE_RAM);}))) break;
+        if(!check(traced("esp_wifi_set_mode",[]{return esp_wifi_set_mode(WIFI_MODE_AP);}))) break;
+        uint8_t actual_mac[6];
+        if(!check(traced("esp_wifi_get_mac.AP",[&]{return esp_wifi_get_mac(WIFI_IF_AP,actual_mac);})) || memcmp(actual_mac,ap_mac,6)) {
+            wifi_startup_trace::capture("verify.AP_MAC",ESP_FAIL,true);error=ESP_FAIL;break;
+        }
+        wifi_config_t ap{};
+        memcpy(ap.ap.ssid,credentials.ssid,strlen(credentials.ssid));
+        ap.ap.ssid_len=strlen(credentials.ssid);
+        memcpy(ap.ap.password,credentials.pass,strlen(credentials.pass));
+        ap.ap.channel=6;ap.ap.max_connection=max_stations;ap.ap.authmode=WIFI_AUTH_WPA2_PSK;
+        ap.ap.pairwise_cipher=WIFI_CIPHER_TYPE_CCMP;
+        // Configure protected AP before start; there is never a temporary open AP.
+        if(!check(traced("esp_wifi_set_config",[&]{return esp_wifi_set_config(WIFI_IF_AP,&ap);}))) break;
+        const auto stop=traced("esp_netif_dhcps_stop",[&]{return esp_netif_dhcps_stop(netif);},ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED);
+        if(stop!=ESP_OK && stop!=ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {error=stop;break;}
+        // Set while DHCP is STOPPED, before AP-start handlers can distribute leases.
+        uint8_t offer_router=0;
+        if(!check(traced("dhcps.router.SET",[&]{return esp_netif_dhcps_option(netif,ESP_NETIF_OP_SET,
+            ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,&offer_router,sizeof(offer_router));}))) break;
+        esp_netif_ip_info_t ip{};
+        IP4_ADDR(&ip.ip,192,168,4,1);IP4_ADDR(&ip.gw,192,168,4,1);IP4_ADDR(&ip.netmask,255,255,255,0);
+        if(!check(traced("esp_netif_set_ip_info",[&]{return esp_netif_set_ip_info(netif,&ip);}))) break;
+        if(!check(traced("station.events.register",[&]{return esp_event_handler_instance_register(
+            WIFI_EVENT,ESP_EVENT_ANY_ID,stationEvent,nullptr,&station_handler);}))) break;
+        if(!check(traced("esp_wifi_start",[]{return esp_wifi_start();}))) break;started=true;
+        // Default AP event handlers bring the interface up asynchronously.
+        unsigned wait=0;
+        while(!esp_netif_is_netif_up(netif) && wait++<50) vTaskDelay(pdMS_TO_TICKS(50));
+        wifi_startup_trace::capture("netif.up.wait",esp_netif_is_netif_up(netif)?ESP_OK:ESP_ERR_TIMEOUT,!esp_netif_is_netif_up(netif));
+        if(!esp_netif_is_netif_up(netif)) {error=ESP_ERR_TIMEOUT;break;}
+        esp_netif_dhcp_status_t dhcp;
+        if(!check(traced("esp_netif_dhcps_get_status",[&]{return esp_netif_dhcps_get_status(netif,&dhcp);}))) break;
+        if(dhcp!=ESP_NETIF_DHCP_STARTED && !check(traced("esp_netif_dhcps_start",[&]{return esp_netif_dhcps_start(netif);}))) break;
+        if(!check(traced("esp_netif_dhcps_get_status.verify",[&]{return esp_netif_dhcps_get_status(netif,&dhcp);})) || dhcp!=ESP_NETIF_DHCP_STARTED) {wifi_startup_trace::capture("verify.dhcp.started",ESP_FAIL,true);error=ESP_FAIL;break;}
+        // IDF 4.4.7 GET rejects STOPPED servers: read back only after start.
+        uint8_t router_readback=1;
+        if(!check(traced("dhcps.router.GET",[&]{return esp_netif_dhcps_option(netif,ESP_NETIF_OP_GET,
+            ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,&router_readback,sizeof(router_readback));})) || router_readback!=0) {
+            wifi_startup_trace::capture("verify.router.disabled",ESP_FAIL,true);error=ESP_FAIL;break;
+        }
+        portENTER_CRITICAL(&mux);shared.router_option_disabled=true;portEXIT_CRITICAL(&mux);
+        esp_netif_ip_info_t actual{};wifi_config_t actual_ap{};
+        if(!check(traced("esp_netif_get_ip_info",[&]{return esp_netif_get_ip_info(netif,&actual);})) || actual.ip.addr!=ip.ip.addr ||
+           !check(traced("esp_wifi_get_config",[&]{return esp_wifi_get_config(WIFI_IF_AP,&actual_ap);})) ||
+           actual_ap.ap.authmode!=WIFI_AUTH_WPA2_PSK || actual_ap.ap.max_connection!=max_stations) {wifi_startup_trace::capture("verify.ip_auth",ESP_FAIL,true);error=ESP_FAIL;break;}
+        portENTER_CRITICAL(&mux);memcpy(shared.ip,"192.168.4.1",12);portEXIT_CRITICAL(&mux);
+        record(2,0);
+        if(!safe(memory())) {wifi_startup_trace::capture("guard.after_ap",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
+        httpd_config_t http=HTTPD_DEFAULT_CONFIG();
+        http.core_id=0;http.task_priority=3;http.stack_size=8192;http.max_open_sockets=max_sessions;
+        http.max_uri_handlers=1;http.max_resp_headers=8;http.backlog_conn=2;
+        http.recv_wait_timeout=1;http.send_wait_timeout=1;http.lru_purge_enable=false;
+        http.open_fn=opened;http.close_fn=closed;http.uri_match_fn=httpd_uri_match_wildcard;
+        wifi_startup_trace::capture("http.stack_sockets",0,false,nullptr,uint32_t(http.stack_size)|(uint32_t(http.max_open_sockets)<<16));
+        if(!check(traced("httpd_start",[&]{return httpd_start(&server,&http);}))) break;
+        httpd_uri_t route{};route.uri="/*";route.method=HTTP_GET;route.handler=serve;
+        if(!check(traced("httpd_register_uri_handler",[&]{return httpd_register_uri_handler(server,&route);}))) break;
+        if(!safe(memory())) {wifi_startup_trace::capture("guard.after_http",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
+        phase(Phase::ready);record(3,0);
+        wifi_startup_trace::capture("startup.READY");wifi_startup_trace::release();
+        uint32_t previous_requests=0;unsigned previous_clients=0;
+        for(;;) {
+            vTaskDelay(pdMS_TO_TICKS(1000)); // Counts update in callbacks; reconcile at the original 1 Hz.
+            bool queue_sweep=false;
+            portENTER_CRITICAL(&mux);
+            if(!sweep_pending) {sweep_pending=true;queue_sweep=true;}
+            portEXIT_CRITICAL(&mux);
+            if(queue_sweep && httpd_queue_work(server,sweep,nullptr)!=ESP_OK) {error=ESP_FAIL;break;}
+            wifi_sta_list_t list{};
+            uint32_t generation;
+            portENTER_CRITICAL(&mux);generation=station_generation;portEXIT_CRITICAL(&mux);
+            if(!check(esp_wifi_ap_get_sta_list(&list))) {wifi_startup_trace::capture("esp_wifi_ap_get_sta_list",error,true);break;}
+            if(list.num>max_stations) {error=ESP_FAIL;break;}
+            portENTER_CRITICAL(&mux);
+            // Do not overwrite newer callback state with an older driver query.
+            if(generation==station_generation) {
+                stations.clear();
+                for(int i=0;i<list.num;++i) stations.connect(list.sta[i].mac);
+                publishStations();
+            }
+            portEXIT_CRITICAL(&mux);
+            auto s=status();
+            record(s.clients!=previous_clients?(s.clients?4:5):(s.requests!=previous_requests?6:7),s.clients);
+            previous_clients=s.clients;previous_requests=s.requests;
+            if(!safe(memory())) {wifi_startup_trace::capture("guard.runtime.heap",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
+            if(s.tx_stopped || s.tx_errors) {wifi_startup_trace::capture("guard.transport",ESP_ERR_INVALID_STATE,true);error=ESP_ERR_INVALID_STATE;break;}
+            if((s.http_stack && s.http_stack<1024) || s.worker_stack<1024) {wifi_startup_trace::capture("guard.stack",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
+        }
+    } while(false);
+    // Only worker may block on teardown. Never reset/reinitialize the DMX driver.
+    if(server) {traced("httpd_stop",[]{return httpd_stop(server);});server=nullptr;}
+    if(started) traced("esp_wifi_stop",[]{return esp_wifi_stop();});
+    if(station_handler) traced("station.events.unregister",[&]{return esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,station_handler);});
+    worker_task=nullptr;
+    portENTER_CRITICAL(&mux);stations.clear();publishStations();portEXIT_CRITICAL(&mux);
+    if(netif) esp_netif_destroy_default_wifi(netif);
+    wifi_startup_trace::capture("netif.destroy.after");
+    if(initialized) traced("esp_wifi_deinit",[]{return esp_wifi_deinit();});
+    record(8,0);phase(Phase::failed,error==ESP_OK?ESP_FAIL:error);
+    vTaskDelete(nullptr);
+}
+}
+void prepare() {
+    application_owner=xTaskGetCurrentTaskHandle();
+    // Actual SoftAP-derived address, verified against WIFI_IF_AP after Wi-Fi init.
+    if(esp_read_mac(ap_mac,ESP_MAC_WIFI_SOFTAP)!=ESP_OK) {phase(Phase::failed,ESP_FAIL);return;}
+    Preferences storage;
+    if(!storage.begin("dmxwifi",false)) {phase(Phase::failed,ESP_FAIL);return;}
+    bool reset=false,valid=true;
+    if(storage.isKey("factory")) {
+        valid=storage.getType("factory")==PT_U8 && storage.getUChar("factory",0)==1;
+        reset=valid;
+    }
+    const bool exists=storage.isKey("ap1");
+    const size_t length=exists?storage.getBytesLength("ap1"):0;
+    uint8_t blob[sizeof(softap_policy::Credentials)]{};
+    if(valid && exists && !reset)
+        valid=length<=sizeof(blob) && length>0 && storage.getBytes("ap1",blob,length)==length;
+    const auto decision=valid?softap_policy::select(blob,length,exists,reset,ap_mac,credentials):softap_policy::Decision::invalid;
+    valid=decision!=softap_policy::Decision::invalid;
+    if(decision==softap_policy::Decision::write_factory) {
+        valid=storage.putBytes("ap1",&credentials,sizeof(credentials))==sizeof(credentials);
+        softap_policy::Credentials verified{};
+        valid=valid && storage.getBytesLength("ap1")==sizeof(verified) &&
+            storage.getBytes("ap1",&verified,sizeof(verified))==sizeof(verified) && !memcmp(&verified,&credentials,sizeof(verified));
+        // Only acknowledge the explicit reset after the atomic blob write/readback.
+        if(valid && reset) valid=storage.remove("factory");
+    }
+    storage.end();
+    if(!valid) {memset(&credentials,0,sizeof(credentials));phase(Phase::failed,ESP_FAIL);return;}
+    phase(Phase::prepared);
+}
+void launch(bool canvas_reserved) {
+    if(launched || status().phase!=Phase::prepared) return;
+    launched=true;
+    if(!canvas_reserved) {wifi_startup_trace::capture("guard.canvas",ESP_ERR_NO_MEM,true);phase(Phase::failed,ESP_ERR_NO_MEM);return;}
+    const auto m=memory();
+    portENTER_CRITICAL(&mux);shared.before=m;shared.current=m;samples[0]={m,1,0,0};sample_count=1;portEXIT_CRITICAL(&mux);
+    const uint32_t failed_guards=(m.internal<81920?1U:0U)|(m.largest<49152?2U:0U)|(m.dma<32768?4U:0U);
+    wifi_startup_trace::capture("guard.preflight",failed_guards?ESP_ERR_NO_MEM:ESP_OK,failed_guards!=0,nullptr,failed_guards);
+    if(m.internal<81920 || m.largest<49152 || m.dma<32768) {phase(Phase::failed,ESP_ERR_NO_MEM);return;}
+    wifi_startup_trace::capture("xTaskCreatePinnedToCore",0,false,nullptr,0,true);
+    const auto task_result=xTaskCreatePinnedToCore(worker,"net-worker",8192,nullptr,1,&worker_task,0);
+    wifi_startup_trace::capture("xTaskCreatePinnedToCore",task_result==pdPASS?ESP_OK:ESP_ERR_NO_MEM,task_result!=pdPASS,nullptr,uint32_t(task_result));
+    if(task_result!=pdPASS) phase(Phase::failed,ESP_ERR_NO_MEM);
+}
+void ownerTick(int64_t now,uint32_t errors,bool stopped) {
+    static int64_t previous=0;
+    const uint32_t gap=previous && now>=previous?static_cast<uint32_t>(std::min(int64_t(UINT32_MAX),now-previous)):0;
+    previous=now;
+    portENTER_CRITICAL(&mux);
+    shared.max_loop_gap_us=std::max(shared.max_loop_gap_us,gap);shared.tx_errors=errors;shared.tx_stopped=stopped;
+    portEXIT_CRITICAL(&mux);
+    wifi_startup_trace::service();
+}
+Status status() {portENTER_CRITICAL(&mux);const auto s=shared;portEXIT_CRITICAL(&mux);return s;}
+const char* ssid() {return credentials.ssid;}
+const char* password() {return credentials.pass;}
+const char* credentialMode() {
+    return credentials.origin==softap_policy::Origin::legacy?"LEGACY":
+        (credentials.origin==softap_policy::Origin::factory?"FACTORY":"CUSTOM");
+}
+uint32_t uiRevision() {portENTER_CRITICAL(&mux);const auto r=shared.ui_revision;portEXIT_CRITICAL(&mux);return r;}
+bool requestFactoryReset() {
+    if(xTaskGetCurrentTaskHandle()!=application_owner) return false;
+    if(status().reset_pending) return true;
+    Preferences storage;
+    if(!storage.begin("dmxwifi",false)) return false;
+    const bool saved=storage.putUChar("factory",1)==1 && storage.getUChar("factory",0)==1;
+    storage.end();
+    if(saved) {
+        portENTER_CRITICAL(&mux);shared.reset_pending=true;++shared.ui_revision;portEXIT_CRITICAL(&mux);
+    }
+    return saved; // No credential mutation/restart until the user explicitly restarts.
+}
+
+const char* phaseName(Phase p) {
+    switch(p) {case Phase::disabled:return "OFF";case Phase::prepared:return "PREPARED";case Phase::starting:return "STARTING";case Phase::ready:return "READY";default:return "FAILED";}
+}
+}
