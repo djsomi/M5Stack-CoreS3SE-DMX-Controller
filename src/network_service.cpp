@@ -2,6 +2,10 @@
 #include "http_policy.h"
 #include "web_assets.h"
 #include "softap_policy.h"
+#include "websocket_service.h"
+#include "websocket_wire.h"
+#include "websocket_pump.h"
+#include "websocket_diagnostics.h"
 #include <Preferences.h>
 #include <esp_event.h>
 #include <esp_wifi.h>
@@ -11,6 +15,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_http_server.h>
+#include <esp_log.h>
 #include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -21,7 +26,8 @@
 
 namespace network_service {
 namespace {
-constexpr unsigned max_stations = DMX_WIFI_MAX_STATIONS, max_sessions = 3;
+constexpr unsigned max_stations = DMX_WIFI_MAX_STATIONS, max_sessions = 6;
+static_assert(max_sessions+3<=CONFIG_LWIP_MAX_SOCKETS,"HTTP listen/control socket reservation");
 static_assert(max_stations<=CONFIG_LWIP_DHCPS_MAX_STATION_NUM,"AP limit exceeds DHCP lease capacity");
 // Provisional fail-closed guardrails, NOT measured safe Wi-Fi budgets.
 constexpr size_t minimum_internal = 32768, minimum_dma = 16384;
@@ -29,12 +35,28 @@ softap_policy::Credentials credentials{};
 uint8_t ap_mac[6]{};
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 Status shared{};
+using WsReason=websocket_diagnostics::Reason;
+using WsSource=websocket_diagnostics::Source;
+websocket_diagnostics::Counters ws_diag;
 struct Sample { Memory memory; unsigned event, clients, requests; } samples[8]{};
 unsigned sample_count = 0;
 TaskHandle_t worker_task = nullptr;
 TaskHandle_t application_owner = nullptr;
 httpd_handle_t server = nullptr;
-struct Session { int fd = -1; stage5::Budget budget; bool handled=false, closing=false; } sessions[max_sessions];
+struct Session {
+    int fd = -1; stage5::Budget budget;
+    bool handled=false, closing=false, websocket=false;
+    websocket_bridge::Token token;
+    int64_t rx_deadline=0, tx_deadline=0, activity=0, ping=0;
+    uint32_t frames=0;int64_t frame_window=0;
+    websocket_bridge::WireGuard wire;
+    WsReason close_reason=WsReason::none,io_reason=WsReason::none;
+    int socket_errno=0;
+    uint32_t updates_sent=0;
+    uint64_t last_sent_revision=0,attempt_revision=0;
+} sessions[max_sessions];
+// HTTP task only; one serialized formatter, no per-client heap/frame allocation.
+char ws_output[websocket_bridge::max_json];
 int64_t request_window = 0;
 unsigned window_requests = 0;
 bool launched = false;
@@ -53,6 +75,7 @@ void stationEvent(void*,esp_event_base_t,int32_t event,void* data) {
     else if(data && event==WIFI_EVENT_AP_STACONNECTED)
         stations.connect(static_cast<wifi_event_ap_staconnected_t*>(data)->mac);
     else if(data) stations.disconnect(static_cast<wifi_event_ap_stadisconnected_t*>(data)->mac);
+    if(event==WIFI_EVENT_AP_STADISCONNECTED){++ws_diag.wifi_disconnects;ws_diag.last_wifi_ms=uint32_t(esp_timer_get_time()/1000);}
     ++station_generation;publishStations();
     portEXIT_CRITICAL(&mux);
     // No M5, Controller, storage, printing or driver query in the callback.
@@ -101,8 +124,53 @@ Session* session(int fd) {
     for(auto& s:sessions) if(s.fd==fd) return &s;
     return nullptr;
 }
+void recordClosure(Session& s,WsReason reason,WsSource source,int rc=0) {
+    if(s.close_reason!=WsReason::none)return;
+    s.close_reason=reason;
+    if(!s.websocket)return;
+    const auto info=websocket_service::clientInfo(s.token);
+    websocket_diagnostics::Closure c;
+    c.ms=uint32_t(esp_timer_get_time()/1000);c.generation=s.token.generation;c.fd=s.fd;
+    c.reason=reason;c.source=source;c.rc=rc;c.socket_errno=s.socket_errno;
+    c.updates_sent=s.updates_sent;c.last_sent_revision=s.last_sent_revision;c.attempt_revision=s.attempt_revision;
+    c.queued=info.queued;c.outstanding=info.outstanding;c.last_enqueued_revision=info.last_enqueued_revision;
+    const auto first=websocket_service::metrics().first;
+    if(first.present&&first.token.generation==s.token.generation&&first.token.slot==s.token.slot&&info.stop==first.stop) {
+        c.queued=first.queued;c.outstanding=first.outstanding;
+        if(reason==WsReason::bridge_queue_full)c.attempt_revision=first.rejected_revision;
+    }
+    portENTER_CRITICAL(&mux);
+    ws_diag.last=c;
+    if(reason==WsReason::native_unattributed)++ws_diag.unattributed_closes;
+    if(reason!=WsReason::peer_close&&!ws_diag.first_present){ws_diag.first=c;ws_diag.first_present=true;}
+    portEXIT_CRITICAL(&mux);
+}
+int ioFailure(Session& s,WsReason reason,int error) {
+    if(s.io_reason==WsReason::none){s.io_reason=reason;s.socket_errno=error;}
+    return HTTPD_SOCK_ERR_FAIL;
+}
 int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writing) {
     Session* s=session(fd);
+    if(s && s->websocket) {
+        // IDF's WS sender only checks for negative results, NOT short writes.
+        // Likewise extended length/mask reads must be exact. Complete each
+        // native call within one frame deadline or fail/close the connection.
+        auto& deadline=writing?s->tx_deadline:s->rx_deadline;
+        const bool first=!deadline;
+        if(first)deadline=esp_timer_get_time()+100000;
+        if(length>(writing?websocket_bridge::max_json:websocket_bridge::max_message))return ioFailure(*s,WsReason::wire_invalid,0);
+        size_t done=0;
+        while(done<length) {
+            const auto left=deadline-esp_timer_get_time();if(left<=0)return ioFailure(*s,WsReason::io_failure,ETIMEDOUT);
+            timeval timeout{0,static_cast<long>(left)};
+            if(setsockopt(fd,SOL_SOCKET,writing?SO_SNDTIMEO:SO_RCVTIMEO,&timeout,sizeof(timeout)))return ioFailure(*s,WsReason::io_failure,errno);
+            const int n=writing?send(fd,data+done,length-done,flags):recv(fd,data+done,length-done,flags);
+            if(n<=0)return ioFailure(*s,WsReason::io_failure,n<0?errno:0);
+            done+=size_t(n);
+        }
+        if(!writing&&!s->wire.wsBytes(data,done))return ioFailure(*s,WsReason::wire_invalid,0);
+        return int(done);
+    }
     if(!s || !s->budget.allow(esp_timer_get_time(),0,writing)) return HTTPD_SOCK_ERR_FAIL;
     const size_t used=writing?s->budget.sent:s->budget.received;
     const size_t limit=writing?stage5::max_tx_bytes:stage5::max_rx_bytes;
@@ -115,6 +183,7 @@ int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writin
     if(setsockopt(fd,SOL_SOCKET,writing?SO_SNDTIMEO:SO_RCVTIMEO,&timeout,sizeof(timeout))) return HTTPD_SOCK_ERR_FAIL;
     const int n=writing?send(fd,data,amount,flags):recv(fd,data,amount,flags);
     if(n>0) {
+        if(!writing)s->wire.httpBytes(data,size_t(n));
         if(!s->budget.allow(esp_timer_get_time(),static_cast<size_t>(n),writing)) return HTTPD_SOCK_ERR_FAIL;
         return n;
     }
@@ -125,25 +194,87 @@ int receive(httpd_handle_t h,int fd,char* p,size_t n,int f) { return io(h,fd,p,n
 int transmit(httpd_handle_t h,int fd,const char* p,size_t n,int f) { return io(h,fd,const_cast<char*>(p),n,f,true); }
 esp_err_t opened(httpd_handle_t h,int fd) {
     for(auto& s:sessions) if(s.fd==-1) {
-        s.fd=fd; s.budget={};s.budget.opened=esp_timer_get_time();s.handled=s.closing=false;
+        s=Session{};s.fd=fd;s.budget.opened=esp_timer_get_time();
         if(httpd_sess_set_recv_override(h,fd,receive)!=ESP_OK || httpd_sess_set_send_override(h,fd,transmit)!=ESP_OK) {
             s.fd=-1; return ESP_FAIL;
         }
+        portENTER_CRITICAL(&mux);++ws_diag.sockets_opened;portEXIT_CRITICAL(&mux);
         return ESP_OK;
     }
+    portENTER_CRITICAL(&mux);++ws_diag.open_rejected;portEXIT_CRITICAL(&mux);
     return ESP_FAIL;
 }
-void closed(httpd_handle_t,int fd) { if(auto* s=session(fd)) s->fd=-1; close(fd); }
+void closed(httpd_handle_t,int fd) {
+    if(auto* s=session(fd)){
+        if(s->websocket) {
+            portENTER_CRITICAL(&mux);const bool stopping=ws_diag.stopping;const int rc=ws_diag.server_stop_rc;portEXIT_CRITICAL(&mux);
+            recordClosure(*s,stopping?WsReason::server_stop:(s->io_reason!=WsReason::none?s->io_reason:WsReason::native_unattributed),WsSource::native_callback,rc);
+            websocket_service::close(s->token);
+        }
+        portENTER_CRITICAL(&mux);++ws_diag.sockets_closed;if(s->websocket)++ws_diag.ws_closed;portEXIT_CRITICAL(&mux);
+        *s=Session{};
+    }
+    close(fd);
+}
+void closeSession(Session& s,WsReason reason,WsSource source,int rc=0) {
+    if(s.closing)return;
+    recordClosure(s,reason,source,rc);
+    if(s.websocket)websocket_service::close(s.token);
+    httpd_sess_update_lru_counter(server,s.fd);
+    if(httpd_sess_trigger_close(server,s.fd)==ESP_OK)s.closing=true;
+    else shutdown(s.fd,SHUT_RDWR);
+}
+bool wsSend(Session& s,httpd_ws_type_t type,uint8_t* payload,size_t length) {
+    httpd_ws_frame_t frame{};frame.type=type;frame.payload=payload;frame.len=length;
+    s.io_reason=WsReason::none;s.socket_errno=0;s.tx_deadline=esp_timer_get_time()+100000;
+    const auto rc=httpd_ws_send_frame_async(server,s.fd,&frame);
+    s.tx_deadline=0;
+    portENTER_CRITICAL(&mux);ws_diag.last_send_rc=rc;if(rc!=ESP_OK)++ws_diag.send_failures;
+    if(rc==ESP_OK&&type==HTTPD_WS_TYPE_CLOSE)++ws_diag.close_frames_sent;
+    portEXIT_CRITICAL(&mux);
+    if(rc!=ESP_OK){recordClosure(s,WsReason::send_failed,WsSource::send,rc);websocket_service::sendFailed(s.token);closeSession(s,WsReason::send_failed,WsSource::send,rc);return false;}
+    return true;
+}
 void sweep(void*) {
+    portENTER_CRITICAL(&mux);++ws_diag.work_started;portEXIT_CRITICAL(&mux);
     const auto now=esp_timer_get_time();
-    for(auto& s:sessions) if(s.fd>=0 && !s.closing && now-s.budget.opened>=stage5::session_us) {
+    for(auto& s:sessions) if(s.fd>=0 && !s.closing) {
+        if(s.websocket) {
+            const auto info=websocket_service::clientInfo(s.token);
+            if(!info.active) {
+                const auto reason=info.stop==websocket_bridge::Stop::queue_full?WsReason::bridge_queue_full:
+                    (info.stop==websocket_bridge::Stop::rate_limit?WsReason::bridge_rate:WsReason::bridge_gone);
+                closeSession(s,reason,WsSource::pump);continue;
+            }
+            const auto fd_info=httpd_ws_get_fd_info(server,s.fd);
+            if(fd_info!=HTTPD_WS_CLIENT_WEBSOCKET){closeSession(s,WsReason::socket_invalid,WsSource::pump,int(fd_info));continue;}
+            if(now-s.activity>=60000000){closeSession(s,WsReason::idle,WsSource::pump);continue;}
+            if(now-s.ping>=20000000){s.ping=now;wsSend(s,HTTPD_WS_TYPE_PING,nullptr,0);}
+            continue;
+        }
+        if(now-s.budget.opened<stage5::session_us)continue;
         // IDF 4.4.7 skips queued closes with zero LRU (new, never-read socket).
         // Refresh it in the HTTP task before queuing this same live session.
         httpd_sess_update_lru_counter(server,s.fd);
         if(httpd_sess_trigger_close(server,s.fd)==ESP_OK) s.closing=true;
         else shutdown(s.fd,SHUT_RDWR); // Wake select; native session cleanup owns close.
     }
-    portENTER_CRITICAL(&mux);sweep_pending=false;portEXIT_CRITICAL(&mux);
+    static unsigned first=0;
+    websocket_bridge::drain(max_sessions,first,[](unsigned slot) {
+        auto& s=sessions[slot];
+        if(s.fd<0||s.closing||!s.websocket||!websocket_service::alive(s.token))return false;
+        websocket_bridge::Event event;if(!websocket_service::take(s.token,event))return false;
+        s.attempt_revision=event.revision;
+        const size_t length=websocket_bridge::encode(event,ws_output,sizeof(ws_output));
+        if(!length){recordClosure(s,WsReason::encode_failed,WsSource::pump);websocket_service::sendFailed(s.token);closeSession(s,WsReason::encode_failed,WsSource::pump);return true;}
+        if(wsSend(s,HTTPD_WS_TYPE_TEXT,reinterpret_cast<uint8_t*>(ws_output),length)&&
+           (event.kind==websocket_bridge::Kind::channel||event.kind==websocket_bridge::Kind::universe||event.kind==websocket_bridge::Kind::mode)) {
+            ++s.updates_sent;s.last_sent_revision=event.revision;
+            portENTER_CRITICAL(&mux);++ws_diag.updates_sent;portEXIT_CRITICAL(&mux);
+        }
+        return true;
+    },[]{return esp_timer_get_time();});
+    portENTER_CRITICAL(&mux);sweep_pending=false;++ws_diag.work_completed;portEXIT_CRITICAL(&mux);
 }
 esp_err_t finish(httpd_req_t* r,esp_err_t result) {
     Session* s=session(httpd_req_to_sockfd(r));
@@ -156,10 +287,72 @@ bool header(httpd_req_t* r,const char* key,char* value,size_t capacity,bool requ
     if(!length) {value[0]=0;return !required;}
     return length<capacity && httpd_req_get_hdr_value_str(r,key,value,capacity)==ESP_OK;
 }
+esp_err_t handlerFailure(Session& s,WsReason reason,int rc=ESP_FAIL) {
+    if(!s.websocket){portENTER_CRITICAL(&mux);++ws_diag.upgrade_rejected;portEXIT_CRITICAL(&mux);}
+    recordClosure(s,reason,s.io_reason==WsReason::none?WsSource::handler:WsSource::io,rc);
+    return ESP_FAIL; // Native server owns cleanup; do not queue a second close.
+}
+esp_err_t websocket(httpd_req_t* r) {
+    auto* s=session(httpd_req_to_sockfd(r));if(!s||s->closing)return ESP_FAIL;
+    if(r->method==HTTP_GET) {
+        char host[65],origin[65];
+        const auto now=esp_timer_get_time();
+        if(now-request_window>=1000000){request_window=now;window_requests=0;}
+        // IDF emits 101 BEFORE this callback. Reject before registering any
+        // bridge client or processing data; returning failure closes the socket.
+        if(s->handled||s->wire.trailing()||strcmp(r->uri,"/ws")||r->content_len||++window_requests>12||
+           httpd_ws_get_fd_info(r->handle,s->fd)!=HTTPD_WS_CLIENT_WEBSOCKET||
+           !header(r,"Host",host,sizeof(host),true)||!stage5::allowedHost(host)||
+           !header(r,"Origin",origin,sizeof(origin))||!stage5::allowedOrigin(origin))return handlerFailure(*s,WsReason::upgrade_rejected);
+        s->token=websocket_service::open(uint64_t(now/1000));
+        if(!s->token.generation)return handlerFailure(*s,WsReason::upgrade_rejected);
+        s->handled=s->websocket=true;s->activity=s->ping=now;
+        portENTER_CRITICAL(&mux);++ws_diag.ws_opened;portEXIT_CRITICAL(&mux);
+        return ESP_OK;
+    }
+    if(!s->websocket||!websocket_service::alive(s->token))return handlerFailure(*s,WsReason::bridge_gone);
+    const auto now=esp_timer_get_time();
+    if(now-s->frame_window>=1000000){s->frame_window=now;s->frames=0;}
+    if(++s->frames>24)return handlerFailure(*s,WsReason::frame_rate); // Includes control frames, bounded CPU.
+    httpd_ws_frame_t frame{};
+    const auto received=httpd_ws_recv_frame(r,&frame,0);
+    if(received!=ESP_OK)return handlerFailure(*s,s->io_reason!=WsReason::none?s->io_reason:WsReason::receive_failed,received);
+    if(!websocket_bridge::validFrame(unsigned(frame.type),frame.final,frame.len))return handlerFailure(*s,WsReason::frame_invalid);
+    uint8_t payload[websocket_bridge::max_message];
+    frame.payload=payload;
+    if(frame.len){const auto payload_rc=httpd_ws_recv_frame(r,&frame,sizeof(payload));
+        if(payload_rc!=ESP_OK)return handlerFailure(*s,s->io_reason!=WsReason::none?s->io_reason:WsReason::receive_failed,payload_rc);}
+    s->rx_deadline=0;s->activity=now;
+    if(frame.type==HTTPD_WS_TYPE_CLOSE){if(wsSend(*s,HTTPD_WS_TYPE_CLOSE,nullptr,0))recordClosure(*s,WsReason::peer_close,WsSource::handler);return ESP_FAIL;}
+    if(frame.type==HTTPD_WS_TYPE_PING)return wsSend(*s,HTTPD_WS_TYPE_PONG,payload,frame.len)?ESP_OK:ESP_FAIL;
+    if(frame.type==HTTPD_WS_TYPE_TEXT)websocket_service::receive(s->token,reinterpret_cast<char*>(payload),frame.len,uint64_t(now/1000));
+    return ESP_OK;
+}
+size_t diagnosticJson(char* output,size_t capacity) {
+    websocket_diagnostics::Counters counters;bool pending;
+    portENTER_CRITICAL(&mux);counters=ws_diag;pending=sweep_pending;portEXIT_CRITICAL(&mux);
+    websocket_diagnostics::SessionInfo infos[max_sessions];
+    for(unsigned i=0;i<max_sessions;++i) {
+        const auto& s=sessions[i];auto& info=infos[i];info.fd=s.fd;info.websocket=s.websocket;info.closing=s.closing;
+        info.generation=s.token.generation;info.opened_ms=uint32_t(s.budget.opened/1000);info.activity_ms=uint32_t(s.activity/1000);
+        info.updates_sent=s.updates_sent;info.last_sent_revision=s.last_sent_revision;
+        if(s.websocket)info.bridge=websocket_service::clientInfo(s.token);
+    }
+    return websocket_diagnostics::encode(counters,websocket_service::metrics(),infos,max_sessions,pending,uint32_t(esp_timer_get_time()/1000),output,capacity);
+}
+void emitFirstFailure() {
+    websocket_diagnostics::Closure c;bool emit=false;
+    portENTER_CRITICAL(&mux);
+    if(ws_diag.first_present&&!ws_diag.first_logged){c=ws_diag.first;ws_diag.first_logged=true;emit=true;}
+    portEXIT_CRITICAL(&mux);
+    if(emit)ESP_LOGW("wsdiag","WS_FIRST_FAILURE ms=%u gen=%u fd=%d reason=%s source=%s rc=%d errno=%d last_ok_rev=%llu trigger_rev=%llu updates_sent=%u queued=%u outstanding=%u",
+        unsigned(c.ms),unsigned(c.generation),c.fd,websocket_diagnostics::name(c.reason),websocket_diagnostics::name(c.source),c.rc,c.socket_errno,
+        (unsigned long long)c.last_sent_revision,(unsigned long long)c.attempt_revision,unsigned(c.updates_sent),unsigned(c.queued),unsigned(c.outstanding));
+}
 void security(httpd_req_t* r,const char* cache="no-store") {
     httpd_resp_set_hdr(r,"Connection","close");
     httpd_resp_set_hdr(r,"X-Content-Type-Options","nosniff");
-    httpd_resp_set_hdr(r,"Content-Security-Policy","default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+    httpd_resp_set_hdr(r,"Content-Security-Policy","default-src 'self'; connect-src 'self' ws://192.168.4.1; frame-ancestors 'none'; base-uri 'none'");
     httpd_resp_set_hdr(r,"Referrer-Policy","no-referrer");
     httpd_resp_set_hdr(r,"Cache-Control",cache);
 }
@@ -181,10 +374,15 @@ esp_err_t serve(httpd_req_t* r) {
     const auto now=esp_timer_get_time();
     if(now-request_window>=1000000) {request_window=now;window_requests=0;}
     if(++window_requests>12) return reject(r,"429 Too Many Requests");
-    if(!strcmp(r->uri,"/status")) {
+    if(!strcmp(r->uri,"/status")||!strcmp(r->uri,"/ws-diagnostics")) {
         security(r);
         const auto s=status();
-        char json[3072];
+        static char json[4096]; // HTTP task only; keep the existing 8 KiB task stack.
+        if(!strcmp(r->uri,"/ws-diagnostics")) {
+            const size_t length=diagnosticJson(json,sizeof(json));
+            if(!length)return reject(r,"503 Service Unavailable");
+            httpd_resp_set_type(r,"application/json");return finish(r,httpd_resp_send(r,json,length));
+        }
         int n=snprintf(json,sizeof(json),
             "{\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
             phaseName(s.phase),s.ip,(unsigned long)s.clients,(unsigned long)s.max_clients,s.router_option_disabled?"false":"true",
@@ -214,7 +412,14 @@ esp_err_t serve(httpd_req_t* r) {
                 (unsigned long)m.internal,(unsigned long)m.minimum,(unsigned long)m.largest,(unsigned long)m.dma,(unsigned long)m.psram);
         }
         if(n<0 || size_t(n)+3>=sizeof(json)) return reject(r,"503 Service Unavailable");
-        json[n++]=']';json[n++]='}';json[n]=0;
+        const auto w=websocket_service::metrics();
+        n+=snprintf(json+n,sizeof(json)-n,
+            "],\"websocket\":{\"clients\":%lu,\"max_clients\":4,\"http_sockets\":6,\"inbox\":%lu,\"inbox_high\":%lu,\"outbox_high\":%lu,\"accepted\":%lu,\"rejected\":%lu,\"applied\":%lu,\"broadcasts\":%lu,\"send_failures\":%lu,\"slow_closes\":%lu,\"static_bridge_bytes\":%u},\"dma_free\":%u}",
+            (unsigned long)w.clients,(unsigned long)w.inbox,(unsigned long)w.inbox_high,(unsigned long)w.outbox_high,
+            (unsigned long)w.accepted,(unsigned long)w.rejected,(unsigned long)w.applied,(unsigned long)w.broadcasts,
+            (unsigned long)w.send_failures,(unsigned long)w.slow_closes,unsigned(sizeof(websocket_bridge::Bridge)),
+            unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA)));
+        if(n<0||size_t(n)>=sizeof(json))return reject(r,"503 Service Unavailable");
         httpd_resp_set_type(r,"application/json");return finish(r,httpd_resp_send(r,json,n));
     }
     if(!header(r,"Accept-Encoding",encoding,sizeof(encoding))) return reject(r,"431 Request Header Fields Too Large");
@@ -305,24 +510,36 @@ void worker(void*) {
         if(!safe(memory())) {wifi_startup_trace::capture("guard.after_ap",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
         httpd_config_t http=HTTPD_DEFAULT_CONFIG();
         http.core_id=0;http.task_priority=3;http.stack_size=8192;http.max_open_sockets=max_sessions;
-        http.max_uri_handlers=1;http.max_resp_headers=8;http.backlog_conn=2;
+        http.max_uri_handlers=2;http.max_resp_headers=8;http.backlog_conn=2;
         http.recv_wait_timeout=1;http.send_wait_timeout=1;http.lru_purge_enable=false;
         http.open_fn=opened;http.close_fn=closed;http.uri_match_fn=httpd_uri_match_wildcard;
         wifi_startup_trace::capture("http.stack_sockets",0,false,nullptr,uint32_t(http.stack_size)|(uint32_t(http.max_open_sockets)<<16));
         if(!check(traced("httpd_start",[&]{return httpd_start(&server,&http);}))) break;
+        httpd_uri_t ws{};ws.uri="/ws";ws.method=HTTP_GET;ws.handler=websocket;
+        ws.is_websocket=true;ws.handle_ws_control_frames=true;
+        if(!check(httpd_register_uri_handler(server,&ws)))break;
         httpd_uri_t route{};route.uri="/*";route.method=HTTP_GET;route.handler=serve;
         if(!check(traced("httpd_register_uri_handler",[&]{return httpd_register_uri_handler(server,&route);}))) break;
         if(!safe(memory())) {wifi_startup_trace::capture("guard.after_http",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
         phase(Phase::ready);record(3,0);
         wifi_startup_trace::capture("startup.READY");wifi_startup_trace::release();
-        uint32_t previous_requests=0;unsigned previous_clients=0;
+        uint32_t previous_requests=0;unsigned previous_clients=0;int64_t maintenance=0;
         for(;;) {
-            vTaskDelay(pdMS_TO_TICKS(1000)); // Counts update in callbacks; reconcile at the original 1 Hz.
+            vTaskDelay(pdMS_TO_TICKS(20)); // Bounded HTTP-task pump; never queues work from the Controller task.
             bool queue_sweep=false;
             portENTER_CRITICAL(&mux);
             if(!sweep_pending) {sweep_pending=true;queue_sweep=true;}
             portEXIT_CRITICAL(&mux);
-            if(queue_sweep && httpd_queue_work(server,sweep,nullptr)!=ESP_OK) {error=ESP_FAIL;break;}
+            if(queue_sweep) {
+                const auto rc=httpd_queue_work(server,sweep,nullptr);
+                portENTER_CRITICAL(&mux);ws_diag.last_work_rc=rc;
+                if(rc==ESP_OK)++ws_diag.work_queued;else{++ws_diag.work_failed;sweep_pending=false;}
+                portEXIT_CRITICAL(&mux);
+                if(rc!=ESP_OK){error=rc;break;}
+            }
+            if(esp_timer_get_time()-maintenance<1000000)continue;
+            maintenance=esp_timer_get_time(); // Station reconciliation and heap guards remain 1 Hz.
+            emitFirstFailure(); // Worker only, once; never prints from Controller/ISR/callback.
             wifi_sta_list_t list{};
             uint32_t generation;
             portENTER_CRITICAL(&mux);generation=station_generation;portEXIT_CRITICAL(&mux);
@@ -345,7 +562,9 @@ void worker(void*) {
         }
     } while(false);
     // Only worker may block on teardown. Never reset/reinitialize the DMX driver.
+    portENTER_CRITICAL(&mux);ws_diag.stopping=true;ws_diag.server_stop_rc=error;portEXIT_CRITICAL(&mux);
     if(server) {traced("httpd_stop",[]{return httpd_stop(server);});server=nullptr;}
+    emitFirstFailure();
     if(started) traced("esp_wifi_stop",[]{return esp_wifi_stop();});
     if(station_handler) traced("station.events.unregister",[&]{return esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,station_handler);});
     worker_task=nullptr;

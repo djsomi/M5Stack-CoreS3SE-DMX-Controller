@@ -9,7 +9,7 @@ net=(root/'src/network_service.cpp').read_text(encoding='utf-8')
 view=(root/'src/view_sender.h').read_text(encoding='utf-8')
 config=(root/'include/softap_config.h').read_text()
 assert '#define DMX_WIFI_MAX_STATIONS 4' in config
-assert 'ap.ap.max_connection=max_stations' in net and 'max_sessions = 3' in net
+assert 'ap.ap.max_connection=max_stations' in net and 'max_sessions = 6' in net
 assert 'esp_read_mac(ap_mac,ESP_MAC_WIFI_SOFTAP)' in net and 'esp_wifi_get_mac(WIFI_IF_AP,actual_mac)' in net
 assert 'WIFI_AUTH_WPA2_PSK' in net and 'WIFI_MODE_APSTA' not in net
 assert net.index('esp_netif_dhcps_stop(netif)')<net.index('ESP_NETIF_OP_SET')<net.index('esp_wifi_start()')
@@ -20,7 +20,7 @@ for event in ['WIFI_EVENT_AP_STACONNECTED','WIFI_EVENT_AP_STADISCONNECTED','WIFI
     assert event in net
 callback=net.split('void stationEvent(',1)[1].split('Memory memory()',1)[0]
 assert not any(x in callback for x in ['M5.','Preferences','credentials','esp_wifi_ap_get_sta_list','Serial.'])
-assert 'generation==station_generation' in net and 'vTaskDelay(pdMS_TO_TICKS(1000))' in net
+assert 'generation==station_generation' in net and 'maintenance<1000000' in net
 assert 'shared.clients=stations.count()' in net and '++shared.ui_revision' in net
 handler=net.split('esp_err_t serve(',1)[1].split('void worker(',1)[0]
 assert not any(x in handler for x in ['password','credentials','requestFactoryReset','Preferences'])

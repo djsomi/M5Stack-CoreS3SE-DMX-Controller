@@ -3,6 +3,7 @@
 #include "dmx_hardware.h"
 #include "hardware_diagnostics.h"
 #include "network_service.h"
+#include "websocket_service.h"
 #include "dmx_transport_esp_dmx.h"
 #include <esp_system.h>
 #include "view_receiver.h"
@@ -737,6 +738,7 @@ void controllerPowerOff(void) {
 
 
 void setup(void) {
+    websocket_service::initialize(dmx_controller, command_dispatcher);
     wifi_startup_trace::capture("setup.enter");
     network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.
     wifi_startup_trace::capture("credentials.after");
@@ -849,6 +851,7 @@ void loop(void) {
                                dmx_transport.health().fault_stopped);
     serviceDmxTransportDiagnostics();
     command_dispatcher.setSenderActive(scene_mode == mode_sender);
+    websocket_service::ownerPoll(scene_mode == mode_sender);
     command_dispatcher.process();
     if (scene_mode == mode_sender) view_sender.serviceControllerChanges();
 

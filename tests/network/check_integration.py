@@ -14,6 +14,9 @@ trace_steps=re.findall(r'    wifi_startup_trace::capture\("([^"]+)"[^\n]*\n',app
 assert trace_steps==['setup.enter','credentials.after','M5.begin.before','M5.begin.after','sender.cells.after','receiver.canvas.before','receiver.canvas.after','dmx.startup.before','dmx.startup.after'],trace_steps
 normalized=re.sub(r'    wifi_startup_trace::capture\([^\n]+\n','',app)
 for text in ['#include "network_service.h"\n',
+'#include "websocket_service.h"\n',
+'    websocket_service::initialize(dmx_controller, command_dispatcher);\n',
+'    websocket_service::ownerPoll(scene_mode == mode_sender);\n',
 '    network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.\n',
 '    // Reserve the EXISTING UI buffers before any radio allocation. No page switch.\n    const bool sender_canvas_reserved = view_sender.reserveNetworkCanvas();\n    const bool receiver_canvas_reserved = view_receiver.reserveNetworkCanvas();\n    const bool network_canvas_reserved = sender_canvas_reserved && receiver_canvas_reserved;\n\n',
 '    network_service::launch(network_canvas_reserved);\n',
@@ -47,7 +50,7 @@ assert receiver==base('src/view_receiver.h'),'Receiver behavior change'
 for name in ['src/dmx_transport.cpp','src/dmx_transport.h','src/dmx_transport_esp_dmx.h','src/dmx_controller.cpp','src/command_dispatcher.cpp','src/preset_store.h','src/hardware_diagnostics.cpp','platformio.ini','include/dmx_hardware.h','patches/esp_dmx_v202/tx_core.h','patches/esp_dmx_v202/tx_service.h','scripts/esp_dmx_tx_patch.py','scripts/embed_web_assets.py','scripts/package_firmware.py','scripts/web_asset_pipeline.py','partitions/cores3se_16mb_ota.csv']:
     assert (root/name).read_text(encoding='utf-8')==base(name),name
 net=(root/'src/network_service.cpp').read_text()
-assert all(s not in net for s in ['M5.', 'DmxController', 'CommandDispatcher', 'DmxTransport', 'Serial.', 'HWCDC', 'WiFi.begin(', 'httpd_ws_'])
+assert all(s not in net for s in ['M5.', 'DmxController', 'CommandDispatcher', 'DmxTransport', 'Serial.', 'HWCDC', 'WiFi.begin('])
 assert net.index('esp_wifi_set_config(WIFI_IF_AP,&ap)')<net.index('esp_wifi_start()')
 assert 'WIFI_STORAGE_RAM' in net and 'WIFI_MODE_AP' in net and 'WIFI_AUTH_WPA2_PSK' in net and 'cfg.nvs_enable=0' in net
 assert 'WIFI_MODE_STA' not in net and 'WIFI_MODE_APSTA' not in net
