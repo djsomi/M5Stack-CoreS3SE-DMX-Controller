@@ -4,37 +4,37 @@
       "content_encoding": "gzip",
       "content_type": "text/html; charset=utf-8",
       "file": "index.html.gz",
-      "gzip_size": 338,
-      "original_size": 497,
+      "gzip_size": 2686,
+      "original_size": 9020,
       "path": "/",
-      "sha256": "1e512a53f47f4d9d8e6764eb37c974e181e45aa4cbbae4feec88487fb01704f1",
+      "sha256": "5bc9f21ef00b06430920c15faeb73f79012b15e7a7fcfb2aaa8234d336c288f6",
       "source": "index.html",
-      "source_sha256": "0e61829d0b9c311542a2e0546fef05459bafa3663ee4f703e9ec99894c8a8a9c"
+      "source_sha256": "e0693d9e26e61cdbf98fc47ce6e8e1383a5aa48d458626bdd811730ffbc75587"
     },
     {
       "content_encoding": "gzip",
       "content_type": "text/css; charset=utf-8",
       "file": "style.css.gz",
-      "gzip_size": 196,
-      "original_size": 250,
-      "path": "/style.92e2a9129f30b2a7.css",
-      "sha256": "8c3658155afe22264ab4224a9501eff01488a3241ee3bc16a525c50f6e7cee9b",
+      "gzip_size": 3488,
+      "original_size": 12277,
+      "path": "/style.ab9110393bdb9bed.css",
+      "sha256": "504ba652bf0fb879f959fd21af5e1e7938290a98ed82c294098d98ac2977d348",
       "source": "style.css",
-      "source_sha256": "92e2a9129f30b2a791368db7e406f767a589600ed8d46b2e845bf7ae3c1c91d3"
+      "source_sha256": "ab9110393bdb9bede6f5afb8a1508f37bb3a098c81d6fc34e5a6178c5d98f55b"
     },
     {
       "content_encoding": "gzip",
       "content_type": "text/javascript; charset=utf-8",
       "file": "app.js.gz",
-      "gzip_size": 140,
-      "original_size": 151,
-      "path": "/app.7b97491c3c3059fb.js",
-      "sha256": "7351150722df327baab2d6bfed6e1e584142db3a58245a05c128a17805393bae",
+      "gzip_size": 3201,
+      "original_size": 9858,
+      "path": "/app.f94a9190dc95162c.js",
+      "sha256": "8fa104a9a7eedbfda0f6a2a62cef8f0adabe1da155bb62224fc6304be549934c",
       "source": "app.js",
-      "source_sha256": "7b97491c3c3059fb815842a337c59e2c7c95f1877fcd5b5ffc397ed2506219ec"
+      "source_sha256": "f94a9190dc95162c9fc2196bba7b76ee101f3ef4a519db576d89a7c738cc749e"
     }
   ],
-  "bundle_sha256": "5ae4ba7f7ea51bcd054f92bbd3e549efccddf41008a28e8840a8c6235a44c7e9",
+  "bundle_sha256": "08ac84ddd405f750d307dcc20985200ba0ba6091b378a19acf8eb8225fbf4163",
   "generator": {
     "python": "3.11.7",
     "zlib": "1.2.13"

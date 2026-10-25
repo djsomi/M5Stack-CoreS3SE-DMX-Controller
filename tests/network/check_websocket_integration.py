@@ -16,9 +16,18 @@ for name in ['src/view_sender.h','src/view_receiver.h','src/dmx_controller.cpp',
              'scripts/esp_dmx_tx_patch.py','patches/esp_dmx_v202/tx_service.h',
              'patches/esp_dmx_v202/tx_core.h','scripts/package_firmware.py','partitions/cores3se_16mb_ota.csv']:
     assert read(name)==old(name),name
-for folder in ['patches','web']:
+for folder in ['patches']:
     for path in (root/folder).rglob('*'):
         if path.is_file():assert path.read_bytes()==subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show',baseline+':'+path.relative_to(root).as_posix()],cwd=root),str(path)
+# Stage6B replaces only the approved web assets; freeze every Stage6A firmware
+# input and validate actual composed/gzip outputs instead of old placeholder bytes.
+import sys
+sys.path.insert(0,str(root/'tests/web'))
+from check_scope import check
+check()
+sys.path.insert(0,str(root/'scripts'))
+from web_asset_pipeline import verify
+verify(root)
 assert 'dispatcher_.setCompletion(completed,this)' in bridge
 assert 'setObserver(' not in bridge+service and 'setPublisher(' not in bridge+service and 'setAdmission(' not in bridge+service
 assert not any(s in net for s in ['DmxController','CommandDispatcher','DmxTransport','M5.','Serial.','HWCDC','dmx_write','dmx_send'])

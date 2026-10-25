@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sys
 import zlib
+import web_ui_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("index.html", "style.css", "app.js")
@@ -15,6 +16,7 @@ MIME = {"index.html": "text/html; charset=utf-8",
         "app.js": "text/javascript; charset=utf-8"}
 GENERATOR = {"python": "3.11.7", "zlib": "1.2.13"}
 LIMIT = 256 * 1024
+MAX_ASSET_BYTES = 16384  # Existing src/http_policy.h HTTP cap; never silently expand.
 
 
 def sha(data):
@@ -26,6 +28,7 @@ def canonical(value):
 
 
 def source_files(root):
+    web_ui_bundle.verify(root)
     result = {}
     for name in INPUTS:
         path = root / "web/src" / name
@@ -63,11 +66,14 @@ def generate(root=ROOT, output=None):
     if {"python": sys.version.split()[0], "zlib": zlib.ZLIB_RUNTIME_VERSION} != GENERATOR:
         raise ValueError("asset regeneration requires Python 3.11.7 / zlib 1.2.13; normal builds only verify checked files")
     output = output or root / "web/generated"
+    web_ui_bundle.generate(root)  # Explicit generation only; verify() remains read-only.
     sources, urls, bodies = rendered(root)
     entries = []
     blobs = {}
     for name in INPUTS:
         blob = compress(bodies[name]); blobs[name + ".gz"] = blob
+        if len(blob) > MAX_ASSET_BYTES:
+            raise ValueError("compressed HTTP asset exceeds 16 KiB: " + name)
         entries.append(dict(source=name, source_sha256=sha(sources[name]), path=urls[name],
                             file=name + ".gz", content_type=MIME[name], content_encoding="gzip",
                             original_size=len(bodies[name]), gzip_size=len(blob), sha256=sha(blob)))
@@ -95,6 +101,8 @@ def verify(root=ROOT):
     total = 0
     for entry, name in zip(assets, INPUTS):
         blob = (folder / (name + ".gz")).read_bytes()
+        if len(blob) > MAX_ASSET_BYTES:
+            raise ValueError("compressed HTTP asset exceeds 16 KiB: " + name)
         expected = dict(source=name, source_sha256=sha(sources[name]), path=urls[name], file=name + ".gz",
                         content_type=MIME[name], content_encoding="gzip", original_size=len(bodies[name]),
                         gzip_size=len(blob), sha256=sha(blob))

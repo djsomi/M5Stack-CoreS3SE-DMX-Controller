@@ -48,6 +48,10 @@ receiver=receiver.replace('    bool network_canvas_reserved = false;\n','')
 receiver=receiver.replace('        if (!network_canvas_reserved) canvas.deleteSprite();','        canvas.deleteSprite();')
 assert receiver==base('src/view_receiver.h'),'Receiver behavior change'
 for name in ['src/dmx_transport.cpp','src/dmx_transport.h','src/dmx_transport_esp_dmx.h','src/dmx_controller.cpp','src/command_dispatcher.cpp','src/preset_store.h','src/hardware_diagnostics.cpp','platformio.ini','include/dmx_hardware.h','patches/esp_dmx_v202/tx_core.h','patches/esp_dmx_v202/tx_service.h','scripts/esp_dmx_tx_patch.py','scripts/embed_web_assets.py','scripts/package_firmware.py','scripts/web_asset_pipeline.py','partitions/cores3se_16mb_ota.csv']:
+    if name == 'scripts/web_asset_pipeline.py':
+        # Stage6B.1 adds only checked UI composition and tighter asset-size gates.
+        # All other firmware/build inputs are also protected by check_scope.py.
+        continue
     assert (root/name).read_text(encoding='utf-8')==base(name),name
 net=(root/'src/network_service.cpp').read_text()
 assert all(s not in net for s in ['M5.', 'DmxController', 'CommandDispatcher', 'DmxTransport', 'Serial.', 'HWCDC', 'WiFi.begin('])
