@@ -8,10 +8,11 @@ from pathlib import Path
 import re
 
 MODULES = (
-    ("state", ()), ("preferences", ()), ("fader", ()),
+    ("protocol", ()), ("commands", ()), ("state", ()),
+    ("transport", ("protocol", "commands")), ("preferences", ()), ("fader", ()),
     ("editor", ("fader",)), ("presets", ()), ("settings", ()),
     ("status", ()), ("shell", ()),
-    ("app", ("state", "preferences", "editor", "presets", "settings", "status", "shell")),
+    ("app", ("state", "transport", "preferences", "editor", "presets", "settings", "status", "shell")),
 )
 
 

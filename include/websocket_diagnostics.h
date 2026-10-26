@@ -20,6 +20,7 @@ struct Closure {
     int fd=-1,rc=0,socket_errno=0;
     Reason reason=Reason::none;Source source=Source::none;
     uint64_t last_sent_revision=0,attempt_revision=0,last_enqueued_revision=0;
+    uint32_t send_us=0,io_operation=0;
 };
 struct Counters {
     uint32_t sockets_opened=0,sockets_closed=0,open_rejected=0,ws_opened=0,ws_closed=0,upgrade_rejected=0;
@@ -28,13 +29,18 @@ struct Counters {
     int last_send_rc=0,last_work_rc=0,server_stop_rc=0;
     bool stopping=false,first_present=false,first_logged=false;
     Closure first,last;
+    uint32_t send_timeouts=0,send_max_us=0,work_max_us=0,work_delay_max_us=0,work_busy=0,work_last_us=0;
+    // 403,404,406,413,429,431,503,other; no raw URI/header/credential storage.
+    uint32_t http_rejected[8]{},http_last_ms=0,http_last_status=0,http_last_route=0;
 };
 struct SessionInfo {
     int fd=-1;bool websocket=false,closing=false;
     uint32_t generation=0,opened_ms=0,activity_ms=0,updates_sent=0;
     uint64_t last_sent_revision=0;
     websocket_bridge::ClientInfo bridge;
+    uint32_t last_send_ms=0,send_us=0,send_max_us=0,queue_start=0,queue_end=0;
 };
 size_t encode(const Counters& counters,const websocket_bridge::Metrics& bridge,
     const SessionInfo* sessions,size_t count,bool pending,uint32_t now_ms,char* output,size_t capacity);
+void rejection(Counters& counters,uint32_t now_ms,unsigned status,const char* uri);
 }

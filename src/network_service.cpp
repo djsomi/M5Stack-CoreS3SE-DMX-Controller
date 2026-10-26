@@ -1,4 +1,5 @@
 #include "network_service.h"
+#include "hardware_diagnostics.h"
 #include "http_policy.h"
 #include "web_assets.h"
 #include "softap_policy.h"
@@ -51,9 +52,10 @@ struct Session {
     uint32_t frames=0;int64_t frame_window=0;
     websocket_bridge::WireGuard wire;
     WsReason close_reason=WsReason::none,io_reason=WsReason::none;
-    int socket_errno=0;
+    int socket_errno=0;uint32_t io_operation=0;
     uint32_t updates_sent=0;
     uint64_t last_sent_revision=0,attempt_revision=0;
+    uint32_t last_send_ms=0,send_us=0,send_max_us=0,queue_start=0,queue_end=0;
 } sessions[max_sessions];
 // HTTP task only; one serialized formatter, no per-client heap/frame allocation.
 char ws_output[websocket_bridge::max_json];
@@ -61,22 +63,63 @@ int64_t request_window = 0;
 unsigned window_requests = 0;
 bool launched = false;
 bool sweep_pending = false;
+int64_t sweep_queued_at = 0; // mux protected; one outstanding HTTP work item.
 softap_policy::Stations stations;
 uint32_t station_generation=0;
+// Detailed station tracing is absent from normal builds, including its state/work.
+#if DMX_HW_DIAGNOSTICS
+struct StationDiagnostics {
+    enum Event : uint8_t { none,start,connect,disconnect,stop };
+    Event event=none,lifecycle=none;
+    uint32_t lifecycle_ms=0;
+    uint32_t event_ms=0,event_count=0,connects=0,disconnects=0,starts=0,stops=0;
+    uint32_t cycle_connects=0,cycle_disconnects=0,query_ms=0,before=0,after=0;
+    int native_count=-1,query_rc=0;
+    uint16_t event_id=0,ids[max_stations]{};
+    bool event_has_id=false,queried=false,applied=false;
+} station_diag;
+uint32_t station_trace_revision=1,station_trace_logged=0;
+int64_t station_trace_at=0;
+void stationIncrement(uint32_t& value) {if(value!=UINT32_MAX)++value;}
+#endif
 
 // Caller holds mux. Wi-Fi associations are independent of HTTP socket sessions.
 void publishStations() {
     if(shared.clients!=stations.count()) {shared.clients=stations.count();++shared.ui_revision;}
 }
 void stationEvent(void*,esp_event_base_t,int32_t event,void* data) {
-    if(event!=WIFI_EVENT_AP_STACONNECTED && event!=WIFI_EVENT_AP_STADISCONNECTED && event!=WIFI_EVENT_AP_STOP) return;
+    if(event!=WIFI_EVENT_AP_STACONNECTED && event!=WIFI_EVENT_AP_STADISCONNECTED && event!=WIFI_EVENT_AP_STOP && event!=WIFI_EVENT_AP_START) return;
     portENTER_CRITICAL(&mux);
+#if DMX_HW_DIAGNOSTICS
+    auto& d=station_diag;const auto ms=uint32_t(esp_timer_get_time()/1000);
+    d.queried=false;d.applied=false; // Any previous query predates this event.
+    if(event==WIFI_EVENT_AP_START) {
+        d.lifecycle=StationDiagnostics::start;d.lifecycle_ms=ms;stationIncrement(d.starts);
+        d.cycle_connects=d.cycle_disconnects=0;
+    } else if(event==WIFI_EVENT_AP_STOP) {d.lifecycle=StationDiagnostics::stop;d.lifecycle_ms=ms;stationIncrement(d.stops);}
+    else {
+        d.event_ms=ms;d.event_has_id=false;
+        const uint8_t* mac=nullptr;
+        if(event==WIFI_EVENT_AP_STACONNECTED) {
+            d.event=StationDiagnostics::connect;stationIncrement(d.connects);stationIncrement(d.cycle_connects);
+            if(data)mac=static_cast<wifi_event_ap_staconnected_t*>(data)->mac;
+        } else {
+            d.event=StationDiagnostics::disconnect;stationIncrement(d.disconnects);stationIncrement(d.cycle_disconnects);
+            if(data)mac=static_cast<wifi_event_ap_stadisconnected_t*>(data)->mac;
+        }
+        if(mac){d.event_id=uint16_t(unsigned(mac[4])*256+mac[5]);d.event_has_id=true;}
+    }
+    ++station_trace_revision;
+#endif
     if(event==WIFI_EVENT_AP_STOP) stations.clear();
     else if(data && event==WIFI_EVENT_AP_STACONNECTED)
         stations.connect(static_cast<wifi_event_ap_staconnected_t*>(data)->mac);
-    else if(data) stations.disconnect(static_cast<wifi_event_ap_stadisconnected_t*>(data)->mac);
+    else if(data && event==WIFI_EVENT_AP_STADISCONNECTED) stations.disconnect(static_cast<wifi_event_ap_stadisconnected_t*>(data)->mac);
     if(event==WIFI_EVENT_AP_STADISCONNECTED){++ws_diag.wifi_disconnects;ws_diag.last_wifi_ms=uint32_t(esp_timer_get_time()/1000);}
-    ++station_generation;publishStations();
+    if(event!=WIFI_EVENT_AP_START){++station_generation;publishStations();}
+#if DMX_HW_DIAGNOSTICS
+    if(event==WIFI_EVENT_AP_STACONNECTED || event==WIFI_EVENT_AP_STADISCONNECTED)d.event_count=shared.clients;
+#endif
     portEXIT_CRITICAL(&mux);
     // No M5, Controller, storage, printing or driver query in the callback.
 }
@@ -120,6 +163,60 @@ void record(unsigned event, unsigned clients) {
     if(event!=7) { samples[sample_count%8]={m,event,shared.clients,shared.requests}; ++sample_count; }
     portEXIT_CRITICAL(&mux);
 }
+#if DMX_HW_DIAGNOSTICS
+void emitStations(bool force=false) {
+    const auto now=esp_timer_get_time();
+    StationDiagnostics d;unsigned app;uint32_t revision;
+    portENTER_CRITICAL(&mux);d=station_diag;app=shared.clients;revision=station_trace_revision;portEXIT_CRITICAL(&mux);
+    if(!force && ((revision==station_trace_logged && now-station_trace_at<30000000) ||
+        (station_trace_logged && now-station_trace_at<1000000)))return;
+    station_trace_logged=revision;station_trace_at=now;
+    char ids[max_stations*5+1]{};size_t used=0;
+    if(d.queried && d.query_rc==ESP_OK && d.native_count>=0)
+        for(unsigned i=0;i<std::min(unsigned(d.native_count),max_stations);++i)
+            used+=size_t(snprintf(ids+used,sizeof(ids)-used,"%s%04X",i?",":"",unsigned(d.ids[i])));
+    char last[5]="----";if(d.event_has_id)snprintf(last,sizeof(last),"%04X",unsigned(d.event_id));
+    const char* events[]={"none","start","connect","disconnect","stop"};
+    // Existing ESP-IDF USB console: <=1 change line/s, 30 s steady sample, final teardown.
+    ESP_LOGW("apdiag","AP_STATIONS ms=%u app=%u drv_last=%d rc=%d query=%u use=%u qms=%u gen=%u/%u ev=%s ems=%u eapp=%u id=%s C=%u D=%u starts=%u stops=%u cycle=%u/%u ap=%s ams=%u ids=%s",
+        unsigned(now/1000),app,d.native_count,d.query_rc,unsigned(d.queried),unsigned(d.applied),unsigned(d.query_ms),unsigned(d.before),unsigned(d.after),
+        events[unsigned(d.event)],unsigned(d.event_ms),unsigned(d.event_count),last,unsigned(d.connects),unsigned(d.disconnects),unsigned(d.starts),unsigned(d.stops),
+        unsigned(d.cycle_connects),unsigned(d.cycle_disconnects),events[unsigned(d.lifecycle)],unsigned(d.lifecycle_ms),ids);
+}
+#endif
+esp_err_t sampleStations() {
+    wifi_sta_list_t list{};uint32_t generation;
+    portENTER_CRITICAL(&mux);generation=station_generation;portEXIT_CRITICAL(&mux);
+    const auto rc=esp_wifi_ap_get_sta_list(&list); // Worker only, existing 1 Hz query.
+#if DMX_HW_DIAGNOSTICS
+    uint16_t ids[max_stations]{};
+    if(rc==ESP_OK) {
+        for(unsigned i=0;i<std::min(unsigned(list.num),max_stations);++i)
+            ids[i]=uint16_t(unsigned(list.sta[i].mac[4])*256+list.sta[i].mac[5]);
+        std::sort(ids,ids+std::min(unsigned(list.num),max_stations)); // Diagnostic order only.
+    }
+#endif
+    portENTER_CRITICAL(&mux);
+    const bool apply=rc==ESP_OK && unsigned(list.num)<=max_stations && generation==station_generation;
+#if DMX_HW_DIAGNOSTICS
+    auto& d=station_diag;
+    const int count=rc==ESP_OK?int(list.num):-1;
+    if(!d.queried || d.native_count!=count || d.query_rc!=rc || d.applied!=apply || memcmp(d.ids,ids,sizeof(ids)))++station_trace_revision;
+    d.queried=true;d.query_ms=uint32_t(esp_timer_get_time()/1000);d.query_rc=rc;d.native_count=count;
+    d.before=generation;d.after=station_generation;d.applied=apply;memcpy(d.ids,ids,sizeof(ids));
+#endif
+    // Preserve the tested source of current count and its stale-query guard.
+    if(apply) {
+        stations.clear();
+        for(int i=0;i<list.num;++i)stations.connect(list.sta[i].mac);
+        publishStations();
+    }
+    portEXIT_CRITICAL(&mux);
+#if DMX_HW_DIAGNOSTICS
+    emitStations();
+#endif
+    return rc!=ESP_OK?rc:(unsigned(list.num)>max_stations?ESP_FAIL:ESP_OK);
+}
 Session* session(int fd) {
     for(auto& s:sessions) if(s.fd==fd) return &s;
     return nullptr;
@@ -134,6 +231,7 @@ void recordClosure(Session& s,WsReason reason,WsSource source,int rc=0) {
     c.reason=reason;c.source=source;c.rc=rc;c.socket_errno=s.socket_errno;
     c.updates_sent=s.updates_sent;c.last_sent_revision=s.last_sent_revision;c.attempt_revision=s.attempt_revision;
     c.queued=info.queued;c.outstanding=info.outstanding;c.last_enqueued_revision=info.last_enqueued_revision;
+    c.send_us=s.send_us;c.io_operation=s.io_operation;
     const auto first=websocket_service::metrics().first;
     if(first.present&&first.token.generation==s.token.generation&&first.token.slot==s.token.slot&&info.stop==first.stop) {
         c.queued=first.queued;c.outstanding=first.outstanding;
@@ -161,9 +259,13 @@ int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writin
         if(length>(writing?websocket_bridge::max_json:websocket_bridge::max_message))return ioFailure(*s,WsReason::wire_invalid,0);
         size_t done=0;
         while(done<length) {
-            const auto left=deadline-esp_timer_get_time();if(left<=0)return ioFailure(*s,WsReason::io_failure,ETIMEDOUT);
+            // lwIP truncates timeval to milliseconds; <1 ms becomes zero
+            // (unlimited wait). Retire this exhausted budget instead.
+            const auto left=deadline-esp_timer_get_time();if(left<1000){s->io_operation=1;return ioFailure(*s,WsReason::io_failure,ETIMEDOUT);}
             timeval timeout{0,static_cast<long>(left)};
+            s->io_operation=2;
             if(setsockopt(fd,SOL_SOCKET,writing?SO_SNDTIMEO:SO_RCVTIMEO,&timeout,sizeof(timeout)))return ioFailure(*s,WsReason::io_failure,errno);
+            s->io_operation=writing?3:4;
             const int n=writing?send(fd,data+done,length-done,flags):recv(fd,data+done,length-done,flags);
             if(n<=0)return ioFailure(*s,WsReason::io_failure,n<0?errno:0);
             done+=size_t(n);
@@ -226,18 +328,29 @@ void closeSession(Session& s,WsReason reason,WsSource source,int rc=0) {
 }
 bool wsSend(Session& s,httpd_ws_type_t type,uint8_t* payload,size_t length) {
     httpd_ws_frame_t frame{};frame.type=type;frame.payload=payload;frame.len=length;
-    s.io_reason=WsReason::none;s.socket_errno=0;s.tx_deadline=esp_timer_get_time()+100000;
+    s.queue_start=websocket_service::clientInfo(s.token).queued;
+    const auto send_start=esp_timer_get_time();
+    s.io_reason=WsReason::none;s.socket_errno=0;s.io_operation=0;s.tx_deadline=esp_timer_get_time()+100000;
     const auto rc=httpd_ws_send_frame_async(server,s.fd,&frame);
+    s.send_us=uint32_t(esp_timer_get_time()-send_start);
+    s.send_max_us=std::max(s.send_max_us,s.send_us);
+    s.queue_end=websocket_service::clientInfo(s.token).queued;
+    if(rc==ESP_OK)s.last_send_ms=uint32_t(esp_timer_get_time()/1000);
     s.tx_deadline=0;
     portENTER_CRITICAL(&mux);ws_diag.last_send_rc=rc;if(rc!=ESP_OK)++ws_diag.send_failures;
+    ws_diag.send_max_us=std::max(ws_diag.send_max_us,s.send_us);
+    if(rc!=ESP_OK&&s.socket_errno==ETIMEDOUT)++ws_diag.send_timeouts;
     if(rc==ESP_OK&&type==HTTPD_WS_TYPE_CLOSE)++ws_diag.close_frames_sent;
     portEXIT_CRITICAL(&mux);
     if(rc!=ESP_OK){recordClosure(s,WsReason::send_failed,WsSource::send,rc);websocket_service::sendFailed(s.token);closeSession(s,WsReason::send_failed,WsSource::send,rc);return false;}
     return true;
 }
 void sweep(void*) {
-    portENTER_CRITICAL(&mux);++ws_diag.work_started;portEXIT_CRITICAL(&mux);
     const auto now=esp_timer_get_time();
+    portENTER_CRITICAL(&mux);++ws_diag.work_started;
+    ws_diag.work_delay_max_us=std::max(ws_diag.work_delay_max_us,uint32_t(now-sweep_queued_at));
+    portEXIT_CRITICAL(&mux);
+    bool busy=false;
     for(auto& s:sessions) if(s.fd>=0 && !s.closing) {
         if(s.websocket) {
             const auto info=websocket_service::clientInfo(s.token);
@@ -260,10 +373,11 @@ void sweep(void*) {
         else shutdown(s.fd,SHUT_RDWR); // Wake select; native session cleanup owns close.
     }
     static unsigned first=0;
-    websocket_bridge::drain(max_sessions,first,[](unsigned slot) {
+    websocket_bridge::drain(max_sessions,first,[&busy](unsigned slot) {
         auto& s=sessions[slot];
         if(s.fd<0||s.closing||!s.websocket||!websocket_service::alive(s.token))return false;
         websocket_bridge::Event event;if(!websocket_service::take(s.token,event))return false;
+        busy=true;
         s.attempt_revision=event.revision;
         const size_t length=websocket_bridge::encode(event,ws_output,sizeof(ws_output));
         if(!length){recordClosure(s,WsReason::encode_failed,WsSource::pump);websocket_service::sendFailed(s.token);closeSession(s,WsReason::encode_failed,WsSource::pump);return true;}
@@ -274,7 +388,10 @@ void sweep(void*) {
         }
         return true;
     },[]{return esp_timer_get_time();});
-    portENTER_CRITICAL(&mux);sweep_pending=false;++ws_diag.work_completed;portEXIT_CRITICAL(&mux);
+    const auto duration=uint32_t(esp_timer_get_time()-now);
+    portENTER_CRITICAL(&mux);sweep_pending=false;++ws_diag.work_completed;
+    if(busy)++ws_diag.work_busy;
+    ws_diag.work_last_us=duration;ws_diag.work_max_us=std::max(ws_diag.work_max_us,duration);portEXIT_CRITICAL(&mux);
 }
 esp_err_t finish(httpd_req_t* r,esp_err_t result) {
     Session* s=session(httpd_req_to_sockfd(r));
@@ -336,6 +453,8 @@ size_t diagnosticJson(char* output,size_t capacity) {
         const auto& s=sessions[i];auto& info=infos[i];info.fd=s.fd;info.websocket=s.websocket;info.closing=s.closing;
         info.generation=s.token.generation;info.opened_ms=uint32_t(s.budget.opened/1000);info.activity_ms=uint32_t(s.activity/1000);
         info.updates_sent=s.updates_sent;info.last_sent_revision=s.last_sent_revision;
+        info.last_send_ms=s.last_send_ms;info.send_us=s.send_us;info.send_max_us=s.send_max_us;
+        info.queue_start=s.queue_start;info.queue_end=s.queue_end;
         if(s.websocket)info.bridge=websocket_service::clientInfo(s.token);
     }
     return websocket_diagnostics::encode(counters,websocket_service::metrics(),infos,max_sessions,pending,uint32_t(esp_timer_get_time()/1000),output,capacity);
@@ -357,7 +476,10 @@ void security(httpd_req_t* r,const char* cache="no-store") {
     httpd_resp_set_hdr(r,"Cache-Control",cache);
 }
 esp_err_t reject(httpd_req_t* r,const char* code) {
-    portENTER_CRITICAL(&mux);++shared.rejected;portEXIT_CRITICAL(&mux);
+    portENTER_CRITICAL(&mux);++shared.rejected;
+    const unsigned status=unsigned(code[0]-'0')*100+unsigned(code[1]-'0')*10+unsigned(code[2]-'0');
+    websocket_diagnostics::rejection(ws_diag,uint32_t(esp_timer_get_time()/1000),status,r->uri);
+    portEXIT_CRITICAL(&mux);
     security(r);httpd_resp_set_status(r,code);httpd_resp_set_type(r,"text/plain; charset=utf-8");
     return finish(r,httpd_resp_send(r,code,strlen(code)));
 }
@@ -528,7 +650,7 @@ void worker(void*) {
             vTaskDelay(pdMS_TO_TICKS(20)); // Bounded HTTP-task pump; never queues work from the Controller task.
             bool queue_sweep=false;
             portENTER_CRITICAL(&mux);
-            if(!sweep_pending) {sweep_pending=true;queue_sweep=true;}
+            if(!sweep_pending) {sweep_pending=true;sweep_queued_at=esp_timer_get_time();queue_sweep=true;}
             portEXIT_CRITICAL(&mux);
             if(queue_sweep) {
                 const auto rc=httpd_queue_work(server,sweep,nullptr);
@@ -540,19 +662,7 @@ void worker(void*) {
             if(esp_timer_get_time()-maintenance<1000000)continue;
             maintenance=esp_timer_get_time(); // Station reconciliation and heap guards remain 1 Hz.
             emitFirstFailure(); // Worker only, once; never prints from Controller/ISR/callback.
-            wifi_sta_list_t list{};
-            uint32_t generation;
-            portENTER_CRITICAL(&mux);generation=station_generation;portEXIT_CRITICAL(&mux);
-            if(!check(esp_wifi_ap_get_sta_list(&list))) {wifi_startup_trace::capture("esp_wifi_ap_get_sta_list",error,true);break;}
-            if(list.num>max_stations) {error=ESP_FAIL;break;}
-            portENTER_CRITICAL(&mux);
-            // Do not overwrite newer callback state with an older driver query.
-            if(generation==station_generation) {
-                stations.clear();
-                for(int i=0;i<list.num;++i) stations.connect(list.sta[i].mac);
-                publishStations();
-            }
-            portEXIT_CRITICAL(&mux);
+            if(!check(sampleStations())) {wifi_startup_trace::capture("esp_wifi_ap_get_sta_list",error,true);break;}
             auto s=status();
             record(s.clients!=previous_clients?(s.clients?4:5):(s.requests!=previous_requests?6:7),s.clients);
             previous_clients=s.clients;previous_requests=s.requests;
@@ -568,7 +678,14 @@ void worker(void*) {
     if(started) traced("esp_wifi_stop",[]{return esp_wifi_stop();});
     if(station_handler) traced("station.events.unregister",[&]{return esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,station_handler);});
     worker_task=nullptr;
-    portENTER_CRITICAL(&mux);stations.clear();publishStations();portEXIT_CRITICAL(&mux);
+    portENTER_CRITICAL(&mux);stations.clear();publishStations();
+#if DMX_HW_DIAGNOSTICS
+    station_diag.queried=false;station_diag.applied=false;++station_trace_revision;
+#endif
+    portEXIT_CRITICAL(&mux);
+#if DMX_HW_DIAGNOSTICS
+    emitStations(true); // One final offline/error sample; no client connection required.
+#endif
     if(netif) esp_netif_destroy_default_wifi(netif);
     wifi_startup_trace::capture("netif.destroy.after");
     if(initialized) traced("esp_wifi_deinit",[]{return esp_wifi_deinit();});

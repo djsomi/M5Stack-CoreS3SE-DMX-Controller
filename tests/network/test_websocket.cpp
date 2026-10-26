@@ -196,24 +196,61 @@ void pumpRegression() {
     CHECK(events[2].kind==Kind::channel&&events[2].blackout&&events[3].id==2);
     CHECK(events[4].kind==Kind::universe&&!events[4].blackout&&events[4].values[0]==0&&events[5].id==3);
 }
+void stabilityBackpressure() {
+    Rig r;auto fast=r.connect(),slow=r.connect();uint64_t previous=0;
+    for(unsigned i=0;i<512;++i) {
+        const int value=i<256?int(i):511-int(i);
+        r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,value));
+        while(r.bridge.take(fast,r.event)) {
+            CHECK(r.event.sequence>previous);previous=r.event.sequence;
+            CHECK(r.event.value==value&&r.event.kind==Kind::channel);
+        }
+    }
+    CHECK(r.bridge.alive(fast)&&!r.bridge.alive(slow));
+    CHECK(r.bridge.metrics().queue_full==1&&r.controller.channel(1)==0);
+    // A non-consuming client is bounded, closed, and replaced by an atomic latest snapshot.
+    auto replacement=r.bridge.open(r.clock);CHECK(replacement.generation!=slow.generation);
+    r.bridge.ownerPoll(true);CHECK(r.bridge.take(replacement,r.event)&&r.event.kind==Kind::hello);
+    CHECK(r.bridge.take(replacement,r.event)&&r.event.kind==Kind::snapshot&&r.event.values[0]==0);
+    r.bridge.sendFailed(replacement);r.bridge.close(replacement);CHECK(r.bridge.alive(fast));
+    Rig single;auto only=single.connect();
+    for(unsigned i=1;i<=9;++i)single.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,int(i)));
+    CHECK(!single.bridge.alive(only)&&single.bridge.metrics().queue_full==1);
+    CHECK(single.bridge.metrics().first.queued==8&&single.controller.channel(1)==9);
+}
+void httpRejectionDiagnostics() {
+    using namespace websocket_diagnostics;
+    Counters c;rejection(c,1000,404,"/favicon.ico");
+    CHECK(c.http_rejected[1]==1&&c.http_last_status==404&&c.http_last_route==3);
+    rejection(c,1100,404,"/apple-touch-icon.png");CHECK(c.http_rejected[1]==2&&c.http_last_route==4);
+    rejection(c,1200,429,"/status");CHECK(c.http_rejected[4]==1&&c.http_last_ms==1200&&c.http_last_route==1);
+    rejection(c,1300,403,"/private?secret=never-store");CHECK(c.http_last_route==8&&c.http_rejected[0]==1);
+    c.http_rejected[1]=UINT32_MAX;rejection(c,1400,404,"/manifest.json");CHECK(c.http_rejected[1]==UINT32_MAX);
+}
 void diagnosticBounds() {
     using namespace websocket_diagnostics;
     Counters c;c.first_present=true;
     for(auto field:{&Counters::sockets_opened,&Counters::sockets_closed,&Counters::open_rejected,&Counters::ws_opened,&Counters::ws_closed,&Counters::upgrade_rejected,
         &Counters::updates_sent,&Counters::send_failures,&Counters::close_frames_sent,&Counters::unattributed_closes,&Counters::wifi_disconnects,&Counters::last_wifi_ms,
         &Counters::work_queued,&Counters::work_started,&Counters::work_completed,&Counters::work_failed})c.*field=UINT32_MAX;
+    c.send_timeouts=c.send_max_us=c.work_max_us=c.work_delay_max_us=c.work_busy=c.work_last_us=UINT32_MAX;
+    for(auto& n:c.http_rejected)n=UINT32_MAX;
+    c.http_last_ms=UINT32_MAX;c.http_last_status=503;c.http_last_route=8;
     c.last_send_rc=c.last_work_rc=INT32_MIN;
     c.first.ms=c.first.generation=c.first.updates_sent=UINT32_MAX;c.first.queued=8;c.first.outstanding=4;
     c.first.fd=c.first.rc=c.first.socket_errno=INT32_MIN;c.first.reason=Reason::native_unattributed;c.first.source=Source::native_callback;
+    c.first.send_us=UINT32_MAX;c.first.io_operation=4;
     c.first.last_sent_revision=c.first.attempt_revision=c.first.last_enqueued_revision=UINT64_MAX;c.last=c.first;
     Metrics b;b.opened=b.closed=b.updates_enqueued=b.updates_taken=b.queue_full=b.controller_events=b.broadcasts=UINT32_MAX;
     b.last_controller_revision=UINT64_MAX;b.first.present=true;b.first.last_enqueued_revision=b.first.rejected_revision=UINT64_MAX;
     b.first.ms=b.first.token.generation=UINT32_MAX;b.outbox=32;b.outbox_high=8;b.outstanding=16;
     SessionInfo sessions[6];for(auto& s:sessions){s.fd=INT32_MAX;s.websocket=true;s.generation=s.opened_ms=s.activity_ms=s.updates_sent=UINT32_MAX;
+        s.last_send_ms=s.send_us=s.send_max_us=UINT32_MAX;s.queue_start=s.queue_end=8;
         s.last_sent_revision=UINT64_MAX;s.bridge.active=false;s.bridge.queued=8;s.bridge.outstanding=4;}
     char text[4096];CHECK(websocket_diagnostics::encode(c,b,sessions,6,false,UINT32_MAX,text,sizeof(text)));
     CHECK(strstr(text,"WS_FIRST_FAILURE")&&strstr(text,"\"native_evictions\":null"));
+    printf("BOUNDED_DIAGNOSTIC_JSON %s\n",text);
     CHECK(!websocket_diagnostics::encode(c,b,sessions,6,true,0,text,32));
 }
-int main(){protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();diagnosticBounds();
+int main(){protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();stabilityBackpressure();httpRejectionDiagnostics();diagnosticBounds();
     printf("PASS protocol/session/revision/snapshot races/Dispatcher/touch/blackout/mode/presets/backpressure/generation/cleanup/cross-task stress; Bridge=%zu Event=%zu Request=%zu\n",sizeof(Bridge),sizeof(Event),sizeof(Request));}

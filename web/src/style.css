@@ -58,6 +58,7 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .bank-title { flex: 1; min-width: 0; }
 .bank-title h2 { white-space: nowrap; font-size: 15px; }
 .bank-buttons { display: flex; gap: 6px; }
+.bank-buttons .icon-button { touch-action: manipulation; }
 .icon-button { width: 44px; padding: 8px; font-size: 20px; }
 .jump-form { display: flex; align-items: center; gap: 8px; }
 .jump-form label { font-size: 11px; color: #aab7ca; }
@@ -161,3 +162,5 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
   .fader-rail { height: 150px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
+.connection[data-live=true] .connection-dot { background: var(--blue); }
+.fader-grid[data-stale=true] { opacity: .55; }

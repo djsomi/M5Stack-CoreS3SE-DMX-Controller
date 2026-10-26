@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import json
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -111,8 +112,26 @@ class PipelineTests(unittest.TestCase):
                 if key in attrs: self.assertTrue(attrs[key].startswith(("/", "#")), (tag, attrs))
         js = (self.root / "web/src/app.js").read_text(encoding='utf-8')
         import re
-        self.assertFalse(re.search(r"\b(?:fetch|WebSocket|XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
+        self.assertFalse(re.search(r"\b(?:fetch|XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
+        self.assertNotRegex(js, r'"(?:channel\.set|blackout\.set|preset\.(?:load|save|copy|clear))"')
+        self.assertIn('type: "state.request"', js)
         self.assertNotIn("setInterval(", js)
+
+    def test_bank_arrow_touch_action_is_scoped_and_zoom_remains_available(self):
+        css = (self.root / "web/src/style.css").read_text(encoding="utf-8")
+        rules = re.findall(r"([^{}]+)\{([^{}]*touch-action\s*:[^{}]*)\}", css)
+        self.assertEqual(len(rules), 1)
+        selector, declarations = rules[0]
+        self.assertEqual(selector.strip(), ".bank-buttons .icon-button")
+        self.assertEqual(declarations.strip(), "touch-action: manipulation;")
+        html = (self.root / "web/src/index.html").read_text(encoding="utf-8")
+        controls = re.search(r'<div class="bank-buttons">(.*?)</div>', html).group(1)
+        buttons = [attrs for tag, attrs in Elements(controls).nodes if tag == "button"]
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual({attrs.get("id") for attrs in buttons}, {"bank-previous", "bank-next"})
+        self.assertTrue(all(attrs.get("class") == "icon-button" for attrs in buttons))
+        editor = (self.root / "web/src/js/editor.js").read_text(encoding="utf-8")
+        self.assertNotRegex(editor, r"touchstart|touchend|touchmove|gesturestart|gesturechange")
 
     def test_served_mobile_viewport_contract(self):
         # Test shipped bytes, not merely the presence of an authored filename.
@@ -137,7 +156,8 @@ class PipelineTests(unittest.TestCase):
         self.assertNotRegex(css, r"\d+dvh|touch-action:\s*none|scroll-behavior:\s*smooth")
         js = (self.root / "web/src/app.js").read_text(encoding="utf-8")
         self.assertNotIn("visualViewport", js)
-        self.assertNotRegex(js, r"\b(?:scrollTo|scrollBy|setTimeout|requestAnimationFrame)\s*\(")
+        shell = (self.root / "web/src/js/shell.js").read_text(encoding="utf-8")
+        self.assertNotRegex(shell, r"\b(?:scrollTo|scrollBy|setTimeout|requestAnimationFrame)\s*\(")
         html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
         viewport = next(attrs["content"] for tag, attrs in Elements(html).nodes
                         if tag == "meta" and attrs.get("name") == "viewport")

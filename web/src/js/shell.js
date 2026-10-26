@@ -2,7 +2,7 @@
 // requires:
 () => {
   const sections = ["editor", "presets", "settings", "status"];
-  function mount(document, window, foundation) {
+  function mount(document, window, foundation, onNavigate = () => {}) {
     const links = [...document.querySelectorAll("[data-section]")];
     let current = null;
     document.getElementById("connection-label").textContent = foundation.connection;
@@ -25,6 +25,7 @@
       scroller.scrollTop = 0;
       // Touch/mouse keep focus on the nav; keyboard/AT activation announces the heading.
       if (focusHeading) document.getElementById("heading-" + active).focus({preventScroll: true});
+      onNavigate();
     }
     links.forEach(link => link.addEventListener("click", event => {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

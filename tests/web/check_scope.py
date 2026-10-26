@@ -1,4 +1,4 @@
-"""Stage6B asset-only scope gate; every existing firmware/driver file is frozen."""
+"""Stage6B scope gate; domain/driver inputs frozen, named network diagnostic/I/O exceptions."""
 from pathlib import Path
 import hashlib
 import subprocess
@@ -6,7 +6,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "294b8b8ea21d139555a7222f16b5eeff00d16091"
 PREFIXES = ("src", "include", "patches", "partitions", "scripts")
-ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py"}
+ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp",
+    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h"}
 
 
 def check():
@@ -28,7 +29,7 @@ def check():
             if path.is_file() and "__pycache__" not in path.parts:
                 name = path.relative_to(ROOT).as_posix()
                 assert name in known or name in ALLOWED, "Unexpected firmware/build input: " + name
-    print("PASS exact Stage6A firmware/HTTP/WS/domain/DMX/USB/canvas/partition/package scope; only UI composer/pipeline changes allowed")
+    print("PASS exact Stage6A firmware/HTTP/WS/domain/DMX/USB/canvas/partition/package scope; only UI composer/pipeline and named WS/AP diagnostics/sub-ms I/O guard exceptions")
 
 
 if __name__ == "__main__":

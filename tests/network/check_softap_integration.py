@@ -4,6 +4,7 @@ import argparse,re
 root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--dhcp-header',type=Path)
+p.add_argument('--station-header',type=Path)
 a=p.parse_args()
 net=(root/'src/network_service.cpp').read_text(encoding='utf-8')
 view=(root/'src/view_sender.h').read_text(encoding='utf-8')
@@ -16,11 +17,14 @@ assert net.index('esp_netif_dhcps_stop(netif)')<net.index('ESP_NETIF_OP_SET')<ne
 assert net.index('esp_netif_dhcps_start(netif)')<net.index('ESP_NETIF_OP_GET')
 assert 'router_readback!=0' in net and 'shared.router_option_disabled=true' in net
 assert 'IP4_ADDR(&ip.ip,192,168,4,1)' in net and 'IP4_ADDR(&ip.netmask,255,255,255,0)' in net
-for event in ['WIFI_EVENT_AP_STACONNECTED','WIFI_EVENT_AP_STADISCONNECTED','WIFI_EVENT_AP_STOP']:
+for event in ['WIFI_EVENT_AP_STACONNECTED','WIFI_EVENT_AP_STADISCONNECTED','WIFI_EVENT_AP_STOP','WIFI_EVENT_AP_START']:
     assert event in net
 callback=net.split('void stationEvent(',1)[1].split('Memory memory()',1)[0]
 assert not any(x in callback for x in ['M5.','Preferences','credentials','esp_wifi_ap_get_sta_list','Serial.'])
 assert 'generation==station_generation' in net and 'maintenance<1000000' in net
+assert 'if(!check(sampleStations()))' in net
+assert net.count('esp_wifi_ap_get_sta_list(&list)')==1
+assert 'emitStations(true)' in net and 'AP_STATIONS' in net
 assert 'shared.clients=stations.count()' in net and '++shared.ui_revision' in net
 handler=net.split('esp_err_t serve(',1)[1].split('void worker(',1)[0]
 assert not any(x in handler for x in ['password','credentials','requestFactoryReset','Preferences'])
@@ -46,4 +50,17 @@ if a.dhcp_header:
     target.parent.mkdir(parents=True,exist_ok=True)
     target.write_text('int set_router_under_test(FakeNetif* netif) { uint8_t offer_router=0; return '+expr('SET','offer_router')+'; }\n'+
         'int get_router_under_test(FakeNetif* netif,uint8_t* output) { uint8_t router_readback=1; const auto rc='+expr('GET','router_readback')+'; *output=router_readback; return rc; }\n',encoding='utf-8')
+if a.station_header:
+    target=a.station_header.resolve();assert (root/'dist').resolve() in target.parents
+    def function(signature):
+        start=net.index(signature);opening=net.index('{',start);depth=0
+        for i in range(opening,len(net)):
+            if net[i]=='{':depth+=1
+            if net[i]=='}':
+                depth-=1
+                if not depth:return net[start:i+1]+'\n'
+        raise AssertionError(signature)
+    state=net[net.index('#if DMX_HW_DIAGNOSTICS\nstruct StationDiagnostics {'):net.index('Memory memory()')]
+    target.parent.mkdir(parents=True,exist_ok=True)
+    target.write_text(state+'#if DMX_HW_DIAGNOSTICS\n'+function('void emitStations(')+'#endif\n'+function('esp_err_t sampleStations('),encoding='utf-8')
 print('PASS DHCP-before-lease ordering/readback, real AP MAC source, safe credential/reset wiring, event-driven stations and owner-only visible Settings refresh; physical lease/cellular tests pending')

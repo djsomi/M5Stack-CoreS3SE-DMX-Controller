@@ -4,9 +4,10 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import './test_navigation.mjs';
+import './test_live.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
-for (const name of ['state','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','preferences','fader','editor','presets','settings','status','shell','app']) {
   const source = readFileSync(new URL('web/src/js/' + name + '.js', root), 'utf8');
   let networkCalls = 0;
   const denied = () => {++networkCalls; throw Error('Unexpected network activity');};
@@ -17,9 +18,10 @@ for (const name of ['state','preferences','fader','editor','presets','settings',
   assert.deepEqual(Object.keys(context).sort(), ['WebSocket','XMLHttpRequest','fetch']);
 }
 new vm.Script(readFileSync(new URL('web/src/app.js', root), 'utf8'), {filename: 'generated-app.js'});
-assert.equal(modules.state.current().ready, false);
-assert.equal(modules.state.current().blackout, null);
-assert.equal(Object.isFrozen(modules.state.current()), true);
+const initial = modules.state.create().read.current();
+assert.equal(initial.ready, false);
+assert.equal(initial.blackout, null);
+assert.equal(Object.isFrozen(initial), true);
 assert.deepEqual(Array.from(modules.shell.sections), ['editor','presets','settings','status']);
 let saved;
 const storage = {getItem: () => saved, setItem: (_, value) => {saved = value;}};

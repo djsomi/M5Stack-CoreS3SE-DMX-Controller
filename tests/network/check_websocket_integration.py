@@ -49,6 +49,8 @@ assert 'new(storage)' in service and 'malloc(' not in bridge+net
 assert 'vTaskDelay(pdMS_TO_TICKS(20))' in net and 'maintenance<1000000' in net
 assert 'static char json[4096]' in net and 'char ws_output[websocket_bridge::max_json]' in net
 assert 'deadline-esp_timer_get_time()' in net and 'done+=size_t(n)' in net
+assert 'if(left<1000)' in net  # Never turn a sub-ms remaining budget into lwIP's unlimited zero timeout.
+assert 'websocket_diagnostics::rejection(ws_diag' in net
 assert 's->wire.wsBytes(data,done)' in net and 's->wire.httpBytes(data,size_t(n))' in net and 's->wire.trailing()' in net
 assert "connect-src 'self' ws://192.168.4.1;" in net
 assert 'now-s.activity>=60000000' in net and 'now-s.ping>=20000000' in net
