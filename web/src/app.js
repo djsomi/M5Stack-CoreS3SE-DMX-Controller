@@ -66,18 +66,29 @@ const commands = (
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, last = null;
+    let next = 0, pending = null, write = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
+      write = null;
     }
     return {
       begin() { cancel(); next = 0; },
       snapshot() {
         if (pending || next === 4294967295) return null;
         pending = Object.freeze({id: ++next});
-        // Deliberately no generic command encoder or mutation API in Stage6B.2.
         return JSON.stringify({v: 1, id: next, type: "state.request"});
+      },
+      channel(channel, value) {
+        if (write || next === 4294967295 || !Number.isInteger(channel) || channel < 1 || channel > 512 ||
+            !Number.isInteger(value) || value < 0 || value > 255) return null;
+        write = Object.freeze({id: ++next, channel, value});
+        return {id: next, data: JSON.stringify({v: 1, id: next, type: "channel.set", channel, value})};
+      },
+      completeWrite(message) {
+        if (!write || write.id !== message.id) return null;
+        const result = Object.freeze({...write, status: message.status, kind: message.type});
+        write = null; return result;
       },
       matches(id) { return !!pending && pending.id === id; },
       complete(message) {
@@ -86,7 +97,7 @@ const commands = (
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, last})
     };
   }
   return {create};
@@ -153,6 +164,11 @@ const transport = (
     let integrityFailures = 0;
     const idleMs = 15000, probeMs = 10000, resumeGraceMs = 5000;
     let probing = false, lastAuthority = 0;
+    let writeTimer = null;
+    const writeListeners = new Set();
+    function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
+    const writable = () => started && !suspended && !waiting && store.read.current().ready &&
+      store.read.current().sender && socket?.readyState === 1;
     const now = () => runtime.now ? runtime.now() : Date.now();
     const clock = () => runtime.clock ? runtime.clock() : now();
     function closed(event) {
@@ -175,7 +191,7 @@ const transport = (
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); ++generation; requests.cancel(); store.connection(phase, detail);
+      clear(); cancelWriteTimer(); ++generation; requests.cancel(); store.connection(phase, detail);
       probing = false; store.diagnostics({transportOpen: false, probePending: false}, false);
       if (retry && detail.includes("timed out")) store.diagnostics({classification: "synchronization_timeout"}, false);
       const old = socket;
@@ -266,6 +282,17 @@ const transport = (
         const message = decoded.message;
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          const result = requests.completeWrite(message);
+          if (result) {
+            cancelWriteTimer();
+            // Applied/no-change acknowledgments follow the owner's publication.
+            // Never synthesize a channel value from an ack or accept a missing update.
+            if (message.type === "command.ack" && decoded.revision > BigInt(store.read.current().revision)) {
+              retire("reconnecting", "Missing authoritative command publication"); return;
+            }
+            writeListeners.forEach(listener => listener(result));
+            return;
+          }
           if (!requests.complete(message)) return; // Includes id=0/pre-owner and old IDs.
           if (message.type === "command.ack") fault("snapshot_ack"); // state.request completes with a snapshot only.
           else retire("reconnecting", "Snapshot request rejected");
@@ -297,7 +324,7 @@ const transport = (
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); ++generation; requests.cancel(); probing = false;
         store.diagnostics({probePending: false}, false); schedule();
       };
     }
@@ -313,12 +340,138 @@ const transport = (
       retry() { if (!started || suspended) return; attempt = 0; integrityFailures = 0; retire("reconnecting"); },
       stop() { started = false; retire("disconnected", "", false); },
       resync,
+      writable,
+      onWrite(listener) { writeListeners.add(listener); return () => writeListeners.delete(listener); },
+      setChannel(channel, value) {
+        if (!writable()) return null;
+        const command = requests.channel(channel, value);
+        if (!command) return null;
+        const epoch = generation;
+        try { socket.send(command.data); }
+        catch (_) { retire("reconnecting", "Channel send failed; outcome uncertain"); return null; }
+        // A successful send is not application. No automatic mutation retry.
+        writeTimer = runtime.setTimeout(() => {
+          writeTimer = null;
+          if (epoch === generation && requests.current().write?.id === command.id)
+            retire("reconnecting", "Channel acknowledgment timed out; outcome uncertain");
+        }, 5000);
+        return command.id;
+      },
       pending: () => requests.current()
     };
   }
   return {create};
 }
 )({protocol, commands});
+
+// Source: web/src/js/control.js
+const control = (
+// module: control
+// requires:
+() => {
+  // At most eight visible channel intents, one command in flight, one timer.
+  // These are disposable interaction previews, never an authoritative universe.
+  function create(read, client, runtime, notify) {
+    const entries = new Map(), sent = [];
+    const clock = () => runtime.clock ? runtime.clock() : Date.now();
+    let timer = null, flight = null, lastSent = -Infinity, note = "";
+    const available = () => read.current().ready && read.current().sender && client.writable();
+    function clearTimer() { if (timer !== null) runtime.clearTimeout(timer); timer = null; }
+    function invalidate() { clearTimer(); entries.clear(); flight = null; }
+    function intent(channel, value, active) {
+      if (!available() || !Number.isInteger(channel) || channel < 1 || channel > 512 ||
+          !Number.isInteger(value) || value < 0 || value > 255) return false;
+      let entry = entries.get(channel);
+      if (!entry) {
+        if (entries.size === 8) { note = "Channel control busy; finish existing edits first."; notify(); return false; }
+        entry = {value, active, dirty: false, sent: false}; entries.set(channel, entry);
+      }
+      entry.value = value; entry.active = active; entry.dirty = true;
+      note = "CH " + channel + " preview; awaiting Controller confirmation.";
+      pump(); notify(); return true;
+    }
+    function schedule(delay) {
+      clearTimer(); timer = runtime.setTimeout(() => { timer = null; pump(); }, delay);
+    }
+    function pump() {
+      clearTimer();
+      if (!entries.size && !flight) return;
+      if (!available()) { invalidate(); notify(); return; }
+      if (flight) return;
+      const pending = [...entries].filter(([, e]) => e.dirty);
+      if (!pending.length) return;
+      // Final releases have priority; other channels retain insertion-order fairness.
+      const [channel, entry] = pending.find(([, e]) => !e.active) || pending[0];
+      const now = clock();
+      while (sent.length && now - sent[0] >= 1000) sent.shift();
+      const delay = Math.max(sent.length >= 18 ? 1001 - (now - sent[0]) : 0,
+        entry.active ? 60 - (now - lastSent) : 0);
+      if (delay > 0) { schedule(delay); return; }
+      const id = client.setChannel(channel, entry.value);
+      if (id === null) { invalidate(); note = "Channel command unavailable; no value replayed."; notify(); return; }
+      entry.dirty = false; entry.sent = true;
+      flight = {id, channel, value: entry.value}; lastSent = now; sent.push(now);
+      // Rotate serviced channels so simultaneous controls cannot starve each other.
+      entries.delete(channel); entries.set(channel, entry);
+      notify();
+    }
+    read.subscribe(() => {
+      if (!available()) { invalidate(); note = ""; }
+    });
+    client.onWrite(result => {
+      if (!flight || flight.id !== result.id) return;
+      const {channel, value} = flight; flight = null;
+      if (result.kind !== "command.ack") {
+        invalidate(); note = "CH " + channel + (result.status === "transport_error" ?
+          " transport failure; state may have changed." : " rejected: " + result.status + ".") +
+          " Showing authoritative Controller values.";
+      } else {
+        const entry = entries.get(channel);
+        if (entry && !entry.active && !entry.dirty) entries.delete(channel);
+        note = "CH " + channel + " " + value + " confirmed by Controller" +
+          (read.channel(channel) !== value ? "; a newer authoritative value is shown." : ".");
+        pump();
+      }
+      notify();
+    });
+    return {
+      available,
+      edit(channel, value) { return intent(channel, value, true); },
+      setFinal(channel, value) { return intent(channel, value, false); },
+      step(channel, delta) {
+        if (delta !== 1 && delta !== -1) return false;
+        const base = entries.has(channel) ? entries.get(channel).value : read.channel(channel);
+        if (base === null) return false;
+        const value = Math.max(0, Math.min(255, base + delta));
+        return value !== base && intent(channel, value, false);
+      },
+      release(channel) {
+        const entry = entries.get(channel);
+        if (!entry || !entry.active) return;
+        entry.active = false; entry.dirty = true; // Explicit final intent, even if an earlier value is in flight.
+        pump(); notify();
+      },
+      cancel(channel) { entries.delete(channel); notify(); },
+      leave() { // Resolve captured identities before a bank/layout/page replacement.
+        for (const entry of entries.values()) if (entry.active) { entry.active = false; entry.dirty = true; }
+        pump();
+      },
+      preview: channel => entries.has(channel) ? entries.get(channel).value : null,
+      note() {
+        if (note === "Channel control busy; finish existing edits first.") return note;
+        for (const [channel, entry] of entries) {
+          if (entry.active || entry.dirty || flight?.channel === channel)
+            return "CH " + channel + " preview " + entry.value + "; Controller " + read.channel(channel) +
+              (entry.active ? ". Dragging; release to confirm final value." : ". Awaiting confirmation.");
+        }
+        return note;
+      },
+      pending: () => entries.size
+    };
+  }
+  return {create};
+}
+)({});
 
 // Source: web/src/js/preferences.js
 const preferences = (
@@ -354,31 +507,109 @@ const fader = (
 // module: fader
 // requires:
 () => {
-  function create(document, channel) {
+  function create(document, channel, control, onDraft) {
     const card = document.createElement("div");
     card.className = "fader";
     const label = document.createElement("span");
     label.className = "channel-label"; label.textContent = "CH " + String(channel).padStart(3, "0");
-    const value = document.createElement("output");
-    value.className = "fader-value"; value.setAttribute("aria-live", "off");
+    const value = document.createElement("button");
+    value.type = "button"; value.className = "fader-value";
+    value.setAttribute("aria-live", "off"); value.setAttribute("aria-expanded", "false");
+    value.setAttribute("aria-controls", "value-entry-" + channel);
     const rail = document.createElement("div"); rail.className = "fader-rail";
     const input = document.createElement("input");
     input.type = "range"; input.min = "0"; input.max = "255";
-    input.disabled = true; input.setAttribute("aria-label", label.textContent + ", read-only");
-    rail.append(input);
-    const percent = document.createElement("span");
-    percent.className = "fader-percent";
-    card.append(label, value, rail, percent);
+    input.disabled = true; input.step = "1"; input.setAttribute("aria-label", label.textContent);
+    let lastPosition = "0", actual = null, stale = true, showPercent = false, draft = false, retired = false;
+    const available = () => !retired && !stale && !!control?.available();
+    function refresh() { render(actual, stale, showPercent); }
+    // Native range input supplies mouse/touch/keyboard semantics and capture.
+    input.addEventListener("input", () => {
+      if (!available() || !control?.edit(channel, Number(input.value))) input.value = lastPosition;
+    });
+    input.addEventListener("change", () => { if (!retired) control?.release(channel); });
+    input.addEventListener("pointerup", () => { if (!retired) control?.release(channel); });
+    input.addEventListener("pointercancel", () => { if (!retired) control?.cancel(channel); });
+    input.addEventListener("blur", () => { if (!retired) control?.release(channel); });
+    function stepButton(delta) {
+      const button = document.createElement("button");
+      button.type = "button"; button.className = "fader-step " + (delta > 0 ? "fader-plus" : "fader-minus");
+      button.textContent = delta > 0 ? "+" : "\u2212";
+      button.setAttribute("aria-label", (delta > 0 ? "Increase " : "Decrease ") + label.textContent + " by 1");
+      button.addEventListener("click", () => { if (available()) { control.step(channel, delta); refresh(); } });
+      return button;
+    }
+    const plus = stepButton(1), minus = stepButton(-1);
+    rail.append(plus, input, minus); // DOM/tab order matches the visual + / range / minus order.
+    const percent = document.createElement("span"); percent.className = "fader-percent";
+    const form = document.createElement("form");
+    form.id = "value-entry-" + channel; form.className = "value-entry"; form.hidden = true; form.noValidate = true;
+    const draftLabel = document.createElement("label");
+    draftLabel.textContent = "Draft"; draftLabel.setAttribute("for", "value-draft-" + channel);
+    const field = document.createElement("input");
+    field.id = "value-draft-" + channel; field.className = "dmx-draft-input";
+    field.type = "text"; field.inputMode = "numeric"; field.enterKeyHint = "done"; field.maxLength = 3;
+    field.setAttribute("aria-label", label.textContent + " draft value, 0 to 255");
+    field.setAttribute("aria-describedby", "value-error-" + channel); field.autocomplete = "off";
+    const apply = document.createElement("button");
+    apply.type = "submit"; apply.textContent = "Apply";
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.textContent = "Cancel";
+    const error = document.createElement("span");
+    error.id = "value-error-" + channel; error.className = "value-error"; error.setAttribute("aria-live", "polite");
+    form.append(draftLabel, field, apply, cancel, error);
+    function closeDraft(focus = false) {
+      draft = false; form.hidden = true; rail.hidden = false;
+      field.value = ""; error.textContent = ""; field.removeAttribute("aria-invalid");
+      value.setAttribute("aria-expanded", "false");
+      if (focus && !retired) value.focus({preventScroll: true});
+    }
+    value.addEventListener("click", () => {
+      if (!available()) return;
+      if (!draft) {
+        onDraft?.(); draft = true; field.value = String(control.preview(channel) ?? actual);
+        form.hidden = false; rail.hidden = true; value.setAttribute("aria-expanded", "true");
+        error.textContent = ""; field.removeAttribute("aria-invalid");
+      }
+      field.focus();
+    });
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      if (!draft || !available()) { closeDraft(); refresh(); return; }
+      const raw = field.value.trim(), number = Number(raw);
+      if (!/^\d{1,3}$/.test(raw) || number > 255) {
+        error.textContent = "Use 0\u2013255."; field.setAttribute("aria-invalid", "true"); field.focus(); return;
+      }
+      if (!control.setFinal(channel, number)) { error.textContent = "Unavailable."; return; }
+      closeDraft(true); refresh();
+    });
+    cancel.addEventListener("click", () => { closeDraft(true); refresh(); });
+    field.addEventListener("keydown", event => {
+      if (event.key === "Escape") { event.preventDefault(); closeDraft(true); refresh(); }
+    });
+    card.append(label, value, rail, percent, form);
     function text(node, next) { if (node.textContent !== next) node.textContent = next; }
-    return {node: card, render(actual, stale, showPercent) {
-      const display = actual === null ? "—" : String(actual);
+    function render(nextActual, nextStale, nextPercent) {
+      actual = nextActual; stale = nextStale; showPercent = nextPercent;
+      if (!available() && draft) closeDraft();
+      const preview = control?.preview(channel) ?? null;
+      const visible = preview === null ? actual : preview;
+      input.disabled = value.disabled = !available();
+      plus.disabled = !available() || visible === null || visible >= 255;
+      minus.disabled = !available() || visible === null || visible <= 0;
+      field.disabled = apply.disabled = !available();
+      const display = visible === null ? "\u2014" : String(visible);
       text(value, display);
-      const description = actual === null ? "Value unavailable" : (stale ? "Last received value " : "Controller value ") + display;
-      if (value.getAttribute("aria-label") !== description) value.setAttribute("aria-label", description);
-      const position = actual === null ? "0" : display;
+      const description = actual === null ? "Value unavailable" :
+        (preview !== null ? "Unconfirmed preview " : stale ? "Last received value " : "Controller value ") + display;
+      const editLabel = description + "; edit " + label.textContent;
+      if (value.getAttribute("aria-label") !== editLabel) value.setAttribute("aria-label", editLabel);
+      const position = visible === null ? "0" : display; lastPosition = position;
       if (input.value !== position) input.value = position;
-      text(percent, actual !== null && showPercent ? Math.round(actual / 255 * 100) + "%" : "DMX");
-    }};
+      text(percent, visible !== null && showPercent ? Math.round(visible / 255 * 100) + "%" : "DMX");
+    }
+    return {node: card, render, closeDraft,
+      dispose() { closeDraft(); retired = true; refresh(); }};
   }
   return {create};
 }
@@ -393,7 +624,7 @@ const editor = (
     const start = Math.floor((channel - 1) / count) * count + 1;
     return Array.from({length: Math.min(count, 513 - start)}, (_, index) => start + index);
   }
-  function mount(document, window, preferences, state) {
+  function mount(document, window, preferences, state, control) {
     const grid = document.getElementById("fader-grid");
     const previous = document.getElementById("bank-previous"), next = document.getElementById("bank-next");
     const jump = document.getElementById("channel-jump"), error = document.getElementById("jump-error");
@@ -404,7 +635,9 @@ const editor = (
       const prefs = preferences.read(), channels = bank(prefs.selectedChannel, count());
       const nextKey = channels.join(","), current = state.current();
       if (key !== nextKey) {
-        key = nextKey; cards = channels.map(channel => fader.create(document, channel));
+        cards.forEach(card => card.dispose());
+        control?.leave();
+        key = nextKey; cards = channels.map(channel => fader.create(document, channel, control, closeDrafts));
         grid.replaceChildren(...cards.map(card => card.node));
         document.getElementById("bank-heading").textContent = "Channels " + String(channels[0]).padStart(3, "0") + "–" + String(channels[channels.length - 1]).padStart(3, "0");
         previous.disabled = channels[0] === 1; next.disabled = channels[channels.length - 1] === 512;
@@ -415,6 +648,7 @@ const editor = (
       // Incoming channel updates must not overwrite a Go-to-CH entry being typed.
       if (selection !== prefs.selectedChannel) { selection = prefs.selectedChannel; jump.value = String(selection); }
     }
+    function closeDrafts() { cards.forEach(card => card.closeDraft()); }
     function move(direction) {
       const channels = bank(preferences.read().selectedChannel, count());
       preferences.update({selectedChannel: Math.max(1, Math.min(512, channels[0] + direction * count()))}); render();
@@ -429,7 +663,7 @@ const editor = (
       error.textContent = ""; jump.removeAttribute("aria-invalid"); preferences.update({selectedChannel: channel}); render();
     });
     tablet.addEventListener("change", render); wide.addEventListener("change", render);
-    render(); return {render};
+    render(); return {render, leave: closeDrafts};
   }
   return {bank, mount};
 }
@@ -554,8 +788,8 @@ const shell = (
 // Source: web/src/js/app.js
 const app = (
 // module: app
-// requires: state,transport,preferences,editor,presets,settings,status,shell
-({state, transport, preferences, editor, presets, settings, status, shell}) => {
+// requires: state,transport,control,preferences,editor,presets,settings,status,shell
+({state, transport, control, preferences, editor, presets, settings, status, shell}) => {
   let started = false;
   function start() {
     if (started) return; started = true;
@@ -564,28 +798,32 @@ const app = (
     const labels = {connecting: "Connecting", synchronizing: "Synchronizing", live: "Connected / Live",
       reconnecting: "Reconnecting", disconnected: "Disconnected", paused: "Paused", resynchronizing: "Resynchronizing", error: "Connection error"};
     const label = phase => labels[phase];
-    const editorView = editor.mount(document, window, prefs, read);
+    const client = transport.create(store, {WebSocket: window.WebSocket,
+      url: (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws",
+      clock: () => window.performance ? window.performance.now() : Date.now(),
+      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), random: Math.random});
+    const writes = control.create(read, client, {clock: () => window.performance ? window.performance.now() : Date.now(),
+      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window)}, schedule);
+    let frame = null;
+    const editorView = editor.mount(document, window, prefs, read, writes);
     const presetView = presets.mount(document, read), statusView = status.mount(document, read, label);
     settings.mount(document, prefs, editorView.render);
-    let frame = null;
     function text(id, value) { const node = document.getElementById(id); if (node.textContent !== value) node.textContent = value; }
     function render() {
       frame = null; const current = read.current();
       text("connection-label", label(current.phase));
       const connection = document.querySelector(".connection"), live = String(current.ready);
       if (connection.dataset.live !== live) connection.dataset.live = live;
-      text("monitor-tag", current.ready ? "READ-ONLY LIVE" : current.hasSnapshot ? "OFFLINE · READ-ONLY" : "NON-LIVE PREVIEW");
-      const unavailable = current.phase === "error" ? "Connection error. Open Status to retry." : current.phase === "paused" ? "Monitoring paused; a fresh snapshot is required on return." : "Waiting for a fresh Controller snapshot.";
-      text("monitor-note", current.ready ? (current.blackout ? "Blackout is ON. Working values are shown; the Controller restores its entry snapshot on OFF." : "Live Controller values. Editing is disabled until Stage 6B.3.") : (current.hasSnapshot ? "Last received channel values are stale, not current. " : "Channel values are unavailable. ") + unavailable);
-      text("fader-note", current.ready ? "Controller working values · Faders are read-only." : "Values unavailable or stale · Faders are read-only.");
+      text("fader-note", writes.note() || (writes.available() ? "Channel control enabled \u00b7 Values confirmed by Controller." : "Channel control unavailable \u00b7 Waiting for a synchronized Sender."));
       const blackout = document.getElementById("blackout");
       const active = String(current.ready && current.blackout);
       if (blackout.dataset.active !== active) blackout.dataset.active = active;
       const description = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") + ", read-only" : "Blackout state unavailable";
       if (blackout.getAttribute("aria-label") !== description) blackout.setAttribute("aria-label", description);
-      text("blackout-summary-label", current.ready ? "Blackout " + (current.blackout ? "ON · output zero" : "OFF") : "Blackout state unavailable");
+      text("blackout-summary-label", current.ready ? "Blackout " + (current.blackout ? "ON \u00b7 output zero" : "OFF") : "Blackout state unavailable");
       text("blackout-summary-detail", current.ready ? "Controller working values" : "Awaiting live data");
       if (!document.getElementById("view-editor").hidden) editorView.render();
+      else { editorView.leave(); writes.leave(); }
       if (!document.getElementById("view-presets").hidden) presetView.render();
       store.diagnostics({renderedRevision: current.ready ? current.revision : null}, false);
       if (!document.getElementById("view-status").hidden) statusView.render();
@@ -593,10 +831,6 @@ const app = (
     function schedule() { if (!document.hidden && frame === null) frame = window.requestAnimationFrame(render); }
     read.subscribe(schedule);
     shell.mount(document, window, {connection: label(read.current().phase)}, schedule);
-    const client = transport.create(store, {WebSocket: window.WebSocket,
-      url: (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws",
-      clock: () => window.performance ? window.performance.now() : Date.now(),
-      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), random: Math.random});
     document.getElementById("connection-retry").addEventListener("click", client.retry);
     function pause() { client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
     document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); else { client.resume(); schedule(); } });
@@ -610,7 +844,7 @@ const app = (
   }
   return {start};
 }
-)({state, transport, preferences, editor, presets, settings, status, shell});
+)({state, transport, control, preferences, editor, presets, settings, status, shell});
 
 app.start();
 })();

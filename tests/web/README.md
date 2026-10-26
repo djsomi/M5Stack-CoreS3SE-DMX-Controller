@@ -125,3 +125,45 @@ changes the main shell to reconnecting/offline and marks cached values stale.
 The endpoint mock cases also retain receive EOF (io_op4/errno0), reset and timeout
 errors separately from an explicit complete WebSocket CLOSE. No error bucket is
 cleared or relabelled to make counters appear clean.
+
+
+## Stage 6B.3 active channel control
+
+Stage 6B.2 has closed at `3eb72f31c61c53ae1617a3c7385d1327c884b5c8`.
+Stage 6B.3 enables only native Editor channel faders after a synchronized Sender
+snapshot. Preset/blackout controls stay disabled. Earlier read-only QA notes
+above describe the historical Stage 6B.2 interface.
+
+Run `node tests/web/run_tests.mjs` and `python -B tests/web/check_pipeline.py`.
+The added groups execute the real command encoder, transport, pacing layer,
+fader and Editor factories with deterministic sockets/clocks and DOM doubles.
+They cover native input/change/pointerup contracts for mouse/touch/keyboard,
+strict bounds/shared IDs, authoritative ack vs transport send, coalescing and
+rolling rate bounds, final delivery, conflicting updates, eight-channel intent
+capacity, bank identity including CH512, explicit rejections/transport errors,
+resync, background and loss mid-drag, no mutation replay, and concurrent health
+probes. These event mocks do not emulate Safari's actual range tracking or DMX.
+
+The existing `fixture_server.py` remains a read-only projection fixture and
+intentionally rejects channel mutations. Do not use it as evidence of active
+control, controller authority, or multi-client conflict resolution. The C++
+`test_websocket.cpp` executes the actual v1 decoder/Bridge/Dispatcher/Controller
+with fake persistence; the Stage 6B.3 function adds untrusted-write rejection,
+boundaries, applied/no_change acknowledgment ordering, independent/same-channel
+clients and read-only observer compatibility. The existing blackout, preset,
+transport and ISR tests remain required.
+
+Use the physical acceptance matrix in `docs/STAGE6B3_ACTIVE_WEB_CONTROL.md` for
+actual iPhone Safari/Home Screen, Windows, MacBook, physical controls and known
+fixture channels. No automatic DMX sweep is part of any browser test.
+
+
+Final Editor refinement tests also execute the +/- pending-intent arithmetic and
+compact numeric editor. The banner is absent. Native number-button activation
+opens a3-digit inputmode=numeric draft (18px mobile font); only Apply/Enter sends,
+Cancel/Escape does not. Tests cover rapid tap accumulation, bounds, explicit final
+pacing, immutable drafts under publications, rejection, stale disabling, no replay,
+disposed handlers/bank identity and CH512 at4/6/8 columns. Pipeline assertions
+check served selectors/ARIA,44px targets, equal form/rail height and zoom/selection
+exceptions. Native iPhone keyboard/focus/zoom and actual touch geometry require
+physical acceptance; the DOM doubles do not establish these browser behaviors.

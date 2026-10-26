@@ -8,6 +8,11 @@
     let integrityFailures = 0;
     const idleMs = 15000, probeMs = 10000, resumeGraceMs = 5000;
     let probing = false, lastAuthority = 0;
+    let writeTimer = null;
+    const writeListeners = new Set();
+    function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
+    const writable = () => started && !suspended && !waiting && store.read.current().ready &&
+      store.read.current().sender && socket?.readyState === 1;
     const now = () => runtime.now ? runtime.now() : Date.now();
     const clock = () => runtime.clock ? runtime.clock() : now();
     function closed(event) {
@@ -30,7 +35,7 @@
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); ++generation; requests.cancel(); store.connection(phase, detail);
+      clear(); cancelWriteTimer(); ++generation; requests.cancel(); store.connection(phase, detail);
       probing = false; store.diagnostics({transportOpen: false, probePending: false}, false);
       if (retry && detail.includes("timed out")) store.diagnostics({classification: "synchronization_timeout"}, false);
       const old = socket;
@@ -121,6 +126,17 @@
         const message = decoded.message;
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          const result = requests.completeWrite(message);
+          if (result) {
+            cancelWriteTimer();
+            // Applied/no-change acknowledgments follow the owner's publication.
+            // Never synthesize a channel value from an ack or accept a missing update.
+            if (message.type === "command.ack" && decoded.revision > BigInt(store.read.current().revision)) {
+              retire("reconnecting", "Missing authoritative command publication"); return;
+            }
+            writeListeners.forEach(listener => listener(result));
+            return;
+          }
           if (!requests.complete(message)) return; // Includes id=0/pre-owner and old IDs.
           if (message.type === "command.ack") fault("snapshot_ack"); // state.request completes with a snapshot only.
           else retire("reconnecting", "Snapshot request rejected");
@@ -152,7 +168,7 @@
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); ++generation; requests.cancel(); probing = false;
         store.diagnostics({probePending: false}, false); schedule();
       };
     }
@@ -168,6 +184,23 @@
       retry() { if (!started || suspended) return; attempt = 0; integrityFailures = 0; retire("reconnecting"); },
       stop() { started = false; retire("disconnected", "", false); },
       resync,
+      writable,
+      onWrite(listener) { writeListeners.add(listener); return () => writeListeners.delete(listener); },
+      setChannel(channel, value) {
+        if (!writable()) return null;
+        const command = requests.channel(channel, value);
+        if (!command) return null;
+        const epoch = generation;
+        try { socket.send(command.data); }
+        catch (_) { retire("reconnecting", "Channel send failed; outcome uncertain"); return null; }
+        // A successful send is not application. No automatic mutation retry.
+        writeTimer = runtime.setTimeout(() => {
+          writeTimer = null;
+          if (epoch === generation && requests.current().write?.id === command.id)
+            retire("reconnecting", "Channel acknowledgment timed out; outcome uncertain");
+        }, 5000);
+        return command.id;
+      },
       pending: () => requests.current()
     };
   }

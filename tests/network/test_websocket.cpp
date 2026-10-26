@@ -208,6 +208,15 @@ void stabilityBackpressure() {
     }
     CHECK(r.bridge.alive(fast)&&!r.bridge.alive(slow));
     CHECK(r.bridge.metrics().queue_full==1&&r.controller.channel(1)==0);
+    // HTTP may already be inside a synchronous send when the owner fills and
+    // retires this client's queue. A later send failure is still real, but
+    // must not drop it twice or replace the first bridge failure.
+    const auto before=r.bridge.metrics();
+    r.bridge.sendFailed(slow);
+    const auto after=r.bridge.metrics();
+    CHECK(after.send_failures==before.send_failures+1&&after.closed==before.closed);
+    CHECK(after.queue_full==before.queue_full&&after.first.stop==Stop::queue_full);
+    CHECK(after.first.token.generation==slow.generation&&r.bridge.alive(fast));
     // A non-consuming client is bounded, closed, and replaced by an atomic latest snapshot.
     auto replacement=r.bridge.open(r.clock);CHECK(replacement.generation!=slow.generation);
     r.bridge.ownerPoll(true);CHECK(r.bridge.take(replacement,r.event)&&r.event.kind==Kind::hello);
@@ -252,5 +261,60 @@ void diagnosticBounds() {
     printf("BOUNDED_DIAGNOSTIC_JSON %s\n",text);
     CHECK(!websocket_diagnostics::encode(c,b,sessions,6,true,0,text,32));
 }
-int main(){protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();stabilityBackpressure();httpRejectionDiagnostics();diagnosticBounds();
+// Stage6B.3 reuses the established protocol; rejected untrusted writes must
+// never escape the HTTP-copy boundary into the application-owned domain.
+void activeWebControl() {
+    Rig r;auto writer=r.connect();auto observer=r.connect();
+    const char* malformed[]={
+        "{", "[]", "null", "{}",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1})",
+        R"({"v":1,"id":1,"type":"channel.set","value":1})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":"1","value":1})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1,"value":"1"})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":true,"value":0})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":null,"value":0})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":-1,"value":0})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1.0,"value":0})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1,"value":1e1})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1,"value":false})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1,"value":1,"value":2})",
+        R"({"v":1,"id":1,"type":"channel.set","channel":1,"value":1,"extra":0})",
+        R"({"v":1,"id":1,"type":"channel.patch","channel":1,"value":1})"
+    };
+    for(const auto text:malformed) {
+        const auto revision=r.controller.revision();r.clock+=1001;
+        r.send(writer,text);r.apply();
+        CHECK(r.controller.revision()==revision&&r.dispatcher.pending()==0);
+        CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::error);
+        CHECK(!r.bridge.take(observer,r.event));
+        for(unsigned ch=1;ch<=512;++ch)CHECK(r.controller.channel(int(ch))==0&&r.controller.outputPacket()[ch]==0);
+    }
+    unsigned id=1;
+    for(int ch:{0,513}) {r.clock+=1001;r.send(writer,channel(id++,ch,1));r.apply();CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::error);}
+    for(int value:{-1,256}) {r.clock+=1001;r.send(writer,channel(id++,1,value));r.apply();CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::error);}
+    r.clock+=1001;r.send(writer,channel(id++,1,255));
+    CHECK(r.controller.channel(1)==0); // Enqueued is not applied.
+    const auto before=r.controller.revision();r.apply();
+    CHECK(r.controller.channel(1)==255&&r.controller.revision()==before+1);
+    CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::channel&&r.event.value==255);
+    const auto publication=r.event.sequence;
+    CHECK(r.bridge.take(observer,r.event)&&r.event.sequence==publication);
+    CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::ack&&r.event.result==CommandStatus::applied&&r.event.sequence>publication&&r.event.id==id-1);
+    const auto revision=r.controller.revision();
+    r.send(writer,channel(id++,1,255));r.apply();
+    CHECK(r.controller.revision()==revision);
+    CHECK(r.bridge.take(writer,r.event)&&r.event.kind==Kind::ack&&r.event.result==CommandStatus::no_change);
+    CHECK(!r.bridge.take(observer,r.event)); // No false authoritative mutation.
+    r.send(writer,channel(id++,512,255));r.apply();CHECK(r.controller.channel(512)==255);r.drain(writer);r.drain(observer);
+    r.send(writer,channel(id++,512,0));r.apply();CHECK(r.controller.channel(512)==0);r.drain(writer);r.drain(observer);
+    // Quiet/read-only peers still use exactly the old state.request contract.
+    r.send(observer,R"({"v":1,"id":1,"type":"state.request"})");r.apply();
+    CHECK(r.bridge.take(observer,r.event)&&r.event.kind==Kind::snapshot&&r.event.values[0]==255&&r.event.values[511]==0);
+    // Independent channels and same-channel commands follow owner application order.
+    r.send(writer,channel(id++,1,40));r.send(observer,channel(2,2,50));r.apply();r.apply();
+    CHECK(r.controller.channel(1)==40&&r.controller.channel(2)==50);r.drain(writer);r.drain(observer);
+    r.send(writer,channel(id++,1,60));r.send(observer,channel(3,1,70));r.apply();r.apply();
+    CHECK(r.controller.channel(1)==70&&r.controller.workingPacket()[0]==0);
+}
+int main(){activeWebControl();protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();stabilityBackpressure();httpRejectionDiagnostics();diagnosticBounds();
     printf("PASS protocol/session/revision/snapshot races/Dispatcher/touch/blackout/mode/presets/backpressure/generation/cleanup/cross-task stress; Bridge=%zu Event=%zu Request=%zu\n",sizeof(Bridge),sizeof(Event),sizeof(Request));}

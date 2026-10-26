@@ -5,7 +5,7 @@
     const start = Math.floor((channel - 1) / count) * count + 1;
     return Array.from({length: Math.min(count, 513 - start)}, (_, index) => start + index);
   }
-  function mount(document, window, preferences, state) {
+  function mount(document, window, preferences, state, control) {
     const grid = document.getElementById("fader-grid");
     const previous = document.getElementById("bank-previous"), next = document.getElementById("bank-next");
     const jump = document.getElementById("channel-jump"), error = document.getElementById("jump-error");
@@ -16,7 +16,9 @@
       const prefs = preferences.read(), channels = bank(prefs.selectedChannel, count());
       const nextKey = channels.join(","), current = state.current();
       if (key !== nextKey) {
-        key = nextKey; cards = channels.map(channel => fader.create(document, channel));
+        cards.forEach(card => card.dispose());
+        control?.leave();
+        key = nextKey; cards = channels.map(channel => fader.create(document, channel, control, closeDrafts));
         grid.replaceChildren(...cards.map(card => card.node));
         document.getElementById("bank-heading").textContent = "Channels " + String(channels[0]).padStart(3, "0") + "–" + String(channels[channels.length - 1]).padStart(3, "0");
         previous.disabled = channels[0] === 1; next.disabled = channels[channels.length - 1] === 512;
@@ -27,6 +29,7 @@
       // Incoming channel updates must not overwrite a Go-to-CH entry being typed.
       if (selection !== prefs.selectedChannel) { selection = prefs.selectedChannel; jump.value = String(selection); }
     }
+    function closeDrafts() { cards.forEach(card => card.closeDraft()); }
     function move(direction) {
       const channels = bank(preferences.read().selectedChannel, count());
       preferences.update({selectedChannel: Math.max(1, Math.min(512, channels[0] + direction * count()))}); render();
@@ -41,7 +44,7 @@
       error.textContent = ""; jump.removeAttribute("aria-invalid"); preferences.update({selectedChannel: channel}); render();
     });
     tablet.addEventListener("change", render); wide.addEventListener("change", render);
-    render(); return {render};
+    render(); return {render, leave: closeDrafts};
   }
   return {bank, mount};
 }

@@ -105,7 +105,9 @@ class PipelineTests(unittest.TestCase):
         actions = [a for _, a in elements.nodes if "data-device-action" in a or a.get("id") == "blackout"]
         self.assertEqual(len(actions), 5); self.assertTrue(all("disabled" in a for a in actions))
         slots = [a for _, a in elements.nodes if "data-preset" in a]; self.assertEqual(len(slots), 8)
-        self.assertIn("NON-LIVE PREVIEW", html)
+        self.assertNotIn("preview-note", html)
+        self.assertNotIn("monitor-tag", html)
+        self.assertNotIn("LIVE CONTROL", html)
         for tag, attrs in elements.nodes:
             self.assertFalse(any(key.startswith("on") or key == "style" for key in attrs))
             for key in ("src", "href"):
@@ -113,17 +115,17 @@ class PipelineTests(unittest.TestCase):
         js = (self.root / "web/src/app.js").read_text(encoding='utf-8')
         import re
         self.assertFalse(re.search(r"\b(?:fetch|XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
-        self.assertNotRegex(js, r'"(?:channel\.set|blackout\.set|preset\.(?:load|save|copy|clear))"')
+        self.assertNotRegex(js, r'"(?:blackout\.set|preset\.(?:load|save|copy|clear))"')
         self.assertIn('type: "state.request"', js)
+        self.assertIn('type: "channel.set"', js)
         self.assertNotIn("setInterval(", js)
 
     def test_bank_arrow_touch_action_is_scoped_and_zoom_remains_available(self):
         css = (self.root / "web/src/style.css").read_text(encoding="utf-8")
         rules = re.findall(r"([^{}]+)\{([^{}]*touch-action\s*:[^{}]*)\}", css)
-        self.assertEqual(len(rules), 1)
-        selector, declarations = rules[0]
-        self.assertEqual(selector.strip(), ".bank-buttons .icon-button")
-        self.assertEqual(declarations.strip(), "touch-action: manipulation;")
+        self.assertEqual(len(rules), 2)
+        self.assertEqual({selector.strip() for selector, _ in rules}, {".bank-buttons .icon-button", ".fader-step, .fader-value"})
+        self.assertTrue(all(declarations.strip() == "touch-action: manipulation;" for _, declarations in rules))
         html = (self.root / "web/src/index.html").read_text(encoding="utf-8")
         controls = re.search(r'<div class="bank-buttons">(.*?)</div>', html).group(1)
         buttons = [attrs for tag, attrs in Elements(controls).nodes if tag == "button"]
@@ -132,6 +134,57 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(all(attrs.get("class") == "icon-button" for attrs in buttons))
         editor = (self.root / "web/src/js/editor.js").read_text(encoding="utf-8")
         self.assertNotRegex(editor, r"touchstart|touchend|touchmove|gesturestart|gesturechange")
+
+    def test_served_selection_policy_preserves_editing_and_diagnostic_copy(self):
+        css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        body = re.search(r"(?:^|\n)body\s*\{([^}]*)\}", css).group(1)
+        for declaration in ("-webkit-user-select: none;", "user-select: none;"):
+            self.assertIn(declaration, body)
+        exceptions = re.search(r'input, textarea, \[contenteditable\]:not\(\[contenteditable="false"\]\), \.status-panel dd, #connection-error\s*\{([^}]*)\}', css).group(1)
+        self.assertIn("-webkit-user-select: text;", exceptions)
+        self.assertIn("user-select: text;", exceptions)
+        self.assertLess(css.index("#connection-error"), css.index(".fader input[type=range] {"))
+        slider = re.search(r"\.fader input\[type=range\]\s*\{([^}]*)\}", css).group(1)
+        self.assertIn("-webkit-user-select: none;", slider)
+        self.assertIn("user-select: none;", slider)
+        self.assertNotIn("touch-callout", css)  # No evidence a callout restriction is needed.
+        self.assertNotRegex(css, r"touch-action:\s*none|pointer-events:\s*none")
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
+        nodes = Elements(html).nodes
+        self.assertTrue(any(tag == "input" and attrs.get("id") == "channel-jump" for tag, attrs in nodes))
+        self.assertIn('<div class="panel status-panel">', html)
+        self.assertTrue(any(tag == "dd" and attrs.get("id") == "status-revision" for tag, attrs in nodes))
+        self.assertTrue(any(attrs.get("id") == "connection-error" for tag, attrs in nodes))
+        js = (self.root / "web/src/js/fader.js").read_text(encoding="utf-8")
+        self.assertNotRegex(js, r"touchstart|touchmove|touchend|gesturestart")
+        self.assertEqual(js.count("event.preventDefault()"), 2)  # Only form submit and Escape.
+        self.assertIn('form.addEventListener("submit"', js)
+        self.assertIn('event.key === "Escape"', js)
+        self.assertNotRegex(js, r"setTimeout|setInterval|touchstart|touchmove")
+
+    def test_compact_numeric_and_step_layout_contract(self):
+        css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
+        self.assertNotIn(".preview-note", css)
+        self.assertRegex(css, r"\.fader-step\s*\{[^}]*width: 44px;[^}]*min-height: 44px;")
+        self.assertRegex(css, r"\.fader-plus\s*\{\s*order: -1;")
+        self.assertRegex(css, r"\.fader-minus\s*\{\s*order: 1;")
+        self.assertRegex(css, r"\.value-entry \.dmx-draft-input\s*\{[^}]*font-size: 18px;")
+        self.assertEqual(css.count("height: calc(var(--fader-travel) + 104px)"), 2)
+        self.assertRegex(css, r"\.value-error\s*\{[^}]*max-width: 100%;[^}]*overflow-wrap: anywhere;")
+        self.assertIn("grid-template-columns: repeat(4, minmax(0, 1fr))", css)
+        self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr))", css)
+        self.assertIn("grid-template-columns: repeat(8, minmax(0, 1fr))", css)
+        # CSS budget at the 280px supported minimum: no 44px target needs overflow.
+        for width, columns, padding, grid_padding, gap in [(280,4,32,24,8),(320,4,32,24,8),(600,6,32,24,8),(768,8,56,44,12)]:
+            card_width = (width - padding - grid_padding - 2 - gap * (columns-1)) / columns
+            self.assertGreaterEqual(card_width, 44)
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
+        nodes = Elements(html).nodes
+        ids = {attrs["id"] for _,attrs in nodes if "id" in attrs}
+        for _,attrs in nodes:
+            for key in ("aria-describedby", "aria-labelledby"):
+                for target in attrs.get(key, "").split(): self.assertIn(target, ids)
 
     def test_served_mobile_viewport_contract(self):
         # Test shipped bytes, not merely the presence of an authored filename.

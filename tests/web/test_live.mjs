@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const modules = {};
-for (const name of ['protocol','commands','state','transport','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','control','preferences','fader','editor','presets','settings','status','shell','app']) {
   const code = readFileSync(new URL('../../web/src/js/' + name + '.js', import.meta.url), 'utf8');
   modules[name] = new vm.Script('(' + code + ')', {filename: name + '.js'}).runInNewContext()(modules);
 }
@@ -39,7 +39,12 @@ function fixture() {
   function ready() {
     const socket=sockets.at(-1); socket.open(); socket.message(hello()); socket.message(snapshot()); return socket;
   }
-  return {store, read:store.read, client, sockets, jobs, scheduled, runtime, next, ready, advance: ms => {now += ms;}};
+  function elapse(ms) {
+    const end=now+ms;
+    while ([...jobs.values()].some(job=>job.at<=end)) next();
+    now=end;
+  }
+  return {store, read:store.read, client, sockets, jobs, scheduled, runtime, next, ready, elapse, advance: ms => {now += ms;}};
 }
 
 test('exact v1 schemas, 512 values, all preset states and uint64 precision', () => {
@@ -153,12 +158,15 @@ test('a malformed live bulk update leaves the previous universe intact and unava
   assert.equal(f.read.channel(1),0);assert.equal(f.read.channel(512),255);
   assert.equal(f.read.current().ready,false);assert.equal(f.read.current().blackout,null);
 });
-test('pending tracker is one request, strict identity, bounded last outcome and no mutation API', () => {
+test('pending tracker bounds snapshot and channel intents with shared IDs and no generic mutation API', () => {
   const requests=modules.commands.create();requests.begin();assert.equal(JSON.parse(requests.snapshot()).id,1);
   assert.equal(requests.snapshot(),null);assert.equal(requests.complete({id:99}),false);
   requests.cancel();assert.equal(requests.current().last.kind,'uncertain');
   assert.equal(JSON.parse(requests.snapshot()).id,2);requests.begin();assert.equal(JSON.parse(requests.snapshot()).id,1);
-  assert.equal(requests.send,undefined);assert.equal(requests.channel,undefined);
+  assert.equal(requests.send,undefined);
+  const write=requests.channel(512,255);assert.equal(write.id,2);assert.equal(requests.channel(1,0),null);
+  assert.equal(requests.completeWrite({id:99}),null);assert.equal(requests.completeWrite({id:2,type:"command.ack",status:"applied"}).channel,512);
+  for(const [ch,value] of [[0,0],[513,0],[1,-1],[1,256],[1.5,0],[1,"5"]])assert.equal(requests.channel(ch,value),null);
 });
 test('independent stores/navigation preferences and immutable selectors', () => {
   const one=fixture(),two=fixture();one.client.start();two.client.start();const first=one.ready();two.ready();
@@ -273,7 +281,7 @@ class Element {
   addEventListener(type,handler) {this.listeners[type]=handler;}
   append(...children) {this.children.push(...children);}
   replaceChildren(...children) {this.children=children;++this.replacements;}
-  focus() {}
+  focus(options) {this.focused=true;this.focusOptions=options;}
   querySelector(selector) {return this.children.find(child=>'.'+child.className===selector);}
 }
 test('real Editor reuses all visible cards, reflects the universe and preserves typed input', () => {
@@ -288,7 +296,7 @@ test('real Editor reuses all visible cards, reflects the universe and preserves 
     for(let i=0;i<100;++i){socket.message(channel({seq:String(12+i),channel:1,value:i}));view.render();}
     assert.equal(nodes['fader-grid'].replacements,1);assert.equal(nodes['channel-jump'].value,'123');
     assert.equal(cards[0].children[1].textContent,'99');
-    cards.forEach((card,index)=>{assert.equal(card.children[2].children[0].disabled,true);assert.equal(card.children[1].textContent,String(index===0?99:index));});
+    cards.forEach((card,index)=>{assert.equal(card.children[2].children.find(node=>node.type==='range').disabled,true);assert.equal(card.children[1].textContent,String(index===0?99:index));});
     assert.equal(socket.sent.length,0);
   }
 });
@@ -351,11 +359,9 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   const flush=()=>{assert.ok(frames.size<=1,'only one scheduled render');for(const [id,callback]of [...frames]){frames.delete(id);callback();}};
   const navigate=section=>{links[names.indexOf(section)].listeners.click({button:0,detail:1,preventDefault(){}});flush();};
   app.start();app.start();assert.equal(f.sockets.length,1);assert.equal(frames.size,0);
-  assert.equal(nodes['monitor-tag'].textContent,'NON-LIVE PREVIEW');
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'—');
   const socket=f.sockets[0];socket.open();socket.message(hello());flush();
   assert.equal(nodes['connection-label'].textContent,'Synchronizing');socket.message(snapshot());flush();
-  assert.equal(nodes['monitor-tag'].textContent,'READ-ONLY LIVE');
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'0');
   const began=Date.now();
   for(let i=0;i<10000;++i)socket.message(channel({seq:String(12+i),channel:1,value:i%256}));
@@ -369,7 +375,8 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   socket.message({...snapshot({seq:'10021',values:Array(512).fill(7)}),type:'state.update'});flush();
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'7');assert.equal(nodes.blackout.dataset.active,'false');
   socket.end();flush();assert.equal(nodes['fader-grid'].dataset.stale,'true');
-  assert.match(nodes['monitor-note'].textContent,/stale/);assert.match(nodes.blackout.attrs['aria-label'],/unavailable/);
+  assert.equal(nodes['fader-grid'].children[0].children[2].children.find(node=>node.type==='range').disabled,true);
+  assert.match(nodes.blackout.attrs['aria-label'],/unavailable/);
   f.next();const fresh=f.sockets.at(-1);fresh.open();fresh.message(hello());fresh.message(snapshot({values:Array(512).fill(9)}));flush();
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'9');
   document.hidden=true;events.visibilitychange();assert.equal(frames.size,0);
@@ -379,7 +386,6 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   assert.ok(f.sockets.every(s=>s.sent.length===0),'normal operation/resume sends no JSON requests or mutations');
   // Routine probes are silent in the main shell; detailed pending state stays in Status.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
-  assert.equal(connection.dataset.live,'true');assert.equal(nodes['monitor-tag'].textContent,'READ-ONLY LIVE');
   navigate('status');assert.match(nodes['status-sync'].textContent,/checking connection/);
   assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   assert.equal(JSON.parse(resumed.sent[0]).type,'state.request');
@@ -388,9 +394,306 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   // A missing matching snapshot still invalidates LIVE at the unchanged deadline.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   assert.equal(f.next(),10000);flush();assert.equal(nodes['connection-label'].textContent,'Reconnecting');
-  assert.equal(connection.dataset.live,'false');assert.equal(nodes['monitor-tag'].textContent,'OFFLINE · READ-ONLY');
-  assert.equal(nodes['status-sync'].textContent,'Not synchronized');assert.match(nodes['monitor-note'].textContent,/stale/);
+  assert.equal(connection.dataset.live,'false');assert.equal(nodes['status-sync'].textContent,'Not synchronized');
   events.pagehide();resumed.end();assert.equal(frames.size,0);assert.equal(f.jobs.size,0);
   console.log('MEASURE mocked 10000 ordered updates: '+elapsed+' ms Node VM; one pending RAF, zero card rebuilds after initial bank');
 });
+// Stage6B.3 executes the real encoder, transport, pacing and Editor factories.
+function activeFixture(auto = false) {
+  const f=fixture(); f.client.start(); const socket=f.ready(), events=[];
+  let sequence=11, revision=9007199254740993n, renders=0;
+  const control=modules.control.create(f.read,f.client,{...f.runtime,clock:f.runtime.now},()=>++renders);
+  function authority(channelNumber,value) {
+    socket.message(channel({seq:String(++sequence),revision:String(++revision),channel:channelNumber,value}));
+  }
+  function reply(command,status='applied',publish=true) {
+    if(publish && status==='applied') authority(command.channel,command.value);
+    socket.message({...envelope(status==='applied'||status==='no_change'?'command.ack':'command.error',
+      String(++sequence),String(revision),command.id),status,domain:0});
+  }
+  const send=socket.send.bind(socket);
+  socket.send=data=>{
+    send(data); const command=JSON.parse(data); events.push({at:f.runtime.now(),...command});
+    if(auto && command.type==='channel.set')f.runtime.setTimeout(()=>reply(command),10);
+  };
+  return {...f,socket,control,events,authority,reply,renders:()=>renders};
+}
+
+test('channel encoder validates strict bounds and shares increasing IDs with snapshots',()=>{
+  const c=modules.commands.create();c.begin();
+  for(const ch of [0,-1,513,1.5,'1',null])assert.equal(c.channel(ch,0),null);
+  for(const value of [-1,256,0.1,'1',null,NaN,Infinity])assert.equal(c.channel(1,value),null);
+  let command=c.channel(1,0);assert.deepEqual(JSON.parse(command.data),{v:1,id:1,type:'channel.set',channel:1,value:0});
+  const snapshotRequest=JSON.parse(c.snapshot());assert.equal(snapshotRequest.id,2);
+  assert.equal(c.current().pending,2);assert.equal(c.current().write.id,1);
+  c.completeWrite({id:1,type:'command.ack',status:'no_change'});
+  command=c.channel(512,255);assert.equal(command.id,3);
+  c.cancel();assert.equal(c.current().write,null);assert.equal(c.current().pending,null);
+});
+
+test('send is not application; one in-flight write resolves only by matching owner ack',()=>{
+  const f=activeFixture();assert.equal(f.client.setChannel(1,255),1);
+  assert.equal(f.read.channel(1),0);assert.equal(f.client.setChannel(2,7),null);
+  f.socket.message({...envelope('command.ack','12','9007199254740993',99),status:'applied',domain:0});
+  assert.equal(f.client.pending().write.id,1);
+  f.authority(1,255);assert.equal(f.client.pending().write.id,1,'publication alone is not command acknowledgment');
+  f.reply(f.events[0],'applied',false);assert.equal(f.client.pending().write,null);
+  assert.equal(f.read.channel(1),255);
+  f.client.suspend();assert.equal(f.client.setChannel(1,8),null);
+});
+
+test('1000 rapid inputs are coalesced; final release wins within hard rolling budget',()=>{
+  const f=activeFixture(true);
+  for(let i=0;i<1000;++i){assert.equal(f.control.edit(1,i%256),true);f.elapse(1);}
+  f.control.edit(1,255);f.control.release(1);f.elapse(1500);
+  assert.equal(f.read.channel(1),255);assert.equal(f.control.preview(1),null);
+  assert.equal(f.control.pending(),0);assert.ok(f.events.length>=16 && f.events.length<=35);
+  for(const event of f.events)assert.ok(f.events.filter(e=>e.at>=event.at && e.at<event.at+1000).length<=18);
+  assert.equal(f.events.at(-1).value,255);assert.equal(f.jobs.size,1,'only established idle health timer remains');
+});
+
+test('release bypasses ordinary pacing when credit exists, waits behind in-flight without dropping final',()=>{
+  const f=activeFixture();f.control.edit(21,50);f.reply(f.events[0]);f.advance(5);
+  f.control.edit(21,51);assert.equal(f.events.length,1);
+  f.control.release(21);assert.equal(f.events.length,2);assert.equal(f.events[1].value,51);
+  f.control.edit(21,52);f.control.release(21);assert.equal(f.events.length,2);
+  f.reply(f.events[1]);assert.equal(f.events.length,3);assert.equal(f.events[2].value,52);
+  f.reply(f.events[2]);assert.equal(f.control.preview(21),null);assert.equal(f.read.channel(21),52);
+});
+
+test('preview resists remote values during drag, then reconciles to authoritative ordered results',()=>{
+  const f=activeFixture();f.control.edit(1,80);f.authority(1,33);
+  assert.equal(f.read.channel(1),33);assert.equal(f.control.preview(1),80);assert.match(f.control.note(),/preview 80; Controller 33/);
+  f.reply(f.events[0]);f.authority(1,34);assert.equal(f.control.preview(1),80);
+  f.control.release(1);assert.equal(f.events.at(-1).value,80);
+  f.reply(f.events.at(-1));assert.equal(f.control.preview(1),null);assert.equal(f.read.channel(1),80);
+  f.authority(1,90);assert.equal(f.read.channel(1),90);assert.equal(f.events.length,2,'incoming updates never echo');
+});
+
+test('explicit rejection and no_change clear preview without inventing authoritative state',()=>{
+  const f=activeFixture();f.control.edit(1,100);f.control.release(1);f.reply(f.events[0],'busy',false);
+  assert.equal(f.read.channel(1),0);assert.equal(f.control.preview(1),null);assert.match(f.control.note(),/rejected: busy/);
+  assert.equal(f.events.length,1,'no automatic retry');
+  f.control.edit(1,0);f.control.release(1);f.reply(f.events[1],'no_change',false);
+  // Release is explicit and remains pending behind first ack; acknowledge that final intent.
+  if(f.events.length>2)f.reply(f.events[2],'no_change',false);
+  assert.equal(f.control.preview(1),null);assert.equal(f.read.channel(1),0);
+});
+
+test('transport error may follow domain mutation; use published state without rollback or retry',()=>{
+  const f=activeFixture();f.control.edit(1,99);f.control.release(1);f.authority(1,99);
+  f.reply(f.events[0],'transport_error',false);
+  assert.equal(f.read.channel(1),99);assert.equal(f.control.preview(1),null);
+  assert.match(f.control.note(),/state may have changed/);assert.equal(f.events.length,1);
+});
+
+test('ack without its required authoritative publication invalidates synchronization',()=>{
+  const f=activeFixture();f.control.edit(1,99);f.control.release(1);
+  f.socket.message({...envelope('command.ack','12','9007199254740994',1),status:'applied',domain:0});
+  assert.equal(f.read.current().ready,false);assert.equal(f.control.pending(),0);assert.equal(f.read.channel(1),0);
+  assert.match(f.read.current().error,/Missing authoritative/);
+});
+
+test('simultaneous channels stay bounded and retain identity through bank change',()=>{
+  const f=activeFixture(true);
+  for(let c=1;c<=8;++c)assert.equal(f.control.edit(c,100+c),true);
+  assert.equal(f.control.edit(9,99),false,'at most eight disposable intents');
+  f.control.leave();f.elapse(1000);
+  for(let c=1;c<=8;++c)assert.equal(f.read.channel(c),100+c);
+  assert.equal(f.read.channel(9),8);assert.equal(f.control.pending(),0);
+  f.control.edit(512,255);f.control.release(512);f.elapse(1000);
+  assert.equal(f.read.channel(512),255);assert.ok(f.events.every(e=>e.type==='channel.set'));
+});
+
+test('rapid keyboard finals respect capacity without dropping latest released value',()=>{
+  const f=activeFixture(true);
+  for(let i=0;i<80;++i){f.control.edit(1,i);f.control.release(1);f.elapse(11);}
+  f.control.edit(1,255);f.control.release(1);f.elapse(1500);
+  for(const event of f.events)assert.ok(f.events.filter(e=>e.at>=event.at&&e.at<event.at+1000).length<=18);
+  assert.equal(f.events.at(-1).value,255);assert.equal(f.read.channel(1),255);assert.equal(f.control.pending(),0);
+});
+
+test('connection loss mid-drag drops pending final and fresh snapshot never replays it',()=>{
+  const f=activeFixture();f.control.edit(1,100);f.control.edit(1,200);f.control.release(1);
+  const late=f.socket.onmessage;f.socket.end();assert.equal(f.control.pending(),0);assert.equal(f.control.available(),false);
+  assert.equal(f.control.edit(1,250),false);f.next();const fresh=f.ready();
+  assert.equal(f.control.available(),true);assert.equal(fresh.sent.length,0);assert.equal(f.control.preview(1),null);
+  late({data:JSON.stringify({...envelope('command.ack','99','9007199254740994',1),status:'applied',domain:0})});
+  assert.equal(fresh.sent.length,0);assert.equal(f.read.channel(1),0);
+});
+
+test('missing mutation ack invalidates socket even if state updates continue; no retry on recovery',()=>{
+  const f=activeFixture();f.control.edit(1,100);f.control.release(1);f.authority(1,100);
+  assert.equal(f.next(),5000);assert.equal(f.read.current().ready,false);assert.equal(f.control.pending(),0);
+  assert.match(f.read.current().error,/acknowledgment timed out/);f.socket.end();f.next();const fresh=f.ready();
+  assert.equal(fresh.sent.length,0);assert.equal(f.client.pending().write,null);assert.equal(f.jobs.size,1);
+});
+
+test('ordered resync during drag discards unsent intents and never replays after snapshot',()=>{
+  const f=activeFixture();f.control.edit(1,80);f.control.edit(2,90);
+  f.socket.message(channel({seq:'12',revision:'0'}));
+  assert.equal(f.control.pending(),0);assert.equal(f.control.available(),false);
+  const request=JSON.parse(f.socket.sent.at(-1));assert.equal(request.type,'state.request');assert.equal(request.id,2);
+  f.reply(f.events[0],'no_change',false);
+  f.socket.message(snapshot({id:2,seq:'99',values:Array(512).fill(7)}));
+  assert.equal(f.control.available(),true);assert.equal(f.read.channel(2),7);assert.equal(f.socket.sent.length,2);
+});
+
+test('health probe and channel ack have separate bounded identities and completion contracts',()=>{
+  const f=activeFixture();f.next();const probe=JSON.parse(f.socket.sent[0]);
+  f.control.edit(1,90);f.control.release(1);const write=JSON.parse(f.socket.sent[1]);
+  assert.equal(probe.id,1);assert.equal(write.id,2);
+  f.reply(write);assert.equal(f.client.pending().pending,1);assert.equal(f.read.current().health.probePending,true);
+  f.socket.message(snapshot({id:1,seq:'99',revision:f.read.current().revision}));
+  assert.equal(f.client.pending().pending,null);assert.equal(f.read.current().ready,true);
+  // A queued final may still have its independent ack deadline.
+  if(f.client.pending().write)f.reply(JSON.parse(f.socket.sent.at(-1)),'no_change',false);
+});
+
+test('background/resume and receiver transition terminate interaction; no duplicate write timers',()=>{
+  const f=activeFixture();f.control.edit(1,90);f.control.edit(2,91);
+  f.client.suspend();assert.equal(f.control.pending(),0);assert.equal(f.jobs.size,0);
+  f.client.resume();f.socket.end();const fresh=f.ready();assert.equal(fresh.sent.length,0);
+  fresh.message({...envelope('state.update','15'),blackout:false,sender:false});
+  assert.equal(f.control.available(),false);assert.equal(f.control.edit(1,255),false);
+});
+
+test('native range input events support mouse/touch/keyboard without changing bank semantics',()=>{
+  for(const pointerType of ['mouse','touch','keyboard'])for(const count of [4,6,8]){
+    const f=activeFixture(true),nodes={};
+    for(const id of ['fader-grid','bank-previous','bank-next','channel-jump','jump-error','jump-form','bank-heading'])nodes[id]=new Element();
+    const document={getElementById:id=>nodes[id],createElement:()=>new Element()};
+    const window={matchMedia:query=>({matches:query.includes('680')?count===8:count>=6,addEventListener(){}})};
+    const prefs=modules.preferences.create(null),view=modules.editor.mount(document,window,prefs,f.read,f.control);
+    let input=nodes['fader-grid'].children[0].children[2].children.find(node=>node.type==='range');assert.equal(input.disabled,false);
+    input.value='150';input.listeners.input({pointerType});view.render();assert.equal(input.value,'150');
+    f.authority(1,5);view.render();assert.equal(input.value,'150','remote value cannot fight pointer');
+    input.value='200';input.listeners.input({pointerType});
+    input.listeners[pointerType==='keyboard'?'change':'pointerup']({pointerType});
+    nodes['bank-next'].listeners.click();f.elapse(1000);view.render();
+    assert.equal(f.read.channel(1),200);assert.equal(f.read.channel(count+1),count);
+    input=nodes['fader-grid'].children[0].children[2].children.find(node=>node.type==='range');input.value='100';input.listeners.input({pointerType});input.listeners.change();
+    f.elapse(1000);assert.equal(f.read.channel(count+1),100);
+    nodes['channel-jump'].value='512';nodes['jump-form'].listeners.submit({preventDefault(){}});
+    view.render();const last=nodes['fader-grid'].children.at(-1).children[2].children.find(node=>node.type==='range');
+    last.value='255';last.listeners.input({pointerType});last.listeners.change();f.elapse(1000);assert.equal(f.read.channel(512),255);
+    f.socket.end();view.render();assert.equal(last.disabled,true);assert.equal(f.control.pending(),0);
+  }
+});
+
+// Final Editor refinement uses only the existing absolute channel-set path.
+function editorFixture(auto = false, count = 4) {
+  const f=activeFixture(auto),nodes={};
+  for(const id of ['fader-grid','bank-previous','bank-next','channel-jump','jump-error','jump-form','bank-heading'])nodes[id]=new Element();
+  const document={getElementById:id=>nodes[id],createElement:()=>new Element()};
+  const window={matchMedia:query=>({matches:query.includes('680')?count===8:count>=6,addEventListener(){}})};
+  const prefs=modules.preferences.create(null),view=modules.editor.mount(document,window,prefs,f.read,f.control);
+  function card(index=0) {
+    const [label,value,rail,percent,form]=nodes['fader-grid'].children[index].children;
+    const [plus,input,minus]=rail.children, [draftLabel,field,apply,cancel,error]=form.children;
+    return {label,value,rail,percent,form,input,plus,minus,draftLabel,field,apply,cancel,error};
+  }
+  const submit=c=>c.form.listeners.submit({preventDefault(){}});
+  return {...f,nodes,prefs,view,card,submit};
+}
+
+test('fine +/- controls clamp, disable limits, accumulate pending taps and preserve final intent',()=>{
+  const f=editorFixture();f.authority(1,100);f.view.render();const c=f.card();
+  c.plus.listeners.click();c.plus.listeners.click();assert.equal(f.control.preview(1),102);
+  assert.equal(f.events.length,1);assert.equal(f.events[0].value,101);
+  f.reply(f.events[0]);assert.equal(f.events[1].value,102);f.reply(f.events[1]);f.view.render();
+  assert.equal(c.value.textContent,'102');assert.equal(f.control.preview(1),null);
+  c.minus.listeners.click();assert.equal(f.events.at(-1).value,101);f.reply(f.events.at(-1));
+  f.authority(1,255);f.view.render();assert.equal(c.plus.disabled,true);const sent=f.events.length;
+  c.plus.listeners.click();assert.equal(f.events.length,sent);assert.equal(f.read.channel(1),255);
+  f.authority(1,0);f.view.render();assert.equal(c.minus.disabled,true);c.minus.listeners.click();assert.equal(f.events.length,sent);
+  assert.equal(f.control.step(1,5),false);assert.equal(f.control.step(1,-5),false);
+});
+
+test('rapid individual fine taps share the hard rate cap and converge to accumulated value',()=>{
+  const f=editorFixture(true);f.authority(1,100);f.view.render();const c=f.card();
+  for(let i=0;i<100;++i){c.plus.listeners.click();f.elapse(2);}
+  assert.equal(f.control.preview(1),200);f.elapse(1800);f.view.render();assert.equal(f.read.channel(1),200);
+  for(let i=0;i<30;++i){c.minus.listeners.click();f.elapse(2);}
+  f.elapse(2000);f.view.render();assert.equal(f.read.channel(1),170);
+  for(const event of f.events)assert.ok(f.events.filter(e=>e.at>=event.at&&e.at<event.at+1000).length<=18);
+  assert.equal(f.events.at(-1).value,170);assert.equal(f.control.pending(),0);
+  assert.equal(c.plus.listeners.pointerdown,undefined);assert.equal(c.plus.listeners.touchstart,undefined,'no hold-repeat handler');
+});
+
+test('numeric draft is explicit, untouched by authority, keyboard-friendly and sent only on Apply',()=>{
+  const f=editorFixture();f.authority(1,100);f.view.render();const c=f.card();
+  c.value.listeners.click();assert.equal(c.form.hidden,false);assert.equal(c.rail.hidden,true);assert.equal(c.field.value,'100');
+  assert.equal(c.field.type,'text');assert.equal(c.field.inputMode,'numeric');assert.equal(c.field.maxLength,3);
+  c.field.value='203';f.authority(1,80);f.view.render();assert.equal(c.field.value,'203');assert.equal(c.value.textContent,'80');
+  assert.equal(f.events.length,0);f.submit(c);assert.equal(f.events.length,1);assert.equal(f.events[0].value,203);
+  assert.equal(c.form.hidden,true);assert.equal(c.rail.hidden,false);assert.equal(c.value.textContent,'203');
+  assert.match(c.value.attrs['aria-label'],/Unconfirmed preview/);assert.equal(c.value.focusOptions.preventScroll,true);
+  f.reply(f.events[0]);f.view.render();assert.equal(c.value.textContent,'203');assert.match(c.value.attrs['aria-label'],/Controller value/);
+});
+
+test('numeric input rejects empty, malformed, negative, fractional and out-of-range drafts',()=>{
+  const f=editorFixture();const c=f.card();c.value.listeners.click();
+  for(const raw of ['', ' ', '-1', '+1', '256', '999', '1.5', '1e2', '0x10', 'abc', '12 3', '1234']){
+    c.field.value=raw;f.submit(c);assert.equal(f.events.length,0);assert.equal(c.form.hidden,false);assert.equal(c.field.attrs['aria-invalid'],'true');
+  }
+  c.field.value='000';f.submit(c);assert.equal(f.events[0].value,0);f.reply(f.events[0],'no_change',false);
+  c.value.listeners.click();c.field.value='255';f.submit(c);assert.equal(f.events[1].value,255);f.reply(f.events[1]);
+});
+
+test('Cancel and Escape are mutation-free and only one numeric editor stays open',()=>{
+  const f=editorFixture(),a=f.card(),b=f.card(1);a.value.listeners.click();a.field.value='99';
+  a.cancel.listeners.click();assert.equal(a.form.hidden,true);assert.equal(a.field.value,'');assert.equal(f.events.length,0);
+  a.value.listeners.click();a.field.value='150';a.field.listeners.keydown({key:'Escape',preventDefault(){}});
+  assert.equal(a.form.hidden,true);assert.equal(f.events.length,0);
+  a.value.listeners.click();a.field.value='151';b.value.listeners.click();assert.equal(a.form.hidden,true);assert.equal(b.form.hidden,false);
+  f.view.leave();assert.equal(b.form.hidden,true);assert.equal(f.events.length,0);
+});
+
+test('numeric rejection reconciles published values without retaining or retrying the draft',()=>{
+  const f=editorFixture();f.authority(1,100);f.view.render();const c=f.card();
+  c.value.listeners.click();c.field.value='200';f.submit(c);f.reply(f.events[0],'busy',false);f.view.render();
+  assert.equal(c.value.textContent,'100');assert.match(f.control.note(),/rejected: busy/);assert.equal(c.form.hidden,true);
+  f.authority(1,77);f.view.render();assert.equal(c.value.textContent,'77');assert.equal(f.events.length,1);
+});
+
+test('loss cancels numeric drafts, disables all mutations and fresh snapshot cannot replay them',()=>{
+  const f=editorFixture(),c=f.card();c.value.listeners.click();c.field.value='200';
+  f.socket.end();f.view.render();assert.equal(c.form.hidden,true);assert.equal(c.field.value,'');
+  for(const node of [c.value,c.plus,c.minus,c.input,c.field,c.apply])assert.equal(node.disabled,true);
+  f.submit(c);c.plus.listeners.click();assert.equal(f.events.length,0);
+  f.next();const fresh=f.ready();f.view.render();assert.equal(c.form.hidden,true);assert.equal(c.value.disabled,false);assert.equal(fresh.sent.length,0);
+  c.value.listeners.click();assert.equal(c.field.value,'0','fresh draft uses the new snapshot');
+});
+
+test('bank changes dispose drafts/handlers but retain captured pending tap identity at 4/6/8 columns',()=>{
+  for(const count of [4,6,8]){
+    const f=editorFixture(false,count),c=f.card();f.authority(1,100);f.view.render();
+    c.plus.listeners.click();c.plus.listeners.click();c.value.listeners.click();c.field.value='222';
+    f.nodes['bank-next'].listeners.click();assert.equal(c.form.hidden,true);assert.equal(c.field.value,'');
+    f.submit(c);c.plus.listeners.click();assert.equal(f.events.length,1,'detached controls are inert');
+    f.reply(f.events[0]);assert.equal(f.events[1].channel,1);assert.equal(f.events[1].value,102);f.reply(f.events[1]);
+    assert.equal(f.read.channel(count+1),count);const next=f.card();next.value.listeners.click();next.field.value='9';f.submit(next);
+    assert.equal(f.events[2].channel,count+1);assert.equal(f.events[2].value,9);f.reply(f.events[2]);
+  }
+});
+
+test('confirmed numeric write lost before ack is not replayed by recovery',()=>{
+  const f=editorFixture(),c=f.card();c.value.listeners.click();c.field.value='200';f.submit(c);
+  assert.equal(f.events[0].value,200);f.socket.end();f.view.render();assert.equal(c.form.hidden,true);
+  f.next();const fresh=f.ready();f.view.render();assert.equal(fresh.sent.length,0);assert.equal(c.value.textContent,'0');
+  assert.equal(c.field.value,'');assert.equal(f.control.pending(),0);
+});
+
+test('channel512 numeric and fine controls obey exact boundaries at all bank sizes',()=>{
+  for(const count of [4,6,8]){
+    const f=editorFixture(true,count);f.prefs.update({selectedChannel:512});f.view.render();
+    const c=f.card(f.nodes['fader-grid'].children.length-1);assert.equal(c.label.textContent,'CH 512');assert.equal(c.plus.disabled,true);
+    c.value.listeners.click();c.field.value='0';f.submit(c);f.elapse(1000);f.view.render();
+    assert.equal(f.read.channel(512),0);assert.equal(c.minus.disabled,true);assert.equal(c.plus.disabled,false);
+    c.plus.listeners.click();f.elapse(1000);f.view.render();assert.equal(f.read.channel(512),1);
+    assert.ok(f.events.every(event=>event.channel===512));
+  }
+});
+
 console.log('PASS '+groups+' live integration groups; no hardware/electrical assertions');

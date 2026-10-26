@@ -9,10 +9,10 @@ import re
 
 MODULES = (
     ("protocol", ()), ("commands", ()), ("state", ()),
-    ("transport", ("protocol", "commands")), ("preferences", ()), ("fader", ()),
+    ("transport", ("protocol", "commands")), ("control", ()), ("preferences", ()), ("fader", ()),
     ("editor", ("fader",)), ("presets", ()), ("settings", ()),
     ("status", ()), ("shell", ()),
-    ("app", ("state", "transport", "preferences", "editor", "presets", "settings", "status", "shell")),
+    ("app", ("state", "transport", "control", "preferences", "editor", "presets", "settings", "status", "shell")),
 )
 
 

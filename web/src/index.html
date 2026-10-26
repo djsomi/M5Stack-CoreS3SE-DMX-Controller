@@ -13,9 +13,8 @@
   <div class="app-container">
     <header class="app-header">
       <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M7 5v22M16 5v22M25 5v22"/><path class="brand-knobs" d="M3 12h8M12 22h8M21 9h8"/></svg><div><span class="brand-name">CoreS3SE <span>DMX</span></span><span class="brand-caption">DIRECT CONTROLLER</span></div></div>
-      <div class="header-actions"><span class="connection"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Not connected</span></span><button class="blackout-button" id="blackout" disabled aria-describedby="preview-note">Blackout</button></div>
+      <div class="header-actions"><span class="connection"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Not connected</span></span><button class="blackout-button" id="blackout" disabled aria-describedby="blackout-summary-label">Blackout</button></div>
     </header>
-    <aside class="preview-note" id="preview-note"><span class="preview-tag" id="monitor-tag">NON-LIVE PREVIEW</span><p id="monitor-note">Connecting to the Controller. Values are unavailable until synchronization; editing remains disabled.</p></aside>
     <p id="loading-message" class="loading-message" role="status">Loading the interface… If this message remains, reload the page after a few seconds.</p>
     <noscript><p class="loading-message">JavaScript is needed for local navigation. DMX controls remain disabled.</p></noscript>
     <nav class="section-nav" aria-label="Main sections">
@@ -30,8 +29,8 @@
         <div class="panel editor-panel">
           <div class="bank-toolbar"><div class="bank-title"><span class="eyebrow">CHANNEL BANK</span><h2 id="bank-heading">Channels 001–004</h2></div><div class="bank-buttons"><button id="bank-previous" class="icon-button" aria-label="Previous channel bank" disabled>←</button><button id="bank-next" class="icon-button" aria-label="Next channel bank">→</button></div><form id="jump-form" class="jump-form"><label for="channel-jump">Go to CH</label><input id="channel-jump" type="number" inputmode="numeric" min="1" max="512" step="1" value="1" required aria-describedby="jump-error"><button type="submit" class="subtle-button">Go</button></form></div>
           <p id="jump-error" class="form-error" aria-live="polite"></p>
-          <div id="fader-grid" class="fader-grid" role="group" aria-label="Read-only Controller channel faders" aria-describedby="fader-note"></div>
-          <div class="panel-foot"><span class="preview-indicator" aria-hidden="true"></span><p id="fader-note">Values unavailable until synchronization · Faders are read-only.</p></div>
+          <div id="fader-grid" class="fader-grid" role="group" aria-label="Controller channel faders" aria-describedby="fader-note"></div>
+          <div class="panel-foot"><span class="preview-indicator" aria-hidden="true"></span><p id="fader-note">Values unavailable until synchronization · Channel controls disabled.</p></div>
         </div>
         <div class="blackout-summary"><span class="outline-dot" aria-hidden="true"></span><p id="blackout-summary-label">Blackout state unavailable</p><span id="blackout-summary-detail">Awaiting live data</span></div>
       </section>
@@ -48,7 +47,7 @@
           <button class="preset-slot" data-preset="P7" aria-pressed="false"><span class="slot-number">07</span><strong>P7</strong><span class="slot-state">Unknown</span></button>
           <button class="preset-slot" data-preset="P8" aria-pressed="false"><span class="slot-number">08</span><strong>P8</strong><span class="slot-state">Unknown</span></button>
         </div>
-        <div class="panel preset-actions"><div><p class="eyebrow">SELECTED SLOT</p><h2 id="selected-preset">Preset P1</h2></div><div class="action-row"><button disabled class="primary-button" data-device-action="preset.load">Load</button><button disabled data-device-action="preset.save">Save</button><button disabled data-device-action="preset.copy">Copy</button><button disabled class="danger-button" data-device-action="preset.clear">Clear</button></div><p class="muted">Preset actions are read-only in Stage 6B.2. This browser cannot change stored data.</p></div>
+        <div class="panel preset-actions"><div><p class="eyebrow">SELECTED SLOT</p><h2 id="selected-preset">Preset P1</h2></div><div class="action-row"><button disabled class="primary-button" data-device-action="preset.load">Load</button><button disabled data-device-action="preset.save">Save</button><button disabled data-device-action="preset.copy">Copy</button><button disabled class="danger-button" data-device-action="preset.clear">Clear</button></div><p class="muted">Preset actions remain read-only. This browser cannot change stored data.</p></div>
       </section>
       <section class="view" id="view-settings" aria-labelledby="heading-settings" hidden>
         <div class="view-heading"><div><p class="eyebrow">PREFERENCES</p><h1 id="heading-settings" tabindex="-1">Settings</h1></div><span class="quiet-badge">This browser</span></div>
