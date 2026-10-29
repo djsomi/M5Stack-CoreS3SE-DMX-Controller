@@ -55,16 +55,17 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     error="invalid";
     if(!data||!length||length>max_message)return false;
     Parser p{data,data+length};
-    uint32_t nums[11]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{};
+    uint32_t nums[13]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{},action[16]{};
     if(!p.eat('{'))return false;
     do {
         char key[16];if(!p.string(key,sizeof(key))||!p.eat(':'))return false;
-        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base"};
-        unsigned k=0;while(k<11&&strcmp(key,keys[k]))++k;
-        if(k==11||(fields&(1U<<k)))return false;
+        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base","action","request"};
+        unsigned k=0;while(k<13&&strcmp(key,keys[k]))++k;
+        if(k==13||(fields&(1U<<k)))return false;
         fields|=1U<<k;
         if(k==2){if(!p.string(type,sizeof(type)))return false;}
         else if(k==8){if(!p.string(setting,sizeof(setting)))return false;}
+        else if(k==11){if(!p.string(action,sizeof(action)))return false;}
         else if(k==10){if(!p.string(base,sizeof(base)))return false;}
         else if(k==5){if(!p.boolean(nums[k]))return false;}
         else if(!p.number(nums[k]))return false;
@@ -77,7 +78,16 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     r.id=nums[1];
     if(nums[0]!=1){error="version";return false;}
     unsigned expected=7;
-    if(!strcmp(type,"settings.request"))r.settings=true;
+    if(!strcmp(type,"maintenance.get"))r.maintenance=1;
+    else if(!strcmp(type,"maintenance.request")) {
+        expected|=2048;r.maintenance=2;
+        if(!strcmp(action,"restart"))r.maintenance_action=DeviceMaintenance::Action::restart;
+        else if(!strcmp(action,"power_off"))r.maintenance_action=DeviceMaintenance::Action::power_off;
+        else return false;
+    } else if(!strcmp(type,"maintenance.cancel")) {
+        expected|=4096;r.maintenance=3;r.maintenance_request=nums[12];if(!nums[12])return false;
+    }
+    else if(!strcmp(type,"settings.request"))r.settings=true;
     else if(!strcmp(type,"settings.set")||!strcmp(type,"settings.preview")||
             !strcmp(type,"settings.commit")||!strcmp(type,"settings.cancel")) {
         expected|=256;r.settings=r.settings_write=true;
@@ -129,8 +139,29 @@ const char* statusName(CommandStatus s) {
     default:return "invalid";
     }
 }
+const char* maintenanceAction(DeviceMaintenance::Action value) {
+    const char* names[]={"none","restart","power_off"};return names[unsigned(value)];
+}
+const char* maintenancePhase(DeviceMaintenance::Phase value) {
+    const char* names[]={"idle","countdown","zeroing","quiescing","executing","failed"};return names[unsigned(value)];
+}
+const char* maintenanceReason(DeviceMaintenance::Reason value) {
+    const char* names[]={"none","busy","cancelled","transport","deadline","returned"};return names[unsigned(value)];
+}
+const char* maintenanceResult(DeviceMaintenance::Result value) {
+    const char* names[]={"invalid","accepted","cancelled","unauthorized","busy","unsupported"};return names[unsigned(value)];
+}
 size_t encode(const Event& e,char* out,size_t capacity) {
     Writer w(out,capacity);
+    if(e.kind==Kind::maintenance_snapshot||e.kind==Kind::maintenance_update||e.kind==Kind::maintenance_result) {
+        const auto& s=e.maintenance;
+        const char* kind=e.kind==Kind::maintenance_snapshot?"maintenance.snapshot":e.kind==Kind::maintenance_update?"maintenance.update":"maintenance.result";
+        w.add("{\"v\":1,\"type\":\"%s\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\",\"action\":\"%s\",\"phase\":\"%s\",\"request\":%lu,\"reason\":\"%s\",\"remaining_ms\":%lu",kind,
+            (unsigned long)e.id,(unsigned long long)e.revision,(unsigned long long)e.sequence,maintenanceAction(s.action),maintenancePhase(s.phase),
+            (unsigned long)s.request,maintenanceReason(s.reason),(unsigned long)s.remaining_ms);
+        if(e.kind==Kind::maintenance_result)w.add(",\"status\":\"%s\"",maintenanceResult(e.maintenance_result));
+        w.add("}");return w.ok?w.used:0;
+    }
     if(e.kind==Kind::settings_snapshot||e.kind==Kind::settings_update||e.kind==Kind::settings_result) {
         const char* kind=e.kind==Kind::settings_snapshot?"settings.snapshot":e.kind==Kind::settings_update?"settings.update":"settings.result";
         w.add("{\"v\":1,\"type\":\"%s\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\",\"brightness\":%u,\"timeout\":%u,\"volume\":%u,\"persisted\":%u",kind,

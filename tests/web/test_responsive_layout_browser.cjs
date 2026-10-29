@@ -36,7 +36,7 @@ async function settings(page,current){
  await page.locator('[data-section="settings"]').click();await page.waitForFunction(()=>!document.querySelector('#device-brightness').disabled);
  const data=await page.evaluate(()=>{
   const box=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
-  const card=document.querySelector('.device-settings'),pref=[...document.querySelectorAll('.settings-panel')].find(n=>!n.classList.contains('device-settings'));
+  const card=document.querySelector('.device-settings'),pref=[...document.querySelectorAll('.settings-panel')].find(n=>!n.classList.contains('device-settings')&&!n.classList.contains('device-maintenance'));
   return {card:box(card),controls:box(card.querySelector('.device-settings-controls')),preferences:box(pref),workspace:box(document.querySelector('#workspace')),
    parentClass:card.parentElement.className,children:card.parentElement.children.length,
    below:pref.parentElement===document.querySelector('#view-settings'),gridBottom:card.parentElement.getBoundingClientRect().bottom,
@@ -45,19 +45,17 @@ async function settings(page,current){
    labelTouch:getComputedStyle(card.querySelector('label')).touchAction};
  });
  if(current){
-  assert.equal(data.parentClass,'settings-device-grid');assert.equal(data.children,1,'no maintenance placeholder');assert.equal(data.below,true);
+  assert.equal(data.parentClass,'settings-device-grid');assert.equal(data.children,2,'two real device cards');assert.equal(data.below,true);
   assert.ok(data.preferences.y>=data.gridBottom+15.9,'preferences stays below device cards');
   if(data.viewWidth<680)assert.ok(Math.abs(data.card.width-data.workspace.width)<.1,'mobile card is full content width');
-  else assert.ok(data.card.width<=400.1,'compact desktop card');
+  else assert.ok(Math.abs(data.card.width-(data.workspace.width-16)/2)<.1,'equal desktop columns');
   for(const s of data.slider){
    assert.ok(Math.abs(s.box.x-data.card.x-19)<.1&&Math.abs(data.card.right-s.box.right-19)<.1,'symmetric padding; no narrow inner column');
    for(let i=0;i<5;++i)assert.ok(Math.abs(s.ticks[i]-(s.box.x+23+i*(s.box.width-46)/4))<1,'tick/usable endpoint alignment');
   }
   assert.equal(data.scrollWidth,data.viewWidth);assert.equal(data.labelTouch,'pan-x pan-y');
-  // A test-only second child proves extensibility; never shipped in the assets.
-  const second=await page.evaluate(()=>{const g=document.querySelector('.settings-device-grid'),n=document.createElement('div');n.className='panel settings-panel';n.textContent='Layout fixture';g.append(n);const a=g.children[0].getBoundingClientRect(),b=n.getBoundingClientRect(),p=g.nextElementSibling.getBoundingClientRect();const r={sameRow:Math.abs(a.y-b.y)<1,stacked:b.y>=a.bottom+15.9,width:b.width,firstWidth:a.width,preferenceBelow:p.y>=Math.max(a.bottom,b.bottom)+15.9};n.remove();return r;});
-  const pairFits=data.viewWidth>=680&&data.workspace.width>=816;
-  assert.equal(second.sameRow,pairFits);assert.equal(second.stacked,!pairFits);assert.ok(Math.abs(second.width-second.firstWidth)<.1);assert.equal(second.preferenceBelow,true);
+  const second=await page.evaluate(()=>{const g=document.querySelector('.settings-device-grid'),a=g.children[0].getBoundingClientRect(),b=g.children[1].getBoundingClientRect();return {sameRow:Math.abs(a.y-b.y)<1,stacked:b.y>=a.bottom+15.9,width:b.width,firstWidth:a.width};});
+  assert.equal(second.sameRow,data.viewWidth>=680);assert.equal(second.stacked,data.viewWidth<680);assert.ok(Math.abs(second.width-second.firstWidth)<.1);
  }
  return data;
 }

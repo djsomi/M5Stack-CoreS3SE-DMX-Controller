@@ -2,7 +2,7 @@
 #include "websocket_bridge.h"
 namespace websocket_service {
 // Setup and ownerPoll: application task. Other calls: HTTP/worker tasks.
-void initialize(DmxController& controller,CommandDispatcher& dispatcher,DeviceSettings* settings=nullptr);
+void initialize(DmxController& controller,CommandDispatcher& dispatcher,DeviceSettings* settings=nullptr,DeviceMaintenance* maintenance=nullptr);
 void ownerPoll(bool sender);
 websocket_bridge::Token open(uint64_t now_ms);
 void close(websocket_bridge::Token token);

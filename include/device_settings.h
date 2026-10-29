@@ -48,6 +48,7 @@ class DeviceSettings {
     // Release-time physical persistence: a failed write is not retried per idle frame.
     void commitPending() {for(unsigned i=0;i<3;++i)if(pending_&(1U<<i))commit(DeviceSetting(i));}
     uint32_t previewOwner() const {return preview_.owner;}
+    bool busy() const {return preview_.owner||pending_;}
     void servicePreview(uint32_t now,bool owner_alive=true) {
         if(preview_.owner&&(!owner_alive||uint32_t(now-preview_.touched)>=10000||
             uint32_t(now-preview_.started)>=30000))cancelPreview();

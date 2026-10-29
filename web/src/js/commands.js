@@ -2,13 +2,13 @@
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, write = null, operation = null, setting = null, last = null;
+    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
       write = null;
       operation = null;
-      setting = null;
+      setting = null; maintenance = null;
     }
     return {
       begin() { cancel(); next = 0; },
@@ -60,13 +60,26 @@
         if (!setting || setting.id !== message.id) return null;
         const result = setting; setting = null; return result;
       },
+      maintenance(kind, argument) {
+        if (maintenance || next === 4294967295 || !["get", "request", "cancel"].includes(kind) ||
+            (kind === "request" && !["restart", "power_off"].includes(argument)) ||
+            (kind === "cancel" && (!Number.isInteger(argument) || argument < 1 || argument > 4294967295))) return null;
+        if (kind !== "get" && (pending || write || operation || setting)) return null;
+        maintenance = Object.freeze({id: ++next, kind});
+        return {id: next, data: JSON.stringify({v: 1, id: next, type: "maintenance." + kind,
+          ...(kind === "request" ? {action: argument} : kind === "cancel" ? {request: argument} : {})})};
+      },
+      completeMaintenance(message) {
+        if (!maintenance || maintenance.id !== message.id) return null;
+        const result = maintenance; maintenance = null; return result;
+      },
       complete(message) {
         if (!pending || pending.id !== message.id) return false;
         last = Object.freeze({id: pending.id, kind: message.type, status: message.status || "snapshot"});
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, last})
     };
   }
   return {create};

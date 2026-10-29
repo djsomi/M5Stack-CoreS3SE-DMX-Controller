@@ -23,7 +23,21 @@ const protocol = (
     if (!message || Array.isArray(message) || message.v !== 1 || !integer(message.id, 0, 4294967295)) fail();
     const revision = counter(message.revision), sequence = counter(message.seq);
     let extra;
-    if (["settings.snapshot", "settings.update", "settings.result"].includes(message.type)) {
+    if (["maintenance.snapshot", "maintenance.update", "maintenance.result"].includes(message.type)) {
+      extra = ["action", "phase", "request", "reason", "remaining_ms"];
+      const reasons = ["none", "busy", "cancelled", "transport", "deadline", "returned"];
+      if (!sequence || !revision || !["none", "restart", "power_off"].includes(message.action) ||
+          !["idle", "countdown", "zeroing", "quiescing", "executing", "failed"].includes(message.phase) ||
+          !integer(message.request, 0, 4294967295) || !reasons.includes(message.reason) ||
+          !integer(message.remaining_ms, 0, 5000) || message.remaining_ms % 1000 !== 0 ||
+          (message.phase === "idle" ? message.action !== "none" || message.request !== 0 : message.action === "none") ||
+          (message.phase === "countdown" ? !message.request || !message.remaining_ms : message.remaining_ms !== 0) ||
+          (message.type === "maintenance.update" ? message.id !== 0 : !message.id)) fail("protocol_maintenance");
+      if (message.type === "maintenance.result") {
+        extra.push("status");
+        if (!["invalid", "accepted", "cancelled", "unauthorized", "busy", "unsupported"].includes(message.status)) fail("protocol_maintenance");
+      }
+    } else if (["settings.snapshot", "settings.update", "settings.result"].includes(message.type)) {
       extra = ["brightness", "timeout", "volume", "persisted"];
       if (!sequence || !revision || !integer(message.brightness, 1, 5) || !integer(message.timeout, 0, 4) ||
           !integer(message.volume, 0, 4) || !integer(message.persisted, 0, 7)) fail("protocol_settings");
@@ -84,13 +98,13 @@ const commands = (
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, write = null, operation = null, setting = null, last = null;
+    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
       write = null;
       operation = null;
-      setting = null;
+      setting = null; maintenance = null;
     }
     return {
       begin() { cancel(); next = 0; },
@@ -142,13 +156,26 @@ const commands = (
         if (!setting || setting.id !== message.id) return null;
         const result = setting; setting = null; return result;
       },
+      maintenance(kind, argument) {
+        if (maintenance || next === 4294967295 || !["get", "request", "cancel"].includes(kind) ||
+            (kind === "request" && !["restart", "power_off"].includes(argument)) ||
+            (kind === "cancel" && (!Number.isInteger(argument) || argument < 1 || argument > 4294967295))) return null;
+        if (kind !== "get" && (pending || write || operation || setting)) return null;
+        maintenance = Object.freeze({id: ++next, kind});
+        return {id: next, data: JSON.stringify({v: 1, id: next, type: "maintenance." + kind,
+          ...(kind === "request" ? {action: argument} : kind === "cancel" ? {request: argument} : {})})};
+      },
+      completeMaintenance(message) {
+        if (!maintenance || maintenance.id !== message.id) return null;
+        const result = maintenance; maintenance = null; return result;
+      },
       complete(message) {
         if (!pending || pending.id !== message.id) return false;
         last = Object.freeze({id: pending.id, kind: message.type, status: message.status || "snapshot"});
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, last})
     };
   }
   return {create};
@@ -222,6 +249,28 @@ const transport = (
     const writeListeners = new Set(), operationListeners = new Set();
     let settingsEnabled = false, settingsTimer = null, settingsValue = null, settingsError = "";
     const settingsListeners = new Set();
+    let maintenanceEnabled = false, maintenanceTimer = null, maintenanceValue = null, maintenanceError = "", maintenanceRequest = 0;
+    const maintenanceListeners = new Set();
+    const maintenanceLocked = () => !!requests.current().maintenance && requests.current().maintenance.kind !== "get" ||
+      !!maintenanceValue && ["zeroing", "quiescing", "executing", "failed"].includes(maintenanceValue.phase);
+    function maintenanceNotify() { maintenanceListeners.forEach(listener => listener()); }
+    function cancelMaintenance() {
+      if (maintenanceTimer !== null) runtime.clearTimeout(maintenanceTimer);
+      maintenanceTimer = null;
+    }
+    function sendMaintenance(kind = "get", argument) {
+      if (!store.read.current().ready || waiting || socket?.readyState !== 1) return null;
+      const command = requests.maintenance(kind, argument); if (!command) return null;
+      maintenanceError = ""; const epoch = generation;
+      try { socket.send(command.data); } catch (_) { retire("reconnecting", "Maintenance outcome unknown"); return null; }
+      maintenanceTimer = runtime.setTimeout(() => {
+        maintenanceTimer = null; if (epoch !== generation) return;
+        requests.completeMaintenance({id: command.id}); maintenanceValue = null;
+        maintenanceError = "Maintenance response timed out; inspect device before retrying."; maintenanceNotify();
+        if (kind !== "get") retire("reconnecting", maintenanceError);
+      }, 5000);
+      maintenanceNotify(); return command.id;
+    }
     function settingsNotify(event) { settingsListeners.forEach(listener => listener(event)); }
     function cancelSettings() {
       if (settingsTimer !== null) runtime.clearTimeout(settingsTimer);
@@ -229,6 +278,7 @@ const transport = (
     }
     function sendSettings(key, value, phase = null, gesture = 0) {
       if (!store.read.current().ready || waiting || socket?.readyState !== 1) return null;
+      if (key !== undefined && maintenanceLocked()) return null;
       const command = requests.settings(key, value, phase, gesture, settingsValue?.revision); if (!command) return null;
       settingsError = "";
       try { socket.send(command.data); } catch (_) { retire("reconnecting", "Settings send failed; outcome uncertain"); return null; }
@@ -245,7 +295,7 @@ const transport = (
     function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
     function cancelOperationTimer() { if (operationTimer !== null) runtime.clearTimeout(operationTimer); operationTimer = null; }
     const writable = () => started && !suspended && !waiting && store.read.current().ready &&
-      store.read.current().sender && socket?.readyState === 1;
+      store.read.current().sender && socket?.readyState === 1 && !maintenanceLocked();
     const now = () => runtime.now ? runtime.now() : Date.now();
     const clock = () => runtime.clock ? runtime.clock() : now();
     function closed(event) {
@@ -268,8 +318,10 @@ const transport = (
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); ++generation; requests.cancel();
-      settingsValue = null; settingsNotify(); store.connection(phase, detail);
+      clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); maintenanceRequest = 0; ++generation; requests.cancel();
+      settingsValue = null; settingsNotify();
+      if (maintenanceValue?.phase && maintenanceValue.phase !== "idle") maintenanceError = "Connection lost; maintenance outcome unconfirmed.";
+      maintenanceValue = null; maintenanceNotify(); store.connection(phase, detail);
       probing = false; store.diagnostics({transportOpen: false, probePending: false}, false);
       if (retry && detail.includes("timed out")) store.diagnostics({classification: "synchronization_timeout"}, false);
       const old = socket;
@@ -338,7 +390,7 @@ const transport = (
     function connect() {
       if (!started || suspended || socket) return;
       clear(); const epoch = ++generation;
-      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); settingsValue = null; settingsError = ""; store.begin();
+      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); settingsValue = null; settingsError = ""; maintenanceValue = null; store.begin();
       store.diagnostics({probePending: false}, false);
       let native;
       try { native = new runtime.WebSocket(runtime.url); }
@@ -358,6 +410,19 @@ const transport = (
         try { decoded = protocol.parse(event.data); }
         catch (error) { fault(/^protocol_[a-z_]+$/.test(error.message) ? error.message : "protocol_json", error.message === "protocol_version"); return; }
         const message = decoded.message;
+        if (message.type.startsWith("maintenance.")) {
+          if (waiting || !hello || !maintenanceEnabled) return;
+          const pending = requests.current().maintenance;
+          if (message.type !== "maintenance.update" && (!pending || pending.id !== message.id)) return;
+          if (message.type !== "maintenance.update" && message.type !== (pending.kind === "get" ? "maintenance.snapshot" : "maintenance.result")) { fault("protocol_maintenance"); return; }
+          if (!maintenanceValue || decoded.revision >= BigInt(maintenanceValue.revision)) maintenanceValue = message;
+          if (message.type !== "maintenance.update") {
+            requests.completeMaintenance(message); cancelMaintenance();
+            if (message.status === "accepted" && message.phase === "countdown") maintenanceRequest = message.request;
+            maintenanceError = message.status && !["accepted", "cancelled"].includes(message.status) ? "Maintenance rejected: " + message.status + "." : "";
+          }
+          store.diagnostics({receivedAt: now()}, false); fresh(); maintenanceNotify(); return;
+        }
         if (message.type.startsWith("settings.")) {
           if (waiting || !hello || !settingsEnabled) return;
           const pending = requests.current().setting;
@@ -375,6 +440,10 @@ const transport = (
         }
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          if (requests.current().maintenance?.id === message.id) {
+            requests.completeMaintenance(message); cancelMaintenance(); maintenanceValue = null;
+            maintenanceError = "Maintenance unavailable: " + message.status; maintenanceNotify(); return;
+          }
           if (requests.current().setting?.id === message.id) {
             requests.completeSettings(message); cancelSettings(); settingsValue = null;
             settingsError = "Device settings unavailable: " + message.status; settingsNotify(); return;
@@ -416,6 +485,7 @@ const transport = (
           if (pending !== null) requests.complete(message);
           waiting = false; probing = false; attempt = 0; integrityFailures = 0; clear();
           store.diagnostics({attempt: 0, probePending: false}, false); fresh();
+          if (maintenanceEnabled && !maintenanceValue && !requests.current().maintenance) sendMaintenance();
           if (settingsEnabled && !settingsValue && !settingsError && !requests.current().setting) sendSettings();
           return;
         }
@@ -431,8 +501,10 @@ const transport = (
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); maintenanceRequest = 0; ++generation; requests.cancel(); probing = false;
         settingsValue = null; settingsNotify();
+        if (maintenanceValue?.phase && maintenanceValue.phase !== "idle") maintenanceError = "Connection lost; maintenance outcome unconfirmed.";
+        maintenanceValue = null; maintenanceNotify();
         store.diagnostics({probePending: false}, false); schedule();
       };
     }
@@ -449,6 +521,11 @@ const transport = (
       stop() { started = false; retire("disconnected", "", false); },
       resync,
       writable,
+      onMaintenance(listener) { maintenanceListeners.add(listener); return () => maintenanceListeners.delete(listener); },
+      maintenance: () => ({value: maintenanceValue, pending: requests.current().maintenance, error: maintenanceError, owned: !!maintenanceRequest && maintenanceRequest === maintenanceValue?.request}),
+      enableMaintenance() { maintenanceEnabled = true; if (!maintenanceValue && !requests.current().maintenance) sendMaintenance(); },
+      requestMaintenance(action) { if (!maintenanceValue || maintenanceValue.phase !== "idle" || !store.read.current().sender || requests.current().setting) return null; return sendMaintenance("request", action); },
+      cancelMaintenance() { if (!maintenanceRequest || maintenanceRequest !== maintenanceValue?.request || maintenanceValue.phase !== "countdown") return null; return sendMaintenance("cancel", maintenanceValue.request); },
       onSettings(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener); },
       deviceSettings: () => ({value: settingsValue, pending: requests.current().setting, error: settingsError}),
       enableSettings() { settingsEnabled = true; if (!settingsValue && !settingsError && !requests.current().setting) sendSettings(); },

@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "device_settings.h"
+#include "device_maintenance.h"
 #include "logo_sender.h"
 #include "dmx_controller.h"
 #include "preset_double_tap.h"
@@ -485,7 +486,101 @@ class view_sender_t : public view_t {
     }
 
 
+    void performOriginalPowerOff() {
+        sendDmxZeroBeforePowerAction();
+        controllerPowerOff();
+    }
+
+    bool maintenanceUiActive() const {return maintenance_ui_open;}
+
+    // Shared-canvas handoff: finish the previous LCD transfer before reusing pixels.
+    bool serviceMaintenanceUi(DeviceMaintenance& maintenance) {
+        auto tp=M5.Touch.getDetail();const uint32_t now=millis();
+        if (!maintenance.active()) return restoreMaintenancePage(tp.state);
+        if (!maintenance_ui_open) {
+            M5.Display.waitDisplay();M5.Display.clearClipRect();
+            maintenance_previous_page=active_fullscreen_page;maintenance_ui_open=true;
+            maintenance_restored=false;maintenance_frame_ready=false;
+            maintenance_released=!tp.state;maintenance_last_seconds=-1;
+            // End old press/hold/flick ownership without changing selected channel or STEP.
+            main_value_slider_dragging=precision_slider_dragging=false;precision_repeat_dir=0;
+            scroll_y_add=0;settings_scroll_add=0;preset_double_tap.reset();
+            settings_restart_tap_armed=settings_poweroff_tap_armed=false;
+            setActiveFullscreenPage(fullscreen_page_maintenance);
+        }
+        if (!tp.state) maintenance_released=true;
+        const auto state=maintenance.snapshot();
+        if (state.phase==DeviceMaintenance::Phase::countdown&&maintenance_released&&tp.wasPressed()&&
+            pointInRect(tp.x,tp.y,40,174,240,50)) {
+            if (maintenance.cancelPhysical(now)==DeviceMaintenance::Result::cancelled) return restoreMaintenancePage(tp.state);
+        }
+        updateBatteryMonitor(); // Monitoring/tones only; no normal-page drawing here.
+        const bool full=!maintenance_frame_ready||maintenance_phase!=state.phase;
+        const int seconds=int(maintenance.remainingSeconds(now));
+        if (!full&&(state.phase!=DeviceMaintenance::Phase::countdown||seconds==maintenance_last_seconds)) return true;
+        M5.Display.waitDisplay();
+        auto* frame=getFullscreenCanvas(fullscreen_page_maintenance,"MAINTENANCE");
+        if (!frame) {maintenance.cancelPhysical(now);return true;}
+        auto& c=*frame;c.clearClipRect();
+        if (full) {
+            c.fillScreen(TFT_BLACK);c.setTextSize(1);c.setTextDatum(textdatum_t::middle_center);
+            c.setTextColor(TFT_WHITE,TFT_BLACK);c.setFont(&fonts::Font4);
+            c.drawString(state.action==DeviceMaintenance::Action::power_off?"POWER OFF":"RESTART",160,30);
+            c.setFont(&fonts::Font0);
+            if (state.phase==DeviceMaintenance::Phase::countdown) {
+                c.drawString("Wi-Fi / web control will disconnect",160,62);
+                c.drawString("Tap CANCEL before the countdown ends",160,151);
+                drawPrecisionButton(&c,40,174,240,50,"CANCEL");
+            } else if (state.phase==DeviceMaintenance::Phase::failed) {
+                c.setTextColor(TFT_RED,TFT_BLACK);c.drawString("Maintenance stopped",160,95);
+                c.drawString("Inspect diagnostics; use hardware RST",160,127);
+            } else {
+                c.drawString("Maintenance in progress",160,96);c.drawString("Do not remove power",160,127);
+            }
+        }
+        if (state.phase==DeviceMaintenance::Phase::countdown) {
+            c.fillRect(120,78,80,60,TFT_BLACK);c.setTextDatum(textdatum_t::middle_center);
+            c.setTextColor(TFT_WHITE,TFT_BLACK);c.setFont(&fonts::Font4);c.setTextSize(2);
+            c.drawNumber(seconds,160,105);c.setTextSize(1);
+        }
+        M5.Display.clearClipRect();
+        if (full) pushFullscreenCanvas(fullscreen_page_maintenance,"MAINTENANCE");
+        else {
+            // Clip the transfer to the digit region, not the whole screen each second.
+            M5.Display.setClipRect(120,78,80,60);M5.Display.startWrite();
+            c.pushSprite(&M5.Display,0,0);M5.Display.endWrite();M5.Display.clearClipRect();
+        }
+        maintenance_frame_ready=true;maintenance_phase=state.phase;maintenance_last_seconds=seconds;
+        return true;
+    }
+
    private:
+    bool restoreMaintenancePage(bool touch_down) {
+        if (!maintenance_ui_open) return false;
+        if (!maintenance_restored) {
+            if (M5.Speaker.isPlaying()) return true; // Retain exclusive ownership until a complete redraw can finish.
+            M5.Display.waitDisplay();M5.Display.clearClipRect();
+            setActiveFullscreenPage(static_cast<fullscreen_page_t>(maintenance_previous_page));
+            if (settings_screen) drawSettingsScreen();
+            else if (precision_editor_screen) drawPrecisionEditor();
+            else if (preset_screen) {if(preset_options_screen)drawPresetOptionsScreen();else drawPresetScreen();}
+            else {
+                // Main is an incremental renderer: explicitly clear every old popup pixel.
+                M5.Display.fillScreen(TFT_BLACK);M5.Display.setTextSize(1);M5.Display.setTextWrap(false);
+                M5.Display.setTextDatum(textdatum_t::middle_center);M5.Display.setTextColor(TFT_WHITE,TFT_BLACK);
+                updateDisplay(true);
+                if(ui_mode==ui_mode_t::mode_value_setting)drawUIValueSet(target_value,true);
+                else drawPresetOpenButton(); // Battery, Settings, Blackout, Preset and heartbeat.
+            }
+            M5.Display.waitDisplay();maintenance_restored=true;controller_redraw_pending=false;
+        }
+        // A CANCEL press and its release never operate the restored page beneath it.
+        if (!touch_down) maintenance_ui_open=false;
+        return true;
+    }
+    bool maintenance_ui_open=false,maintenance_released=false,maintenance_restored=false,maintenance_frame_ready=false;
+    int maintenance_previous_page=0,maintenance_last_seconds=-1;
+    DeviceMaintenance::Phase maintenance_phase=DeviceMaintenance::Phase::idle;
     static constexpr int BAR_HEIGHT = 64;
     static constexpr int CONSOLE_Y  = 88;
 
@@ -550,7 +645,8 @@ class view_sender_t : public view_t {
         fullscreen_page_settings,
         fullscreen_page_precision,
         fullscreen_page_keypad,
-        fullscreen_page_preset
+        fullscreen_page_preset,
+        fullscreen_page_maintenance
     };
 
     fullscreen_page_t active_fullscreen_page = fullscreen_page_none;
@@ -1746,7 +1842,6 @@ bool loadPreset(uint8_t slot) {
             settings_poweroff_tap_armed = false;
             settings_poweroff_first_tap_ms = 0;
 
-            sendDmxZeroBeforePowerAction();
             controllerRestart();
             return;
         }
@@ -1776,8 +1871,7 @@ bool loadPreset(uint8_t slot) {
             settings_restart_tap_armed = false;
             settings_restart_first_tap_ms = 0;
 
-            sendDmxZeroBeforePowerAction();
-            controllerPowerOff();
+            performOriginalPowerOff();
             return;
         }
 

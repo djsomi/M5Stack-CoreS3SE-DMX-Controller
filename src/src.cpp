@@ -11,6 +11,7 @@
 #include "preset_store.h"
 #include <Preferences.h>
 #include "device_settings.h"
+#include "maintenance_transport.h"
 
 QueueHandle_t queue;
 
@@ -608,20 +609,28 @@ void drawSelectSetup(void) {
 // SOFTWARE RESTART / POWER OFF
 // ============================================================
 
-void controllerRestart(void) {
-    // Short visual/audio delay is intentionally avoided here.
-    // Restart immediately once the Settings double-tap is confirmed.
-    esp_restart();
-}
-
-
+class ApplicationMaintenanceBackend final : public DeviceMaintenance::Backend {
+    MaintenanceTransport shutdown_transport{dmx_transport};
+ public:
+    bool busy() override {return device_settings.busy()||command_dispatcher.pending()!=0||view_sender.maintenanceUiActive();}
+    void begin(bool) override {shutdown_transport.begin();}
+    DeviceMaintenance::Step zeroFrame(int64_t now) override {return shutdown_transport.zeroFrame(now);}
+    DeviceMaintenance::Step quiesce(int64_t now) override {return shutdown_transport.quiesce(now);}
+    void execute(DeviceMaintenance::Action action) override {
+        if(action==DeviceMaintenance::Action::restart)esp_restart();
+        else if(action==DeviceMaintenance::Action::power_off)view_sender.performOriginalPowerOff();
+    }
+};
+static ApplicationMaintenanceBackend maintenance_backend;
+static DeviceMaintenance device_maintenance(maintenance_backend);
+void controllerRestart(void) {device_maintenance.local(DeviceMaintenance::Action::restart,millis(),scene_mode==mode_sender);}
 void controllerPowerOff(void) {
     M5.Power.powerOff();
 }
 
 
 void setup(void) {
-    websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings);
+    websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings, &device_maintenance);
     wifi_startup_trace::capture("setup.enter");
     network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.
     wifi_startup_trace::capture("credentials.after");
@@ -726,10 +735,11 @@ void loop(void) {
     network_service::ownerTick(esp_timer_get_time(), dmx_transport.health().errors,
                                dmx_transport.health().fault_stopped);
     serviceDmxTransportDiagnostics();
-    command_dispatcher.setSenderActive(scene_mode == mode_sender);
+    device_maintenance.poll(millis(),esp_timer_get_time(),scene_mode==mode_sender);
+    command_dispatcher.setSenderActive(scene_mode == mode_sender&&!device_maintenance.committed());
     websocket_service::ownerPoll(scene_mode == mode_sender);
     command_dispatcher.process();
-    if (scene_mode == mode_sender) view_sender.serviceControllerChanges();
+    if (scene_mode == mode_sender&&!device_maintenance.active()&&!view_sender.maintenanceUiActive()) view_sender.serviceControllerChanges();
 
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::service();
@@ -740,6 +750,13 @@ void loop(void) {
 
     auto touch = M5.Touch.getDetail();
     uint32_t now = millis();
+
+    if (scene_mode==mode_sender&&(device_maintenance.active()||view_sender.maintenanceUiActive())) {
+        if (!device_maintenance.committed())view_sender.serviceDmxOutput();
+        if (display_sleeping) {display_sleeping=false;M5.Display.setBrightness(g_display_normal_brightness);}
+        last_display_activity_ms=now;
+        view_sender.serviceMaintenanceUi(device_maintenance);delay(1);return;
+    }
 
     // Continue the short boot chime without blocking UI/DMX processing.
     serviceStartupSound(now);

@@ -60,6 +60,16 @@
           </div>
           <p id="device-settings-feedback" role="status" aria-live="polite" hidden></p>
         </div>
+        <div class="panel settings-panel device-maintenance"><h2>Device Maintenance</h2>
+          <p class="maintenance-intro">Wi-Fi and web control will disconnect.</p>
+          <div class="maintenance-button-area">
+            <div id="maintenance-actions" class="maintenance-actions"><button id="maintenance-restart" type="button" disabled>Restart</button><button id="maintenance-poweroff" type="button" class="danger-button" disabled>Power Off</button></div>
+            <div id="maintenance-confirm-actions" class="maintenance-actions" hidden><button id="maintenance-confirm" type="button">Confirm</button><button id="maintenance-cancel" type="button">Back</button></div>
+            <div id="maintenance-countdown-actions" class="maintenance-actions" hidden><button type="button" disabled>Countdown</button><button id="maintenance-decline" type="button" hidden>Cancel</button></div>
+          </div>
+          <p id="maintenance-confirm-text">Choose an action, then confirm.</p>
+          <p id="maintenance-feedback" role="status" aria-live="polite" hidden></p>
+        </div>
         </div>
         <div class="panel settings-panel"><h2>Browser Preferences</h2><label class="preference-row" for="show-percent"><span><strong>Secondary percentage</strong><span>Show a percentage beneath the DMX values.</span></span><input id="show-percent" type="checkbox"></label><p class="muted">Saved in this browser when local storage is available. This does not change the device.</p></div>
       </section>

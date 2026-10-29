@@ -9,6 +9,7 @@
 #include "../../patches/esp_dmx_v202/tx_mode.inc"
 #include "dmx_transport_esp_dmx.h"
 #include "command_dispatcher.h"
+#include "maintenance_transport.h"
 #include "../support/fake_preset_storage.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -545,7 +546,34 @@ static void auditLateOwnerPoll() {
 
 
 
+static void maintenanceZeroAndRetirement() {
+    Integration h;h.command(setValue(91));
+    CHECK(h.transport.serviceTx(hw.now)); // An immutable nonzero packet is still active.
+    h.command(Command::blackoutCommand(true));h.command(Command::blackoutCommand(false));
+    const auto revision=h.controller.revision();
+    MaintenanceTransport shutdown(h.transport);shutdown.begin();
+    unsigned completed=0;h.f.finish();h.transport.poll(hw.now);
+    const auto before=hw.wire.size();
+    for(unsigned turn=0;turn<10000&&completed<3;++turn){
+        const auto result=shutdown.zeroFrame(hw.now);CHECK(result!=DeviceMaintenance::Step::failed);
+        if(result==DeviceMaintenance::Step::ready)++completed;
+        // Deliberate clash while queued=128 remains nonfatal; actual full drain qualifies completion.
+        if(h.f.object.tx.phase==DMX_TX_FEEDING){hw.int_raw.val|=UART_INTR_RS485_CLASH;h.f.irq();h.f.finish();}
+        h.transport.poll(hw.now);
+    }
+    CHECK(completed==3&&h.transport.pendingBarriers()==0);
+    CHECK(hw.wire.size()==before+5*513); // Ordered blackout ON, restore, three zero frames.
+    CHECK(hw.wire[before+513+21]==91);
+    for(size_t i=before+2*513;i<hw.wire.size();++i)CHECK(hw.wire[i]==0);
+    CHECK(shutdown.quiesce(hw.now)==DeviceMaintenance::Step::ready);
+    CHECK(h.transport.receiverReady()&&!dmx_tx_owned(&h.f.object.tx));
+    CHECK(h.controller.revision()==revision&&h.controller.channel(21)==91);
+    CHECK(h.storage.saves==0&&h.storage.metadata_writes==0);
+    puts("PASS maintenance adapter: active immutable packet, ordered blackout barriers, three real ISR-qualified 513-byte zeros, clash isolation and safe retirement; Controller/NVS unchanged");
+}
+
 int main() {
+    maintenanceZeroAndRetirement();
     clashInitialFillAndNoFalseCompletion();
     clashNoReceiverAndBlackout();
     clashReceiverIsolation();

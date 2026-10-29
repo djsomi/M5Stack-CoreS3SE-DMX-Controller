@@ -42,7 +42,7 @@ const out='dist/responsive-ui-20261029/settings-browser';fs.mkdirSync(out,{recur
     return {width:controls.width,panelWidth:panel.width,sliders};
    });
    assert.ok(Math.abs(presentation.width-(presentation.panelWidth-38))<1,'sliders fill the card within symmetric padding');
-   if(width>=680)assert.ok(presentation.panelWidth<=400.1,'desktop card itself stays compact');
+   if(width>=680)assert.ok(Math.abs(presentation.panelWidth-(await page.locator('.settings-device-grid').boundingBox()).width/2+8)<1,'desktop equal columns');
    for(const s of presentation.sliders){
     assert.equal(s.height,44);assert.equal(s.step,'1');assert.equal(s.labels.length,5);
     for(let i=0;i<5;++i){const center=s.x+23+i*(s.width-46)/4;assert.ok(Math.abs(s.ticks[i].x-center)<1,'stop aligned with native thumb center');assert.ok(Math.abs(s.ticks[i].textCenter-center)<1,'step text centered');}
@@ -177,7 +177,7 @@ const out='dist/responsive-ui-20261029/settings-browser';fs.mkdirSync(out,{recur
    assert.equal(await page.locator('#device-brightness').getAttribute('aria-valuetext'),'Unavailable');
    assert.notEqual(await page.locator('.connection').getAttribute('data-live'),'true');
    await page.waitForFunction(()=>window.__headerSockets.filter(s=>s!==window.__settingsPeer).length===2&&!document.querySelector('#device-brightness').disabled);
-   assert.equal(await page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),0,'reconnect reads without replaying mutations');
+   assert.equal(await page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length),0,'reconnect reads without replaying mutations');
    await page.evaluate(()=>window.__headerSockets.at(-1).remoteSetting('brightness',3));
    await page.waitForFunction(()=>document.querySelector('#device-brightness-current').textContent==='3');await quiet();
    assert.equal(await page.evaluate(()=>window.__headerSockets.filter(s=>s!==window.__settingsPeer&&s.readyState===1).length),1);

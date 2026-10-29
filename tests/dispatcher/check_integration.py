@@ -9,9 +9,10 @@ sys.path.insert(0, str(root / "tests/network"))
 from canvas_guard_support import stage5a_view
 from softap_guard_support import stage5b_view
 from device_settings_guard_support import restore
+from maintenance_guard_support import prior as before_maintenance
 stage1_commit = "0e43640e57519e47177b08fae9c0b86ff8b0e9d9"
-app = (root / "src/src.cpp").read_text(encoding="utf-8")
-view = (root / "src/view_sender.h").read_text(encoding="utf-8")
+app = before_maintenance("src/src.cpp",(root / "src/src.cpp").read_text(encoding="utf-8"))
+view = before_maintenance("src/view_sender.h",(root / "src/view_sender.h").read_text(encoding="utf-8"))
 
 
 def baseline(path):

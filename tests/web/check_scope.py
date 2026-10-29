@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = "294b8b8ea21d139555a7222f16b5eeff00d16091"
 PREFIXES = ("src", "include", "patches", "partitions", "scripts")
 ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp", "include/status_ssid.h",
-    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h"}
+    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h", "include/device_maintenance.h", "include/maintenance_transport.h"}
 
 
 def check():

@@ -16,7 +16,21 @@
     if (!message || Array.isArray(message) || message.v !== 1 || !integer(message.id, 0, 4294967295)) fail();
     const revision = counter(message.revision), sequence = counter(message.seq);
     let extra;
-    if (["settings.snapshot", "settings.update", "settings.result"].includes(message.type)) {
+    if (["maintenance.snapshot", "maintenance.update", "maintenance.result"].includes(message.type)) {
+      extra = ["action", "phase", "request", "reason", "remaining_ms"];
+      const reasons = ["none", "busy", "cancelled", "transport", "deadline", "returned"];
+      if (!sequence || !revision || !["none", "restart", "power_off"].includes(message.action) ||
+          !["idle", "countdown", "zeroing", "quiescing", "executing", "failed"].includes(message.phase) ||
+          !integer(message.request, 0, 4294967295) || !reasons.includes(message.reason) ||
+          !integer(message.remaining_ms, 0, 5000) || message.remaining_ms % 1000 !== 0 ||
+          (message.phase === "idle" ? message.action !== "none" || message.request !== 0 : message.action === "none") ||
+          (message.phase === "countdown" ? !message.request || !message.remaining_ms : message.remaining_ms !== 0) ||
+          (message.type === "maintenance.update" ? message.id !== 0 : !message.id)) fail("protocol_maintenance");
+      if (message.type === "maintenance.result") {
+        extra.push("status");
+        if (!["invalid", "accepted", "cancelled", "unauthorized", "busy", "unsupported"].includes(message.status)) fail("protocol_maintenance");
+      }
+    } else if (["settings.snapshot", "settings.update", "settings.result"].includes(message.type)) {
       extra = ["brightness", "timeout", "volume", "persisted"];
       if (!sequence || !revision || !integer(message.brightness, 1, 5) || !integer(message.timeout, 0, 4) ||
           !integer(message.volume, 0, 4) || !integer(message.persisted, 0, 7)) fail("protocol_settings");

@@ -14,12 +14,25 @@ async function prepare(browser,width,resources=current,touch=width<480,options={
     let revision=0,seq=0,blackout=false,loaded=0,modified=false,values=Array(512).fill(0);
     let deviceRevision=1,device={brightness:3,timeout:3,volume:2,persisted:7},preview=null;
     const saved={brightness:3,timeout:3,volume:2};window.__settingsWrites=0;
+    let maintenanceRevision=1,maintenance={action:'none',phase:'idle',request:0,reason:'none',remaining_ms:0},maintenanceOwner=null;
     window.__headerSockets=[];
     class FakeWebSocket {
       constructor(){this.readyState=0;this.sent=[];window.__headerSockets.push(this);queueMicrotask(()=>{this.readyState=1;this.onopen?.();this.message('hello',{channels:512,max_message:256,max_clients:4,max_outstanding:4});this.snapshot();});}
       message(type,extra={}){this.onmessage?.({data:JSON.stringify({v:1,type,id:0,revision:String(revision),seq:String(++seq),...extra})});}
       snapshot(id=0,type='state.snapshot'){this.message(type,{id,values,presets:[1,1,1,1,1,1,1,0],blackout,sender:true,loaded,modified});}
       send(text){const r=JSON.parse(text);this.sent.push(r);queueMicrotask(()=>{
+        if(r.type==='maintenance.get'){this.maintenanceSubscribed=true;return this.maintenanceMessage('maintenance.snapshot',r.id);}
+        if(r.type==='maintenance.request'){
+          let status='accepted';
+          if(maintenance.phase!=='idle')status='busy';
+          else {maintenance={...maintenance,action:r.action,phase:'countdown',request:r.id,reason:'none',remaining_ms:5000};maintenanceOwner=this;++maintenanceRevision;this.publishMaintenance();}
+          return this.maintenanceMessage('maintenance.result',r.id,status);
+        }
+        if(r.type==='maintenance.cancel'){
+          let status='unauthorized';
+          if(maintenanceOwner===this&&maintenance.phase==='countdown'&&r.request===maintenance.request){status='cancelled';this.resetMaintenance('cancelled');}
+          return this.maintenanceMessage('maintenance.result',r.id,status);
+        }
         if(r.type==='state.request')return this.snapshot(r.id);
         if(r.type==='settings.request'){this.settingsSubscribed=true;return this.message('settings.snapshot',{id:r.id,revision:String(deviceRevision),...device});}
         if(r.type.startsWith('settings.')){
@@ -32,6 +45,11 @@ async function prepare(browser,width,resources=current,touch=width<480,options={
         else return;
         this.message('command.ack',{id:r.id,status:'applied',domain:0});
       });}
+      maintenanceMessage(type,id=0,status){this.message(type,{id,revision:String(maintenanceRevision),...maintenance,...(status?{status}:{})});}
+      publishMaintenance(){for(const s of window.__headerSockets)if(s.readyState===1&&s.maintenanceSubscribed)s.maintenanceMessage('maintenance.update');}
+      resetMaintenance(reason='none'){maintenance={...maintenance,action:'none',phase:'idle',request:0,reason,remaining_ms:0};maintenanceOwner=null;++maintenanceRevision;this.publishMaintenance();}
+      maintenancePhase(phase){maintenance={...maintenance,phase,remaining_ms:phase==='countdown'?maintenance.remaining_ms:0};++maintenanceRevision;this.publishMaintenance();}
+      maintenanceTick(ms){if(maintenance.phase!=='countdown')return;maintenance={...maintenance,remaining_ms:Math.max(0,maintenance.remaining_ms-ms)};if(!maintenance.remaining_ms)maintenance.phase=maintenance.action==='power_off'?'executing':'zeroing';++maintenanceRevision;this.publishMaintenance();}
       publishSettings(){for(const s of window.__headerSockets)if(s.readyState===1&&s.settingsSubscribed)s.message('settings.update',{revision:String(deviceRevision),...device});}
       cancelPreview(){if(preview){device={...device,[preview.key]:preview.value,persisted:preview.persisted};preview=null;++deviceRevision;}}
       remoteSetting(key,value){this.cancelPreview();device={...device,[key]:value,persisted:device.persisted|(1<<['brightness','timeout','volume'].indexOf(key))};saved[key]=value;++deviceRevision;this.publishSettings();}
@@ -164,18 +182,18 @@ async function zoomChecks(page) {
   for(const view of ['editor','presets','settings','status']) {
     await page.locator('[data-section="'+view+'"]').tap();
     const h=await page.locator('#heading-'+view).boundingBox(),scale=await page.evaluate(()=>visualViewport.scale);
-    const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
+    const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length);
     for(const point of [{x:h.x+10,y:h.y+h.height/2},{x:await page.evaluate(()=>innerWidth-20),y:h.y+h.height+5}])await cdp.send('Input.synthesizeTapGesture',{...point,tapCount:2,gestureSourceType:'touch'});
     assert.equal(await page.evaluate(()=>visualViewport.scale),scale,'double tap zoomed '+view);
-    assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),before,'content double tap mutated '+view);
+    assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length),before,'content double tap mutated '+view);
   }
   await page.locator('[data-section="editor"]').tap();const heading=await page.locator('#heading-editor').boundingBox();
   const point={x:Math.min(150,heading.x+heading.width/2),y:heading.y+heading.height/2};
   const initial=await page.evaluate(()=>visualViewport.scale);
-  const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
+  const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length);
   await cdp.send('Input.synthesizeTapGesture',{...point,tapCount:2,gestureSourceType:'touch'});await page.waitForTimeout(100);
   assert.equal(await page.evaluate(()=>visualViewport.scale),initial,'ordinary double tap zoomed');
-  assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),before,'ordinary double tap mutated state');
+  assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length),before,'ordinary double tap mutated state');
   // Chromium's high-level touch-pinch helper is inert on baseline and current
   // pages here. Use an actual two-contact stream, then a trackpad-style pinch.
   const center=await page.evaluate(()=>innerWidth/2);
@@ -291,7 +309,7 @@ async function presetBlackoutStability(page,touch) {
       x:r.x,y:r.y+document.querySelector('.app-container').scrollTop+scrollY,width:r.width,height:r.height};
   });
   const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const operations=()=>page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
+  const operations=()=>page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length);
   for(const active of [false,true]) {
     await page.evaluate(active=>window.__headerSockets[0].remoteBlackout(active),active);await settled();
     const baseline=await presentation();assert.equal(baseline.text,'Blackout '+(active?'ON':'OFF'));

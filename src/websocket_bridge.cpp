@@ -4,7 +4,7 @@
 
 namespace websocket_bridge {
 namespace { struct Guard { Lock& lock;explicit Guard(Lock& l):lock(l){lock.enter();}~Guard(){lock.leave();} }; }
-Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l,DeviceSettings* settings):controller_(c),dispatcher_(d),lock_(l),settings_(settings) {
+Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l,DeviceSettings* settings,DeviceMaintenance* maintenance):controller_(c),dispatcher_(d),lock_(l),settings_(settings),maintenance_(maintenance) {
     dispatcher_.setCompletion(completed,this); // Leaves UI observer, admission and publisher intact.
 }
 Bridge::Client* Bridge::client(Token t) {
@@ -32,7 +32,7 @@ Token Bridge::open(uint64_t now) {
     if(count_==inbox_capacity||generation_==UINT32_MAX)return {};
     for(unsigned i=0;i<max_clients;++i)if(!clients_[i].active) {
         auto& c=clients_[i];
-        c.generation=++generation_;c.active=true;c.ready=false;c.settings=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
+        c.generation=++generation_;c.active=true;c.ready=false;c.settings=false;c.maintenance=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
         c.stop=Stop::none;c.last_enqueued_revision=0;++metrics_.opened;
         Token t;t.slot=uint8_t(i);t.generation=c.generation;
         Request r;r.token=t;r.snapshot=r.initial=true;
@@ -115,6 +115,9 @@ void Bridge::ownerPoll(bool sender) {
     if(settings_&&settings_->snapshot().revision!=settings_revision_) {
         auto e=settingsState(Kind::settings_update);settings_revision_=e.revision;broadcastSettings(e);
     }
+    if(maintenance_&&maintenance_->snapshot().revision!=maintenance_revision_) {
+        auto e=maintenanceState(Kind::maintenance_update);maintenance_revision_=e.revision;broadcastMaintenance(e);
+    }
     if(sender_!=sender){sender_=sender;auto e=state(Kind::mode);broadcast(e);}
     if(in_flight_)return;
     Request r;
@@ -140,6 +143,23 @@ void Bridge::ownerPoll(bool sender) {
         }
         return;
     }
+    if(r.maintenance) {
+        bool subscribed=false;
+        {Guard guard(lock_);if(auto* c=client(r.token)){subscribed=c->maintenance;if(r.maintenance==1)c->maintenance=true;}}
+        auto result=DeviceMaintenance::Result::unsupported;
+        if(maintenance_&&r.maintenance!=1) {
+            if(!subscribed)result=DeviceMaintenance::Result::unauthorized;
+            else if(!sender_)result=DeviceMaintenance::Result::unsupported;
+            else if(r.maintenance==2)result=maintenance_->request(r.maintenance_action,r.token.generation,r.id,lock_.nowMs());
+            else result=maintenance_->cancel(r.token.generation,r.maintenance_request,lock_.nowMs());
+        }
+        if(maintenance_&&maintenance_->snapshot().revision!=maintenance_revision_) {
+            auto e=maintenanceState(Kind::maintenance_update);maintenance_revision_=e.revision;broadcastMaintenance(e);
+        }
+        auto e=maintenanceState(r.maintenance==1?Kind::maintenance_snapshot:Kind::maintenance_result,r.id);e.maintenance_result=result;
+        Guard guard(lock_);if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}return;
+    }
+    if(maintenance_&&maintenance_->committed()&&(!r.settings||r.settings_write)) {reply(r,CommandStatus::busy);return;}
     if(r.settings) {
         bool subscribed=false;
         {Guard guard(lock_);if(auto* c=client(r.token)){subscribed=c->settings;if(!r.settings_write)c->settings=true;}}
@@ -188,6 +208,14 @@ void Bridge::completed(void* context,const ControllerCommand& command,const Comm
     if(self.in_flight_&&command.source==CommandSource::external&&command.request_id==self.flight_.command.request_id) {
         self.in_flight_=false;self.reply(self.flight_,result.status,uint8_t(result.domain));
     }
+}
+Event Bridge::maintenanceState(Kind kind,uint32_t id) {
+    Event e;e.kind=kind;e.id=id;e.sequence=++sequence_;
+    if(maintenance_)e.maintenance=maintenance_->snapshot();
+    e.revision=e.maintenance.revision;return e;
+}
+void Bridge::broadcastMaintenance(Event& e) {
+    Guard guard(lock_);for(auto& c:clients_)if(c.active&&c.ready&&c.maintenance)push(c,e);
 }
 Event Bridge::settingsState(Kind kind,uint32_t id) {
     Event e;e.kind=kind;e.id=id;e.sequence=++sequence_;
