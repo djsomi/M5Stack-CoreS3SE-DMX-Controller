@@ -8,7 +8,7 @@ from preset_loaded_guard_support import prior
 root=Path(__file__).resolve().parents[2]
 def base(name):
     return subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show','f31411a:'+name],cwd=root).decode('utf-8')
-app=(root/'src/src.cpp').read_text(encoding='utf-8')
+app=prior('src/src.cpp',(root/'src/src.cpp').read_text(encoding='utf-8'))
 view=prior('src/view_sender.h',(root/'src/view_sender.h').read_text(encoding='utf-8'))
 # Stage 5A adds nine capture-only setup calls; strip exactly these for baseline checks.
 trace_steps=re.findall(r'    wifi_startup_trace::capture\("([^"]+)"[^\n]*\n',app)

@@ -7,6 +7,7 @@ import './test_navigation.mjs';
 import './test_live.mjs';
 import './test_status.mjs';
 import './test_loader.mjs';
+import './test_device_settings.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
 for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {

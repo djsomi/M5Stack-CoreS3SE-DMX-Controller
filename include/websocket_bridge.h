@@ -1,5 +1,6 @@
 #pragma once
 #include "command_dispatcher.h"
+#include "device_settings.h"
 
 // Fixed storage, no sockets/RTOS in the tested core. Only ownerPoll/completed
 // access the domain. Lock protects copied messages, never domain or socket I/O.
@@ -19,7 +20,7 @@ struct Failure {
     uint32_t ms=0,queued=0,outstanding=0;
     uint64_t last_enqueued_revision=0,rejected_revision=0;
 };
-enum class Kind : uint8_t { hello, snapshot, channel, universe, mode, ack, error };
+enum class Kind : uint8_t { hello, snapshot, channel, universe, mode, ack, error, settings_snapshot, settings_update, settings_result };
 struct Event {
     Kind kind=Kind::error;
     uint64_t revision=0, sequence=0;
@@ -31,6 +32,10 @@ struct Event {
     uint16_t channel=0;
     uint8_t value=0, values[512]{}, presets[8]{};
     const char* reason=nullptr; // Only compile-time protocol error literals.
+    DeviceSetting setting=DeviceSetting::brightness;
+    DeviceSettings::Result settings_result=DeviceSettings::Result::invalid;
+    DeviceSettings::Edit settings_edit=DeviceSettings::Edit::none;
+    uint32_t settings_gesture=0;
 };
 struct Metrics {
     uint32_t clients=0, inbox=0, inbox_high=0, outbox_high=0;
@@ -39,7 +44,7 @@ struct Metrics {
     uint64_t last_controller_revision=0;
     Failure first;
 };
-struct Request { Token token; uint32_t id=0; bool snapshot=false, initial=false; ControllerCommand command; };
+struct Request { Token token; uint32_t id=0; bool snapshot=false, initial=false, settings=false, settings_write=false; DeviceSetting setting=DeviceSetting::brightness;uint32_t setting_value=0;DeviceSettings::Edit settings_edit=DeviceSettings::Edit::none;uint32_t settings_gesture=0;uint64_t settings_base=0;ControllerCommand command; };
 bool decode(const char* data,size_t length,Request& request,const char*& error);
 size_t encode(const Event& event,char* output,size_t capacity);
 bool validFrame(unsigned opcode,bool final,size_t length);
@@ -47,7 +52,7 @@ const char* statusName(CommandStatus status);
 
 class Bridge {
  public:
-    Bridge(DmxController& controller,CommandDispatcher& dispatcher,Lock& lock);
+    Bridge(DmxController& controller,CommandDispatcher& dispatcher,Lock& lock,DeviceSettings* settings=nullptr);
     // HTTP task. Tokens include a generation: descriptors never cross tasks.
     Token open(uint64_t now_ms);
     void close(Token token);
@@ -63,7 +68,7 @@ class Bridge {
     struct Client {
         uint32_t generation=0, last_id=0, count=0, head=0, outstanding=0, rate=0;
         uint64_t window=0;
-        bool active=false, ready=false;
+        bool active=false, ready=false, settings=false;
         Stop stop=Stop::none;
         uint64_t last_enqueued_revision=0;
         Event events[outbox_capacity];
@@ -79,6 +84,10 @@ class Bridge {
     uint8_t presets_[8]{};
     bool presets_ready_=false; // Owner-only derived metadata, invalidated by preset operations.
     Metrics metrics_;
+    DeviceSettings* settings_;
+    uint64_t settings_revision_=0;
+    Event settingsState(Kind kind,uint32_t id=0);
+    void broadcastSettings(Event& event);
     Client* client(Token token);
     void push(Client& client,const Event& event);
     void drop(Client& client,Stop stop,uint64_t rejected_revision=0);

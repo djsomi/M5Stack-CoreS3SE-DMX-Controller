@@ -156,10 +156,10 @@ class PipelineTests(unittest.TestCase):
     def test_bank_arrow_touch_action_is_scoped_and_zoom_remains_available(self):
         css = (self.root / "web/src/style.css").read_text(encoding="utf-8")
         rules = re.findall(r"([^{}]+)\{([^{}]*touch-action\s*:[^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S))
-        self.assertEqual(len(rules), 5)
-        self.assertEqual({selector.strip() for selector, _ in rules}, {".bank-buttons .icon-button", ".fader-step, .fader-value", ".preset-actions button, .preset-slot, .blackout-button", ".fader input[type=range]", ".app-container, .app-container *"})
+        self.assertEqual(len(rules), 6)
+        self.assertEqual({selector.strip() for selector, _ in rules}, {".bank-buttons .icon-button", ".fader-step, .fader-value", ".preset-actions button, .preset-slot, .blackout-button", ".fader input[type=range]", ".app-container, .app-container *", ".device-settings input[type=range]"})
         for selector, declarations in rules:
-            if selector.strip() == ".fader input[type=range]":
+            if selector.strip() in {".fader input[type=range]", ".device-settings input[type=range]"}:
                 self.assertIn("touch-action: none;", declarations)
             else:
                 self.assertEqual(declarations.strip(), "touch-action: pan-x pan-y;")
@@ -187,7 +187,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("user-select: none;", slider)
         self.assertNotIn("touch-callout", css)  # No evidence a callout restriction is needed.
         self.assertNotRegex(css, r"pointer-events:\s*none")
-        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 1)
+        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 2)
         self.assertRegex(css, r"\.fader input\[type=range\]\s*\{[^}]*touch-action: none;")
         html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
         nodes = Elements(html).nodes
@@ -279,7 +279,7 @@ class PipelineTests(unittest.TestCase):
     def test_fixed_scale_application_policy_preserves_scroll_and_lower_blackout(self):
         css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
         self.assertRegex(css, r"\.app-container, \.app-container \*\s*\{\s*touch-action: pan-x pan-y;")
-        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 1)
+        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 2)
         self.assertRegex(css, r"\.fader input\[type=range\]\s*\{[^}]*touch-action: none;")
         html = (self.root / "web/src/index.html").read_text(encoding="utf-8")
         self.assertIn('class="blackout-summary"', html)

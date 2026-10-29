@@ -75,7 +75,8 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .form-error { margin: 0 16px; color: var(--red); font-size: 12px; }
 .form-error:not(:empty) { padding-top: 12px; }
 .fader-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 25px 12px 20px; }
-.fader { --fader-control-width: 44px; --fader-travel: clamp(160px, calc(100svh - 440px), 300px); min-width: 0; display: flex; flex-direction: column; align-items: center; }
+/* Scale usable native travel by 85%; retain the 18px handle + two 1px track borders. */
+.fader { --fader-control-width: 44px; --fader-base-travel: clamp(160px, calc(100svh - 440px), 300px); --fader-travel: calc((var(--fader-base-travel) - 20px) * .85 + 20px); min-width: 0; display: flex; flex-direction: column; align-items: center; }
 .channel-label { font-size: 10px; font-weight: 550; letter-spacing: .2px; color: #a8b6ca; white-space: nowrap; }
 .fader-value { margin-top: 10px; color: #edf2fb; font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -1px; }
 .fader-rail { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 12px 0 10px; height: calc(var(--fader-travel) + 104px); }
@@ -103,6 +104,8 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .blackout-summary p { margin: 0; }
 .blackout-summary > span:last-child { margin-left: auto; color: #8593a8; }
 .outline-dot { width: 7px; height: 7px; border: 1px solid #777f90; border-radius: 50%; }
+.blackout-summary.blackout-active, .blackout-summary.blackout-active > span { color: var(--red); }
+.blackout-summary.blackout-active .outline-dot { border-color: var(--red); background: var(--red); }
 .section-description { color: #a4b1c5; font-size: 13px; line-height: 1.65; max-width: 65ch; }
 .preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 22px 0; }
 .preset-slot { min-height: 122px; display: flex; flex-direction: column; align-items: flex-start; gap: 11px; text-align: left; border-radius: 12px; background: var(--panel); padding: 16px; }
@@ -111,6 +114,27 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .preset-slot strong { font-size: 25px; font-weight: 500; }
 .slot-state { color: #a0aec2; font-size: 11px; }
 .preset-actions, .settings-panel, .status-panel { padding: 22px 18px; }
+.settings-device-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
+.device-settings-heading { margin: 0; }
+.device-settings-controls { width: 100%; }
+.device-setting { margin-top: 20px; }
+.device-settings label { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.device-settings label span { color: #96a6bc; font-size: 11px; white-space: nowrap; }
+.device-settings input[type=range] { appearance: none; -webkit-appearance: none; width: 100%; height: 44px; margin: 0; padding: 0; border: 0; background: transparent; opacity: 1; touch-action: none; }
+.device-settings input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 6px; border: 1px solid #3a4557; background: #0e131c; }
+.device-settings input[type=range]::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; box-sizing: border-box; width: 44px; height: 18px; background: #344b70; border: 1px solid #5f81b5; border-radius: 5px; margin-top: -7px; }
+.device-settings input[type=range]::-moz-range-track { height: 6px; background: #0e131c; border: 1px solid #3a4557; border-radius: 6px; }
+.device-settings input[type=range]::-moz-range-thumb { box-sizing: border-box; width: 44px; height: 18px; background: #344b70; border: 1px solid #5f81b5; border-radius: 5px; }
+.setting-stops { position: relative; margin: 0 23px 5px; height: 20px; color: #96a6bc; font-size: 10px; }
+.setting-stops span { position: absolute; width: 40px; margin-left: -20px; text-align: center; white-space: nowrap; }
+.setting-stops span:nth-child(1) { left: 0; }
+.setting-stops span:nth-child(2) { left: 25%; }
+.setting-stops span:nth-child(3) { left: 50%; }
+.setting-stops span:nth-child(4) { left: 75%; }
+.setting-stops span:nth-child(5) { left: 100%; }
+.setting-stops span::before { content: ""; display: block; width: 1px; height: 5px; margin: 0 auto 3px; background: #5f81b5; }
+.setting-endpoints { display: flex; justify-content: space-between; color: #96a6bc; font-size: 10px; }
+#device-settings-feedback { margin: 12px 0 0; color: var(--red); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .action-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 22px 0 16px; }
 .action-row button { padding-inline: 5px; font-size: 13px; }
 .primary-button:disabled { background: #203452; border-color: #37527b; color: #a1bde7; }
@@ -163,6 +187,7 @@ details.status-panel { margin-top: 16px; }
   .preset-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (min-width: 680px) {
+  .settings-device-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 400px)); }
   .app-container { padding: 0 28px 24px; }
   .app-header { padding-top: 35px; padding-bottom: 28px; }
   .brand-name { font-size: 22px; }
@@ -175,13 +200,13 @@ details.status-panel { margin-top: 16px; }
   .bank-title h2 { font-size: 17px; }
   .channel-label { font-size: 11px; }
   .fader-value { font-size: 29px; }
-  .fader { --fader-travel: clamp(200px, calc(100svh - 420px), 330px); }
+  .fader { --fader-base-travel: clamp(200px, calc(100svh - 420px), 330px); }
   .system-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 }
 @media (max-height: 500px) and (min-width: 480px) {
   .app-header { padding-top: max(12px, env(safe-area-inset-top)); padding-bottom: 14px; }
   .view { margin-top: 18px; }
-  .fader { --fader-travel: 150px; }
+  .fader { --fader-base-travel: 150px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 .connection[data-live=true] .connection-dot { background: var(--blue); }

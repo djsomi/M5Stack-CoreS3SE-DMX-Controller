@@ -359,6 +359,7 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   const flush=()=>{assert.ok(frames.size<=1,'only one scheduled render');for(const [id,callback]of [...frames]){frames.delete(id);callback();}};
   const navigate=section=>{links[names.indexOf(section)].listeners.click({button:0,detail:1,preventDefault(){}});flush();};
   app.start();app.start();assert.equal(f.sockets.length,1);assert.equal(frames.size,0);
+  assert.equal(nodes['blackout-summary'].className,'blackout-summary','unknown startup is neutral');
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'—');
   const socket=f.sockets[0];socket.open();socket.message(hello());flush();
   assert.equal(nodes['connection-label'].textContent,'Synchronizing');socket.message(snapshot());flush();
@@ -370,6 +371,7 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   navigate('presets');assert.deepEqual(slots.slice(0,4).map(s=>s.children[0].textContent),['Empty','Occupied','Corrupt','Storage error']);
   socket.message(channel({seq:'10020',channel:1,value:99,blackout:true}));flush();
   assert.equal(nodes.blackout.dataset.active,'true');assert.match(nodes['blackout-summary-label'].textContent,/output zero/);
+  assert.equal(nodes['blackout-summary'].className,'blackout-summary blackout-active');
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,String(9999%256),'inactive Editor is not rendered');
   navigate('editor');assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'99');assert.equal(nodes['fader-note'].textContent,'');
   socket.message({...snapshot({seq:'10021',values:Array(512).fill(7)}),type:'state.update'});flush();
@@ -394,7 +396,7 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   assert.equal(nodes.blackout.disabled,false);nodes.blackout.listeners.click();flush();
   const blackoutRequest=JSON.parse(resumed.sent.at(-1));assert.equal(blackoutRequest.type,'blackout.set');assert.equal(blackoutRequest.active,true);
   assert.equal(nodes.blackout.disabled,true);assert.equal(nodes.blackout.dataset.active,'false','pending is not authoritative ON');
-  assert.equal(nodes.blackout.textContent,'Blackout OFF');assert.equal(nodes.blackout.attrs['aria-busy'],'true');assert.match(nodes.blackout.attrs['aria-label'],/OFF; awaiting Controller confirmation/);
+  assert.equal(nodes.blackout.textContent,'Blackout OFF');assert.equal(nodes['blackout-summary'].className,'blackout-summary','pending ON remains neutral');assert.equal(nodes.blackout.attrs['aria-busy'],'true');assert.match(nodes.blackout.attrs['aria-label'],/OFF; awaiting Controller confirmation/);
   const beforeRepeat=resumed.sent.length;nodes.blackout.listeners.click();assert.equal(resumed.sent.length,beforeRepeat);
   resumed.message({...snapshot({seq:'13',revision:'9007199254740994',blackout:true}),type:'state.update'});
   resumed.message({...envelope('command.ack','14','9007199254740994',blackoutRequest.id),status:'applied',domain:0});flush();
@@ -404,13 +406,13 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
 
   nodes.blackout.listeners.click();flush();
   const rejected=JSON.parse(resumed.sent.at(-1));assert.equal(rejected.active,false);
-  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes.blackout.attrs['aria-busy'],'true');
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes['blackout-summary'].className,'blackout-summary blackout-active','pending OFF retains confirmed ON color');assert.equal(nodes.blackout.attrs['aria-busy'],'true');
   resumed.message({...envelope('command.error','15','9007199254740994',rejected.id),status:'rejected',domain:0});flush();
   assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes.blackout.attrs['aria-busy'],'false');assert.match(nodes['blackout-summary-detail'].textContent,/failed/);
   f.advance(351);flush();
   nodes.blackout.listeners.click();flush();assert.equal(nodes.blackout.textContent,'Blackout ON');
   // A command deadline invalidates freshness rather than falsely showing requested OFF.
-  f.elapse(5000);flush();assert.equal(nodes.blackout.textContent,'Blackout unavailable');assert.equal(nodes.blackout.disabled,true);
+  f.elapse(5000);flush();assert.equal(nodes.blackout.textContent,'Blackout unavailable');assert.equal(nodes['blackout-summary'].className,'blackout-summary','stale state is neutral');assert.equal(nodes.blackout.disabled,true);
   resumed.end();f.next();const recovered=f.sockets.at(-1);recovered.open();recovered.message(hello());recovered.message(snapshot({blackout:true}));flush();
   assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(recovered.sent.length,0,'no mutation replay');
 

@@ -55,15 +55,17 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     error="invalid";
     if(!data||!length||length>max_message)return false;
     Parser p{data,data+length};
-    uint32_t nums[8]{};unsigned fields=0;char type[24]{};
+    uint32_t nums[11]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{};
     if(!p.eat('{'))return false;
     do {
         char key[16];if(!p.string(key,sizeof(key))||!p.eat(':'))return false;
-        const char* keys[]={"v","id","type","channel","value","active","slot","target"};
-        unsigned k=0;while(k<8&&strcmp(key,keys[k]))++k;
-        if(k==8||(fields&(1U<<k)))return false;
+        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base"};
+        unsigned k=0;while(k<11&&strcmp(key,keys[k]))++k;
+        if(k==11||(fields&(1U<<k)))return false;
         fields|=1U<<k;
         if(k==2){if(!p.string(type,sizeof(type)))return false;}
+        else if(k==8){if(!p.string(setting,sizeof(setting)))return false;}
+        else if(k==10){if(!p.string(base,sizeof(base)))return false;}
         else if(k==5){if(!p.boolean(nums[k]))return false;}
         else if(!p.number(nums[k]))return false;
         p.space();if(p.p==p.end)return false;
@@ -75,7 +77,26 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     r.id=nums[1];
     if(nums[0]!=1){error="version";return false;}
     unsigned expected=7;
-    if(!strcmp(type,"state.request"))r.snapshot=true;
+    if(!strcmp(type,"settings.request"))r.settings=true;
+    else if(!strcmp(type,"settings.set")||!strcmp(type,"settings.preview")||
+            !strcmp(type,"settings.commit")||!strcmp(type,"settings.cancel")) {
+        expected|=256;r.settings=r.settings_write=true;
+        if(!strcmp(type,"settings.preview"))r.settings_edit=DeviceSettings::Edit::preview;
+        if(!strcmp(type,"settings.commit"))r.settings_edit=DeviceSettings::Edit::commit;
+        if(!strcmp(type,"settings.cancel"))r.settings_edit=DeviceSettings::Edit::cancel;
+        if(r.settings_edit==DeviceSettings::Edit::none||r.settings_edit==DeviceSettings::Edit::preview)expected|=16;
+        if(r.settings_edit!=DeviceSettings::Edit::none) {
+            expected|=1536;if(!nums[9]||nums[9]>r.id||!base[0]||base[0]=='0')return false;
+            r.settings_gesture=nums[9];r.settings_base=0;
+            for(const char* c=base;*c;++c){if(*c<'0'||*c>'9'||r.settings_base>(UINT64_MAX-unsigned(*c-'0'))/10)return false;r.settings_base=r.settings_base*10+unsigned(*c-'0');}
+        }
+        if(!strcmp(setting,"brightness"))r.setting=DeviceSetting::brightness;
+        else if(!strcmp(setting,"timeout"))r.setting=DeviceSetting::timeout;
+        else if(!strcmp(setting,"volume"))r.setting=DeviceSetting::volume;
+        else return false;
+        if((expected&16)&&!DeviceSettings::valid(r.setting,nums[4]))return false;r.setting_value=nums[4];
+    }
+    else if(!strcmp(type,"state.request"))r.snapshot=true;
     else if(!strcmp(type,"channel.set")) {
         expected|=24;
         if(nums[3]<1||nums[3]>512||nums[4]>255)return false;
@@ -110,6 +131,21 @@ const char* statusName(CommandStatus s) {
 }
 size_t encode(const Event& e,char* out,size_t capacity) {
     Writer w(out,capacity);
+    if(e.kind==Kind::settings_snapshot||e.kind==Kind::settings_update||e.kind==Kind::settings_result) {
+        const char* kind=e.kind==Kind::settings_snapshot?"settings.snapshot":e.kind==Kind::settings_update?"settings.update":"settings.result";
+        w.add("{\"v\":1,\"type\":\"%s\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\",\"brightness\":%u,\"timeout\":%u,\"volume\":%u,\"persisted\":%u",kind,
+            (unsigned long)e.id,(unsigned long long)e.revision,(unsigned long long)e.sequence,unsigned(e.values[0]),unsigned(e.values[1]),unsigned(e.values[2]),unsigned(e.domain));
+        if(e.kind==Kind::settings_result) {
+            const char* keys[]={"brightness","timeout","volume"};
+            const char* results[]={"applied","no_change","storage_error","invalid","conflict"};
+            w.add(",\"setting\":\"%s\",\"status\":\"%s\"",keys[unsigned(e.setting)],results[unsigned(e.settings_result)]);
+            if(e.settings_edit!=DeviceSettings::Edit::none) {
+                const char* phases[]={"","preview","commit","cancel"};
+                w.add(",\"phase\":\"%s\",\"gesture\":%lu",phases[unsigned(e.settings_edit)],(unsigned long)e.settings_gesture);
+            }
+        }
+        w.add("}");return w.ok?w.used:0;
+    }
     const char* kinds[]={"hello","state.snapshot","state.update","state.update","state.update","command.ack","command.error"};
     w.add("{\"v\":1,\"type\":\"%s\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\"",kinds[unsigned(e.kind)],
         (unsigned long)e.id,(unsigned long long)e.revision,(unsigned long long)e.sequence);

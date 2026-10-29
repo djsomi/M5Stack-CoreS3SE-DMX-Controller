@@ -16,7 +16,22 @@
     if (!message || Array.isArray(message) || message.v !== 1 || !integer(message.id, 0, 4294967295)) fail();
     const revision = counter(message.revision), sequence = counter(message.seq);
     let extra;
-    if (message.type === "hello") {
+    if (["settings.snapshot", "settings.update", "settings.result"].includes(message.type)) {
+      extra = ["brightness", "timeout", "volume", "persisted"];
+      if (!sequence || !revision || !integer(message.brightness, 1, 5) || !integer(message.timeout, 0, 4) ||
+          !integer(message.volume, 0, 4) || !integer(message.persisted, 0, 7)) fail("protocol_settings");
+      if (message.type === "settings.update" ? message.id !== 0 : !message.id) fail();
+      if (message.type === "settings.result") {
+        extra.push("setting", "status");
+        const edit = Object.hasOwn(message, "phase");
+        if (edit) {
+          extra.push("phase", "gesture");
+          if (!["preview", "commit", "cancel"].includes(message.phase) || !integer(message.gesture, 1, message.id)) fail();
+        }
+        if (!["brightness", "timeout", "volume"].includes(message.setting) ||
+            !["applied", "no_change", "storage_error", "invalid", ...(edit ? ["conflict"] : [])].includes(message.status)) fail();
+      }
+    } else if (message.type === "hello") {
       extra = ["channels", "max_message", "max_clients", "max_outstanding"];
       if (message.id !== 0 || message.channels !== 512 || message.max_message !== 256 || message.max_clients !== 4 || message.max_outstanding !== 4 || sequence === 0n) fail();
     } else if (message.type === "state.snapshot" || message.type === "state.update") {

@@ -5,12 +5,13 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"network"))
 from preset_loaded_guard_support import prior, check_new_header
+from device_settings_guard_support import restore, check_header
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "294b8b8ea21d139555a7222f16b5eeff00d16091"
 PREFIXES = ("src", "include", "patches", "partitions", "scripts")
 ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp", "include/status_ssid.h",
-    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h"}
+    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h"}
 
 
 def check():
@@ -35,8 +36,9 @@ def check():
 '''
             assert original.count(old) == 1
             original = original.replace(old, new)
-        assert path.read_bytes().replace(b"\r\n", b"\n") == original, "Unexpected application factory change: " + path.name
+        assert restore(path.relative_to(ROOT).as_posix(),path.read_text(encoding="utf-8")).encode() == original, "Unexpected application factory change: " + path.name
     check_new_header()
+    check_header()
     entries = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
         "ls-tree", "-rz", BASE, "--", *PREFIXES, "platformio.ini"], cwd=ROOT)
     known = set()
@@ -55,7 +57,7 @@ def check():
             if path.is_file() and "__pycache__" not in path.parts:
                 name = path.relative_to(ROOT).as_posix()
                 assert name in known or name in ALLOWED, "Unexpected firmware/build input: " + name
-    bridge = (ROOT / "src/websocket_bridge.cpp").read_bytes().replace(b"\r\n", b"\n")
+    bridge = restore("src/websocket_bridge.cpp",(ROOT / "src/websocket_bridge.cpp").read_text(encoding="utf-8")).encode()
     original = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(), "show", "5b3cea7:src/websocket_bridge.cpp"], cwd=ROOT)
     old = b"    if(result.revision_after!=result.revision_before) {\n        {Guard guard(self.lock_);++self.metrics_.controller_events;self.metrics_.last_controller_revision=result.revision_after;}\n"
     new = b"    const bool changed=result.revision_after!=result.revision_before;\n    if(changed) {\n        {Guard guard(self.lock_);++self.metrics_.controller_events;self.metrics_.last_controller_revision=result.revision_after;}\n    }\n    // Even an unchanged successful load supersedes older browser gestures.\n    // Publish the existing bulk shape/sequence; never fabricate a revision.\n    const bool loaded=command.type==CommandType::load_preset&&result.domain==DmxController::Result::ok&&\n        (result.status==CommandStatus::applied||result.status==CommandStatus::no_change||result.status==CommandStatus::transport_error);\n    if(changed||loaded) {\n"

@@ -10,6 +10,28 @@
     let probing = false, lastAuthority = 0;
     let writeTimer = null, operationTimer = null;
     const writeListeners = new Set(), operationListeners = new Set();
+    let settingsEnabled = false, settingsTimer = null, settingsValue = null, settingsError = "";
+    const settingsListeners = new Set();
+    function settingsNotify(event) { settingsListeners.forEach(listener => listener(event)); }
+    function cancelSettings() {
+      if (settingsTimer !== null) runtime.clearTimeout(settingsTimer);
+      settingsTimer = null;
+    }
+    function sendSettings(key, value, phase = null, gesture = 0) {
+      if (!store.read.current().ready || waiting || socket?.readyState !== 1) return null;
+      const command = requests.settings(key, value, phase, gesture, settingsValue?.revision); if (!command) return null;
+      settingsError = "";
+      try { socket.send(command.data); } catch (_) { retire("reconnecting", "Settings send failed; outcome uncertain"); return null; }
+      const epoch = generation;
+      settingsTimer = runtime.setTimeout(() => {
+        settingsTimer = null;
+        if (epoch !== generation) return;
+        settingsError = key === undefined ? "Device settings unavailable." : "Outcome unknown; inspect device state before retrying.";
+        settingsValue = null; requests.completeSettings({id: command.id}); settingsNotify();
+        if (key !== undefined) retire("reconnecting", settingsError);
+      }, 5000);
+      settingsNotify(); return command.id;
+    }
     function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
     function cancelOperationTimer() { if (operationTimer !== null) runtime.clearTimeout(operationTimer); operationTimer = null; }
     const writable = () => started && !suspended && !waiting && store.read.current().ready &&
@@ -36,7 +58,8 @@
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); cancelWriteTimer(); cancelOperationTimer(); ++generation; requests.cancel(); store.connection(phase, detail);
+      clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); ++generation; requests.cancel();
+      settingsValue = null; settingsNotify(); store.connection(phase, detail);
       probing = false; store.diagnostics({transportOpen: false, probePending: false}, false);
       if (retry && detail.includes("timed out")) store.diagnostics({classification: "synchronization_timeout"}, false);
       const old = socket;
@@ -105,7 +128,7 @@
     function connect() {
       if (!started || suspended || socket) return;
       clear(); const epoch = ++generation;
-      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); store.begin();
+      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); settingsValue = null; settingsError = ""; store.begin();
       store.diagnostics({probePending: false}, false);
       let native;
       try { native = new runtime.WebSocket(runtime.url); }
@@ -125,8 +148,27 @@
         try { decoded = protocol.parse(event.data); }
         catch (error) { fault(/^protocol_[a-z_]+$/.test(error.message) ? error.message : "protocol_json", error.message === "protocol_version"); return; }
         const message = decoded.message;
+        if (message.type.startsWith("settings.")) {
+          if (waiting || !hello || !settingsEnabled) return;
+          const pending = requests.current().setting;
+          if (message.type !== "settings.update" && (!pending || pending.id !== message.id)) return;
+          if (message.type !== "settings.update" && message.type !== (pending.key === undefined ? "settings.snapshot" : "settings.result")) { fault("protocol_settings"); return; }
+          if (message.type === "settings.result" && pending.key !== message.setting) { fault("protocol_settings"); return; }
+          if (message.type === "settings.result" && (pending.phase !== message.phase || pending.gesture !== message.gesture)) { fault("protocol_settings"); return; }
+          if (!settingsValue || decoded.revision >= BigInt(settingsValue.revision)) settingsValue = message;
+          if (message.type !== "settings.update") {
+            requests.completeSettings(message); cancelSettings();
+            settingsError = message.status === "storage_error" ? "Applied, but not saved. Change again to retry saving." :
+              message.status === "invalid" ? "Setting rejected." : message.status === "conflict" ? "Settings changed; gesture cancelled." : "";
+          }
+          store.diagnostics({receivedAt: now()}, false); fresh(); settingsNotify(message); return;
+        }
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          if (requests.current().setting?.id === message.id) {
+            requests.completeSettings(message); cancelSettings(); settingsValue = null;
+            settingsError = "Device settings unavailable: " + message.status; settingsNotify(); return;
+          }
           const operation = requests.completeOperation(message);
           if (operation) {
             cancelOperationTimer();
@@ -163,7 +205,9 @@
           if (store.apply(decoded) !== "applied") { fault("snapshot_order"); return; }
           if (pending !== null) requests.complete(message);
           waiting = false; probing = false; attempt = 0; integrityFailures = 0; clear();
-          store.diagnostics({attempt: 0, probePending: false}, false); fresh(); return;
+          store.diagnostics({attempt: 0, probePending: false}, false); fresh();
+          if (settingsEnabled && !settingsValue && !settingsError && !requests.current().setting) sendSettings();
+          return;
         }
         if (waiting) {
           if (requests.current().pending === null) fault("initial_update_order"); // Initial hello/snapshot cannot be interleaved.
@@ -177,7 +221,8 @@
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); ++generation; requests.cancel(); probing = false;
+        settingsValue = null; settingsNotify();
         store.diagnostics({probePending: false}, false); schedule();
       };
     }
@@ -194,6 +239,12 @@
       stop() { started = false; retire("disconnected", "", false); },
       resync,
       writable,
+      onSettings(listener) { settingsListeners.add(listener); return () => settingsListeners.delete(listener); },
+      deviceSettings: () => ({value: settingsValue, pending: requests.current().setting, error: settingsError}),
+      enableSettings() { settingsEnabled = true; if (!settingsValue && !settingsError && !requests.current().setting) sendSettings(); },
+      refreshSettings() { settingsEnabled = true; settingsError = ""; return sendSettings(); },
+      setSetting(key, value) { if (!settingsValue || !store.read.current().ready) return null; return sendSettings(key, value); },
+      editSetting(phase, key, value, gesture = 0) { if (!settingsValue || !store.read.current().ready) return null; return sendSettings(key, value, phase, gesture); },
       onWrite(listener) { writeListeners.add(listener); return () => writeListeners.delete(listener); },
       onOperation(listener) { operationListeners.add(listener); return () => operationListeners.delete(listener); },
       setOperation(type, argument) {

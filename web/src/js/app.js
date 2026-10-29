@@ -20,7 +20,7 @@
     const editorView = editor.mount(document, window, prefs, read, writes);
     const presetView = presets.mount(document, read, operations, runtime), statusView = status.mount(document, read, label, {fetch: window.fetch?.bind(window), AbortController: window.AbortController,
       ...runtime}, schedule);
-    settings.mount(document, prefs, editorView.render);
+    const settingsView = settings.mount(document, prefs, editorView.render, client, read, schedule, runtime);
     function text(id, value) { const node = document.getElementById(id); if (node.textContent !== value) node.textContent = value; }
     function render() {
       frame = null; const current = read.current();
@@ -39,11 +39,15 @@
       if (blackout.textContent !== caption) blackout.textContent = caption;
       const description = pendingBlackout ? caption + "; awaiting Controller confirmation" : caption;
       if (blackout.getAttribute("aria-label") !== description) blackout.setAttribute("aria-label", description);
+      const summary = document.getElementById("blackout-summary"), summaryClass = "blackout-summary" + (active === "true" ? " blackout-active" : "");
+      if (summary.className !== summaryClass) summary.className = summaryClass;
       text("blackout-summary-label", current.ready ? "Blackout " + (current.blackout ? "ON \u00b7 output zero" : "OFF") : "Blackout state unavailable");
       text("blackout-summary-detail", pendingBlackout ? "Awaiting Controller confirmation" : operation.last?.type === "blackout.set" && operation.last.status !== "success" ? operation.last.message : current.ready ? "" : "Awaiting live data");
       if (!document.getElementById("view-editor").hidden) editorView.render();
       else { editorView.leave(); writes.leave(); }
       if (!document.getElementById("view-presets").hidden) presetView.render(); else presetView.leave();
+      settingsView.setActive(!document.hidden && !document.getElementById("view-settings").hidden);
+      if (!document.getElementById("view-settings").hidden) settingsView.render();
       store.diagnostics({renderedRevision: current.ready ? current.revision : null}, false);
       statusView.setActive(!document.hidden && !document.getElementById("view-status").hidden);
       if (!document.getElementById("view-status").hidden) statusView.render();
@@ -55,7 +59,7 @@
       if (operations.canBlackout()) operations.run("blackout.set", !read.current().blackout);
     });
     document.getElementById("connection-retry").addEventListener("click", client.retry);
-    function pause() { statusView.setActive(false); client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
+    function pause() { statusView.setActive(false); client.suspend(); settingsView.setActive(false); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
     document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); else { client.resume(); schedule(); } });
     window.addEventListener("pagehide", pause);
     window.addEventListener("pageshow", () => { if (!document.hidden) { client.resume(); schedule(); } });

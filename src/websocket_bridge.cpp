@@ -4,7 +4,7 @@
 
 namespace websocket_bridge {
 namespace { struct Guard { Lock& lock;explicit Guard(Lock& l):lock(l){lock.enter();}~Guard(){lock.leave();} }; }
-Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l):controller_(c),dispatcher_(d),lock_(l) {
+Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l,DeviceSettings* settings):controller_(c),dispatcher_(d),lock_(l),settings_(settings) {
     dispatcher_.setCompletion(completed,this); // Leaves UI observer, admission and publisher intact.
 }
 Bridge::Client* Bridge::client(Token t) {
@@ -32,7 +32,7 @@ Token Bridge::open(uint64_t now) {
     if(count_==inbox_capacity||generation_==UINT32_MAX)return {};
     for(unsigned i=0;i<max_clients;++i)if(!clients_[i].active) {
         auto& c=clients_[i];
-        c.generation=++generation_;c.active=true;c.ready=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
+        c.generation=++generation_;c.active=true;c.ready=false;c.settings=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
         c.stop=Stop::none;c.last_enqueued_revision=0;++metrics_.opened;
         Token t;t.slot=uint8_t(i);t.generation=c.generation;
         Request r;r.token=t;r.snapshot=r.initial=true;
@@ -107,6 +107,14 @@ void Bridge::reply(const Request& r,CommandStatus status,uint8_t domain) {
     if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}
 }
 void Bridge::ownerPoll(bool sender) {
+    if(settings_) {
+        const auto owner=settings_->previewOwner();bool connected=!owner;
+        {Guard guard(lock_);for(const auto& c:clients_)if(c.active&&c.generation==owner)connected=true;}
+        settings_->servicePreview(lock_.nowMs(),connected);
+    }
+    if(settings_&&settings_->snapshot().revision!=settings_revision_) {
+        auto e=settingsState(Kind::settings_update);settings_revision_=e.revision;broadcastSettings(e);
+    }
     if(sender_!=sender){sender_=sender;auto e=state(Kind::mode);broadcast(e);}
     if(in_flight_)return;
     Request r;
@@ -131,6 +139,23 @@ void Bridge::ownerPoll(bool sender) {
             if(c->active){c->ready=true;if(c->outstanding)--c->outstanding;}
         }
         return;
+    }
+    if(r.settings) {
+        bool subscribed=false;
+        {Guard guard(lock_);if(auto* c=client(r.token)){subscribed=c->settings;if(!r.settings_write)c->settings=true;}}
+        DeviceSettings::Result result=DeviceSettings::Result::invalid;
+        if(settings_&&r.settings_write&&subscribed) {
+            if(r.settings_edit==DeviceSettings::Edit::none)result=settings_->set(r.setting,r.setting_value);
+            else result=settings_->edit(r.settings_edit,r.token.generation,r.settings_gesture,r.setting,
+                r.setting_value,r.settings_base,lock_.nowMs(),r.settings_gesture==r.id);
+        }
+        if(settings_&&settings_->snapshot().revision!=settings_revision_) {
+            auto changed=settingsState(Kind::settings_update);settings_revision_=changed.revision;broadcastSettings(changed);
+        }
+        auto e=settingsState(r.settings_write||!settings_?Kind::settings_result:Kind::settings_snapshot,r.id);
+        e.setting=r.setting;e.settings_result=result;
+        e.settings_edit=r.settings_edit;e.settings_gesture=r.settings_gesture;
+        Guard guard(lock_);if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}return;
     }
     if(++internal_id_==0)++internal_id_;
     r.command.request_id=internal_id_;
@@ -163,5 +188,14 @@ void Bridge::completed(void* context,const ControllerCommand& command,const Comm
     if(self.in_flight_&&command.source==CommandSource::external&&command.request_id==self.flight_.command.request_id) {
         self.in_flight_=false;self.reply(self.flight_,result.status,uint8_t(result.domain));
     }
+}
+Event Bridge::settingsState(Kind kind,uint32_t id) {
+    Event e;e.kind=kind;e.id=id;e.sequence=++sequence_;
+    const auto snapshot=settings_?settings_->snapshot():DeviceSettings::Snapshot{};
+    memcpy(e.values,snapshot.values,3);e.domain=snapshot.persisted;
+    e.revision=snapshot.revision;return e;
+}
+void Bridge::broadcastSettings(Event& e) {
+    Guard guard(lock_);for(auto& c:clients_)if(c.active&&c.ready&&c.settings)push(c,e);
 }
 }

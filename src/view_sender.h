@@ -2,6 +2,7 @@
 #pragma once
 
 #include "common.h"
+#include "device_settings.h"
 #include "logo_sender.h"
 #include "dmx_controller.h"
 #include "preset_double_tap.h"
@@ -14,9 +15,8 @@
 
 // Display settings are owned by src.cpp because the global safe-wake /
 // auto-off logic lives there.
-extern uint8_t g_display_brightness_level;
-extern uint8_t g_screen_timeout_minutes;
-extern uint8_t g_ui_volume_level;
+DeviceSettings& deviceSettings();
+void persistDeviceSettings();
 extern uint8_t g_ui_speaker_volume;
 extern uint8_t g_display_normal_brightness;
 extern uint32_t g_display_timeout_ms;
@@ -107,6 +107,11 @@ class view_sender_t : public view_t {
         // DMX transmission at the top of loop() continues normally.
         if (settings_screen) {
             handleSettingsTouch(tp);
+            if (!tp.state) persistDeviceSettings();
+            const auto settings_revision = deviceSettings().snapshot().revision;
+            if (settings_revision != settings_device_revision) {
+                settings_device_revision = settings_revision; settings_redraw_pending = true;
+            }
             // Stage 5C Settings network refresh begin.
             serviceSettingsNetwork();
             // Stage 5C Settings network refresh end.
@@ -561,6 +566,7 @@ class view_sender_t : public view_t {
     bool settings_redraw_pending = false;
     // Stage 5C Settings network fields begin.
     uint32_t settings_network_revision = UINT32_MAX;
+    uint64_t settings_device_revision = UINT64_MAX;
     bool wifi_reset_active = false, wifi_reset_canceled = false, wifi_reset_completed = false;
     bool wifi_reset_failed = false;
     uint32_t wifi_reset_started_ms = 0;
@@ -1866,7 +1872,7 @@ bool loadPreset(uint8_t slot) {
                 sizeof(brightness_text),
                 "BRIGHTNESS  %u / 5",
                 static_cast<unsigned int>(
-                    g_display_brightness_level
+                    deviceSettings().value(DeviceSetting::brightness)
                 )
             );
 
@@ -1883,7 +1889,7 @@ bool loadPreset(uint8_t slot) {
             drawSettingsSlider(
                 &c,
                 bright_slider_screen_y,
-                g_display_brightness_level,
+                deviceSettings().value(DeviceSetting::brightness),
                 false
             );
         }
@@ -1902,7 +1908,7 @@ bool loadPreset(uint8_t slot) {
 
             char timeout_text[32];
 
-            if (g_screen_timeout_minutes == 0) {
+            if (deviceSettings().value(DeviceSetting::timeout) == 0) {
                 snprintf(
                     timeout_text,
                     sizeof(timeout_text),
@@ -1914,7 +1920,7 @@ bool loadPreset(uint8_t slot) {
                     sizeof(timeout_text),
                     "SCREEN OFF  %u MIN",
                     static_cast<unsigned int>(
-                        g_screen_timeout_minutes
+                        deviceSettings().value(DeviceSetting::timeout)
                     )
                 );
             }
@@ -1927,9 +1933,9 @@ bool loadPreset(uint8_t slot) {
         }
 
         int timeout_slider_value =
-            (g_screen_timeout_minutes == 0)
+            (deviceSettings().value(DeviceSetting::timeout) == 0)
                 ? 5
-                : g_screen_timeout_minutes;
+                : deviceSettings().value(DeviceSetting::timeout);
 
         if (timeout_slider_screen_y > -30 &&
             timeout_slider_screen_y < 250) {
@@ -1961,7 +1967,7 @@ bool loadPreset(uint8_t slot) {
                 sizeof(volume_text),
                 "VOLUME  %u / 4",
                 static_cast<unsigned int>(
-                    g_ui_volume_level
+                    deviceSettings().value(DeviceSetting::volume)
                 )
             );
 
@@ -1978,7 +1984,7 @@ bool loadPreset(uint8_t slot) {
             drawVolumeSlider(
                 &c,
                 volume_slider_screen_y,
-                g_ui_volume_level
+                deviceSettings().value(DeviceSetting::volume)
             );
         }
 
@@ -2158,6 +2164,7 @@ bool loadPreset(uint8_t slot) {
             "SETTINGS"
         );
 
+        settings_device_revision = deviceSettings().snapshot().revision;
         settings_redraw_pending = false;
     }
 
@@ -2408,7 +2415,7 @@ bool loadPreset(uint8_t slot) {
                 sliderValueFromX(touch_x);
 
             if (value !=
-                g_display_brightness_level) {
+                deviceSettings().value(DeviceSetting::brightness)) {
 
                 applyDisplayBrightnessLevel(
                     static_cast<uint8_t>(value)
@@ -2436,7 +2443,7 @@ bool loadPreset(uint8_t slot) {
                     );
 
             if (timeout_minutes !=
-                g_screen_timeout_minutes) {
+                deviceSettings().value(DeviceSetting::timeout)) {
 
                 setScreenTimeoutMinutes(
                     timeout_minutes
@@ -2459,7 +2466,7 @@ bool loadPreset(uint8_t slot) {
                 );
 
             if (value !=
-                g_ui_volume_level) {
+                deviceSettings().value(DeviceSetting::volume)) {
 
                 applyUiVolumeLevel(
                     static_cast<uint8_t>(value)
@@ -2550,7 +2557,7 @@ bool loadPreset(uint8_t slot) {
                     );
 
                 if (value !=
-                    g_display_brightness_level) {
+                    deviceSettings().value(DeviceSetting::brightness)) {
 
                     applyDisplayBrightnessLevel(
                         static_cast<uint8_t>(value)
@@ -2582,7 +2589,7 @@ bool loadPreset(uint8_t slot) {
                         );
 
                 if (timeout_minutes !=
-                    g_screen_timeout_minutes) {
+                    deviceSettings().value(DeviceSetting::timeout)) {
 
                     setScreenTimeoutMinutes(
                         timeout_minutes
@@ -2607,7 +2614,7 @@ bool loadPreset(uint8_t slot) {
                     );
 
                 if (value !=
-                    g_ui_volume_level) {
+                    deviceSettings().value(DeviceSetting::volume)) {
 
                     applyUiVolumeLevel(
                         static_cast<uint8_t>(value)

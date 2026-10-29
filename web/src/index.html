@@ -32,7 +32,7 @@
           <div id="fader-grid" class="fader-grid" role="group" aria-label="Controller channel faders" aria-describedby="fader-note"></div>
           <div class="panel-foot"><p id="fader-note">Values unavailable until synchronization · Channel controls disabled.</p></div>
         </div>
-        <div class="blackout-summary"><span class="outline-dot" aria-hidden="true"></span><p id="blackout-summary-label" role="status" aria-atomic="true">Blackout state unavailable</p><span id="blackout-summary-detail">Awaiting live data</span></div>
+        <div class="blackout-summary" id="blackout-summary"><span class="outline-dot" aria-hidden="true"></span><p id="blackout-summary-label" role="status" aria-atomic="true">Blackout state unavailable</p><span id="blackout-summary-detail">Awaiting live data</span></div>
       </section>
       <section class="view" id="view-presets" aria-labelledby="heading-presets" hidden>
         <div class="view-heading"><div><p class="eyebrow">STORED LOOKS</p><h1 id="heading-presets" tabindex="-1">Presets</h1></div><span class="quiet-badge">8 slots</span></div>
@@ -50,9 +50,18 @@
         <div class="panel preset-actions"><div><p class="eyebrow">SELECTED SLOT</p><h2 id="selected-preset">Preset P1</h2></div><div class="action-row"><button id="preset-load" disabled class="primary-button" data-device-action="preset.load">Load</button><button id="preset-save" disabled data-device-action="preset.save">Save</button><button id="preset-clear" disabled class="danger-button" data-device-action="preset.clear">Delete</button></div><div id="preset-confirmation" class="preset-confirmation" role="group" aria-labelledby="preset-confirm-text" hidden><p id="preset-confirm-text"></p><div class="action-row"><button id="preset-confirm" class="danger-button" type="button">Confirm</button><button id="preset-cancel" type="button">Cancel</button></div></div><p id="preset-feedback" class="muted" role="status" aria-live="polite">Waiting for Controller state.</p></div>
       </section>
       <section class="view" id="view-settings" aria-labelledby="heading-settings" hidden>
-        <div class="view-heading"><div><p class="eyebrow">PREFERENCES</p><h1 id="heading-settings" tabindex="-1">Settings</h1></div><span class="quiet-badge">This browser</span></div>
-        <div class="panel settings-panel"><h2>Appearance</h2><label class="preference-row" for="show-percent"><span><strong>Secondary percentage</strong><span>Show a percentage beneath the DMX values.</span></span><input id="show-percent" type="checkbox"></label><p class="muted">Saved in this browser when local storage is available. This does not change the device.</p></div>
-        <div class="panel info-panel"><span class="info-symbol" aria-hidden="true">i</span><div><h2>Device settings stay on the device</h2><p>Use the touchscreen for display, sound and power settings. Network and credential editing are not available here.</p></div></div>
+        <div class="view-heading"><div><p class="eyebrow">CONFIGURATION</p><h1 id="heading-settings" tabindex="-1">Settings</h1></div></div>
+        <div class="settings-device-grid">
+        <div class="panel settings-panel device-settings"><h2 class="device-settings-heading">Device Settings</h2>
+          <div class="device-settings-controls">
+          <div class="device-setting"><label for="device-brightness">Display brightness <span id="device-brightness-current">Unavailable</span></label><input id="device-brightness" type="range" min="1" max="5" step="1" value="3" disabled><div class="setting-stops" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span></div><div class="setting-endpoints" aria-hidden="true"><span>Dim</span><span>Bright</span></div></div>
+          <div class="device-setting"><label for="device-timeout">Screen timeout <span id="device-timeout-current">Unavailable</span></label><input id="device-timeout" type="range" min="1" max="5" step="1" value="3" disabled><div class="setting-stops" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span><span>ON</span></div><div class="setting-endpoints" aria-hidden="true"><span>1 min</span><span>Always On</span></div></div>
+          <div class="device-setting"><label for="device-volume">UI volume <span id="device-volume-current">Unavailable</span></label><input id="device-volume" type="range" min="0" max="4" step="1" value="2" disabled><div class="setting-stops" aria-hidden="true"><span>0</span><span>1</span><span>2</span><span>3</span><span>4</span></div><div class="setting-endpoints" aria-hidden="true"><span>Mute</span><span>Maximum</span></div></div>
+          </div>
+          <p id="device-settings-feedback" role="status" aria-live="polite" hidden></p>
+        </div>
+        </div>
+        <div class="panel settings-panel"><h2>Browser Preferences</h2><label class="preference-row" for="show-percent"><span><strong>Secondary percentage</strong><span>Show a percentage beneath the DMX values.</span></span><input id="show-percent" type="checkbox"></label><p class="muted">Saved in this browser when local storage is available. This does not change the device.</p></div>
       </section>
       <section class="view" id="view-status" aria-labelledby="heading-status" hidden>
         <div class="view-heading"><div><p class="eyebrow">CONNECTION &amp; DEVICE</p><h1 id="heading-status" tabindex="-1">Status</h1></div><span class="quiet-badge">Read-only</span></div>

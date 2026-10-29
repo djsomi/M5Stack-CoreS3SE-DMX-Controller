@@ -9,9 +9,11 @@ const baseline=option('--baseline'),zlib=require('node:zlib');
 function assets(folder) {const base=path.join(folder,'web/generated'),manifest=JSON.parse(fs.readFileSync(path.join(base,'manifest.json'),'utf8'));return new Map(manifest.assets.map(a=>[a.path,{body:fs.readFileSync(path.join(base,a.file)),type:a.content_type}]));}
 const current=assets(root),before=baseline&&assets(baseline);
 async function prepare(browser,width,resources=current,touch=width<480,options={}) {
-  const context=await browser.newContext({viewport:{width,height:900},hasTouch:touch,isMobile:touch});
+  const context=await browser.newContext({viewport:{width,height:options.height??900},hasTouch:touch,isMobile:touch});
   await context.addInitScript(()=>{
     let revision=0,seq=0,blackout=false,loaded=0,modified=false,values=Array(512).fill(0);
+    let deviceRevision=1,device={brightness:3,timeout:3,volume:2,persisted:7},preview=null;
+    const saved={brightness:3,timeout:3,volume:2};window.__settingsWrites=0;
     window.__headerSockets=[];
     class FakeWebSocket {
       constructor(){this.readyState=0;this.sent=[];window.__headerSockets.push(this);queueMicrotask(()=>{this.readyState=1;this.onopen?.();this.message('hello',{channels:512,max_message:256,max_clients:4,max_outstanding:4});this.snapshot();});}
@@ -19,17 +21,49 @@ async function prepare(browser,width,resources=current,touch=width<480,options={
       snapshot(id=0,type='state.snapshot'){this.message(type,{id,values,presets:[1,1,1,1,1,1,1,0],blackout,sender:true,loaded,modified});}
       send(text){const r=JSON.parse(text);this.sent.push(r);queueMicrotask(()=>{
         if(r.type==='state.request')return this.snapshot(r.id);
+        if(r.type==='settings.request'){this.settingsSubscribed=true;return this.message('settings.snapshot',{id:r.id,revision:String(deviceRevision),...device});}
+        if(r.type.startsWith('settings.')){
+          if(this.holdSettings){this.pendingSetting=r;return;}
+          return this.applySetting(r);
+        }
         if(r.type==='preset.load'&&this.holdPresets){this.pendingPreset=r;return;}
         if(r.type==='channel.set'){values[r.channel-1]=r.value;modified=!!loaded;++revision;this.message('state.update',{channel:r.channel,value:r.value,blackout,sender:true,loaded,modified});}
         else if(r.type==='preset.load'){loaded=r.slot;modified=false;++revision;values=Array(512).fill(0);this.snapshot(0,'state.update');}
         else return;
         this.message('command.ack',{id:r.id,status:'applied',domain:0});
       });}
+      publishSettings(){for(const s of window.__headerSockets)if(s.readyState===1&&s.settingsSubscribed)s.message('settings.update',{revision:String(deviceRevision),...device});}
+      cancelPreview(){if(preview){device={...device,[preview.key]:preview.value,persisted:preview.persisted};preview=null;++deviceRevision;}}
+      remoteSetting(key,value){this.cancelPreview();device={...device,[key]:value,persisted:device.persisted|(1<<['brightness','timeout','volume'].indexOf(key))};saved[key]=value;++deviceRevision;this.publishSettings();}
+      applySetting(r,forced='applied'){
+        if(this.readyState!==1)return;
+        const old=deviceRevision,key=r.setting,bit=1<<['brightness','timeout','volume'].indexOf(key),phase=r.type.slice(9);
+        let status=forced;
+        if(phase==='preview'){
+          if(r.base!==String(deviceRevision))status='conflict';
+          else if(r.gesture===r.id){this.cancelPreview();preview={owner:this,gesture:r.gesture,key,value:device[key],persisted:device.persisted};}
+          else if(!preview||preview.owner!==this||preview.gesture!==r.gesture||preview.key!==key)status='conflict';
+          if(status!=='conflict'&&device[key]!==r.value){device={...device,[key]:r.value,persisted:device.persisted&~bit};++deviceRevision;}
+        }else if(phase==='cancel'){
+          if(preview?.owner===this&&preview.gesture===r.gesture)this.cancelPreview();else status='conflict';
+        }else{
+          if(phase==='commit'&&(!preview||preview.owner!==this||preview.gesture!==r.gesture||r.base!==String(deviceRevision)))status='conflict';
+          if(status!=='conflict'){
+            if(phase==='set'){this.cancelPreview();device={...device,[key]:r.value};}
+            preview=null;
+            if(saved[key]!==device[key]){++window.__settingsWrites;if(status!=='storage_error')saved[key]=device[key];}
+            device={...device,persisted:status==='storage_error'?device.persisted&~bit:device.persisted|bit};++deviceRevision;
+          }
+        }
+        if(deviceRevision!==old)this.publishSettings();
+        this.message('settings.result',{id:r.id,revision:String(deviceRevision),...device,setting:key,status,...(phase==='set'?{}:{phase,gesture:r.gesture})});
+      }
+      finishSetting(status='applied'){const r=this.pendingSetting;this.pendingSetting=null;this.applySetting(r,status);}
       confirm(){const request=this.sent.at(-1);blackout=request.active;++revision;this.snapshot(0,'state.update');this.message('command.ack',{id:request.id,status:'applied',domain:0});}
       remoteBlackout(active){blackout=active;++revision;this.snapshot(0,'state.update');}
       publishPreset(slot,same=false){loaded=slot;modified=false;values=Array(512).fill(slot);if(!same)++revision;this.snapshot(0,'state.update');}
       finishPreset(status='applied'){const r=this.pendingPreset;this.pendingPreset=null;this.message(status==='applied'||status==='no_change'?'command.ack':'command.error',{id:r.id,status,domain:0});}
-      close(){this.readyState=3;}
+      close(){this.readyState=3;if(preview?.owner===this){this.cancelPreview();this.publishSettings();}}
     }
     window.WebSocket=FakeWebSocket;
   });
@@ -89,7 +123,7 @@ async function drag(page,x,y,endX,endY,inspect=()=>{}) {
 async function gesturePolicy(page) {
   const result=await page.evaluate(()=>({
     outside:[document.documentElement,document.body].map(n=>getComputedStyle(n).touchAction),
-    wrong:[...document.querySelectorAll('.app-container, .app-container *')].filter(n=>getComputedStyle(n).touchAction!==(n.matches('.fader input[type=range]')?'none':'pan-x pan-y')).map(n=>n.tagName+'#'+n.id),
+    wrong:[...document.querySelectorAll('.app-container, .app-container *')].filter(n=>getComputedStyle(n).touchAction!==(n.matches('.fader input[type=range], .device-settings input[type=range]')?'none':'pan-x pan-y')).map(n=>n.tagName+'#'+n.id),
     paths:['#heading-editor','.brand-mark path','.section-nav a span','.preset-slot strong','.slot-state','#channel-jump','.preference-row input','details summary','.status-panel dd','.app-footer'].map(selector=>{
       let n=document.querySelector(selector),chain=[];while(n){chain.push({tag:n.tagName,touch:getComputedStyle(n).touchAction,overflow:getComputedStyle(n).overflowY});if(n.matches('.app-container'))break;n=n.parentElement;}return {selector,chain};
     })
@@ -130,18 +164,18 @@ async function zoomChecks(page) {
   for(const view of ['editor','presets','settings','status']) {
     await page.locator('[data-section="'+view+'"]').tap();
     const h=await page.locator('#heading-'+view).boundingBox(),scale=await page.evaluate(()=>visualViewport.scale);
-    const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type!=='state.request').length);
+    const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
     for(const point of [{x:h.x+10,y:h.y+h.height/2},{x:await page.evaluate(()=>innerWidth-20),y:h.y+h.height+5}])await cdp.send('Input.synthesizeTapGesture',{...point,tapCount:2,gestureSourceType:'touch'});
     assert.equal(await page.evaluate(()=>visualViewport.scale),scale,'double tap zoomed '+view);
-    assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type!=='state.request').length),before,'content double tap mutated '+view);
+    assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),before,'content double tap mutated '+view);
   }
   await page.locator('[data-section="editor"]').tap();const heading=await page.locator('#heading-editor').boundingBox();
   const point={x:Math.min(150,heading.x+heading.width/2),y:heading.y+heading.height/2};
   const initial=await page.evaluate(()=>visualViewport.scale);
-  const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type!=='state.request').length);
+  const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
   await cdp.send('Input.synthesizeTapGesture',{...point,tapCount:2,gestureSourceType:'touch'});await page.waitForTimeout(100);
   assert.equal(await page.evaluate(()=>visualViewport.scale),initial,'ordinary double tap zoomed');
-  assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type!=='state.request').length),before,'ordinary double tap mutated state');
+  assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),before,'ordinary double tap mutated state');
   // Chromium's high-level touch-pinch helper is inert on baseline and current
   // pages here. Use an actual two-contact stream, then a trackpad-style pinch.
   const center=await page.evaluate(()=>innerWidth/2);
@@ -257,7 +291,7 @@ async function presetBlackoutStability(page,touch) {
       x:r.x,y:r.y+document.querySelector('.app-container').scrollTop+scrollY,width:r.width,height:r.height};
   });
   const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const operations=()=>page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>r.type!=='state.request').length);
+  const operations=()=>page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length);
   for(const active of [false,true]) {
     await page.evaluate(active=>window.__headerSockets[0].remoteBlackout(active),active);await settled();
     const baseline=await presentation();assert.equal(baseline.text,'Blackout '+(active?'ON':'OFF'));

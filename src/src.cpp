@@ -10,6 +10,7 @@
 #include "view_sender.h"
 #include "preset_store.h"
 #include <Preferences.h>
+#include "device_settings.h"
 
 QueueHandle_t queue;
 
@@ -38,9 +39,6 @@ static view_sender_t view_sender(dmx_controller, command_dispatcher, dmx_transpo
 
 // User-adjustable display settings.
 // These globals are also used by view_sender.h.
-uint8_t g_display_brightness_level = 3;   // 1..5
-uint8_t g_screen_timeout_minutes = 3;     // 0=always on, otherwise 1..4
-uint8_t g_ui_volume_level = 2;            // 0..4, 0=MUTE
 
 uint8_t g_display_normal_brightness = 128;
 uint32_t g_display_timeout_ms = 3UL * 60UL * 1000UL;
@@ -49,6 +47,7 @@ uint8_t g_ui_speaker_volume = 40;
 // Battery warnings ignore the normal UI volume and always use 80%.
 static constexpr uint8_t BATTERY_WARNING_VOLUME = 204;  // 80% of 255
 static bool battery_warning_volume_override = false;
+static bool display_sleeping = false;
 
 
 // Convert the user-facing 1..5 brightness scale to LCD backlight PWM.
@@ -86,154 +85,39 @@ static uint8_t speakerVolumeFromLevel(uint8_t level) {
 }
 
 
-static void saveUiSettings(void) {
-    Preferences prefs;
-
-    if (prefs.begin("dmxui", false)) {
-        prefs.putUChar(
-            "bright",
-            g_display_brightness_level
-        );
-
-        prefs.putUChar(
-            "timeout",
-            g_screen_timeout_minutes
-        );
-
-        prefs.putUChar(
-            "volume",
-            g_ui_volume_level
-        );
-
-        prefs.end();
+class ApplicationSettingsBackend final : public DeviceSettingsBackend {
+    const char* name(DeviceSetting key) {static const char* keys[]={"bright","timeout","volume"};return keys[unsigned(key)];}
+ public:
+    bool read(DeviceSetting key,uint8_t& value) override {
+        Preferences prefs;if(!prefs.begin("dmxui",true))return false;
+        const bool found=prefs.isKey(name(key))&&prefs.getType(name(key))==PT_U8;
+        if(found)value=prefs.getUChar(name(key),255);prefs.end();return found;
     }
-}
-
-
-static void loadUiSettings(void) {
-    Preferences prefs;
-
-    if (prefs.begin("dmxui", true)) {
-        g_display_brightness_level =
-            prefs.getUChar("bright", 3);
-
-        g_screen_timeout_minutes =
-            prefs.getUChar("timeout", 3);
-
-        g_ui_volume_level =
-            prefs.getUChar("volume", 2);
-
-        prefs.end();
+    bool write(DeviceSetting key,uint8_t value) override {
+        Preferences prefs;if(!prefs.begin("dmxui",false))return false;
+        const bool saved=prefs.putUChar(name(key),value)==1&&prefs.getUChar(name(key),255)==value;
+        prefs.end();return saved;
     }
-
-    if (g_display_brightness_level < 1 ||
-        g_display_brightness_level > 5) {
-        g_display_brightness_level = 3;
+    void apply(DeviceSetting key,uint8_t value) override {
+        if(key==DeviceSetting::brightness) {
+            g_display_normal_brightness=brightnessFromLevel(value);
+            if(!display_sleeping)M5.Display.setBrightness(g_display_normal_brightness);
+        } else if(key==DeviceSetting::timeout) {
+            g_display_timeout_ms=uint32_t(value)*60UL*1000UL;
+        } else {
+            g_ui_speaker_volume=speakerVolumeFromLevel(value);
+            if(!battery_warning_volume_override)M5.Speaker.setVolume(g_ui_speaker_volume);
+        }
     }
-
-    // 0 = always on, otherwise 1..4 minutes.
-    if (g_screen_timeout_minutes > 4) {
-        g_screen_timeout_minutes = 3;
-    }
-
-    // Older firmware could save level 5. Migrate it to the new
-    // maximum level 4 rather than unexpectedly reducing the volume.
-    if (g_ui_volume_level > 4) {
-        g_ui_volume_level = 4;
-    }
-
-    g_display_normal_brightness =
-        brightnessFromLevel(
-            g_display_brightness_level
-        );
-
-    g_ui_speaker_volume =
-        speakerVolumeFromLevel(
-            g_ui_volume_level
-        );
-
-    if (g_screen_timeout_minutes == 0) {
-        g_display_timeout_ms = 0;
-    } else {
-        g_display_timeout_ms =
-            static_cast<uint32_t>(
-                g_screen_timeout_minutes
-            ) *
-            60UL *
-            1000UL;
-    }
-}
-
-
-// Called from the Settings screen in view_sender.h.
-void applyDisplayBrightnessLevel(uint8_t level) {
-    if (level < 1) level = 1;
-    if (level > 5) level = 5;
-
-    if (g_display_brightness_level == level) {
-        return;
-    }
-
-    g_display_brightness_level = level;
-
-    g_display_normal_brightness =
-        brightnessFromLevel(level);
-
-    M5.Display.setBrightness(
-        g_display_normal_brightness
-    );
-
-    saveUiSettings();
-}
-
-
-// Called from the Settings screen in view_sender.h.
-void setScreenTimeoutMinutes(uint8_t minutes) {
-    // 0 = always on, otherwise 1..4 minutes.
-    if (minutes > 4) {
-        minutes = 4;
-    }
-
-    if (g_screen_timeout_minutes == minutes) {
-        return;
-    }
-
-    g_screen_timeout_minutes = minutes;
-
-    if (minutes == 0) {
-        g_display_timeout_ms = 0;
-    } else {
-        g_display_timeout_ms =
-            static_cast<uint32_t>(minutes) *
-            60UL *
-            1000UL;
-    }
-
-    saveUiSettings();
-}
-
-
-// Called from the Settings screen in view_sender.h.
-void applyUiVolumeLevel(uint8_t level) {
-    if (level > 4) level = 4;
-
-    if (g_ui_volume_level == level) {
-        return;
-    }
-
-    g_ui_volume_level = level;
-    g_ui_speaker_volume =
-        speakerVolumeFromLevel(level);
-
-    // Do not reduce an active 80% battery warning mid-tone.
-    if (!battery_warning_volume_override) {
-        M5.Speaker.setVolume(
-            g_ui_speaker_volume
-        );
-    }
-
-    saveUiSettings();
-}
+};
+static ApplicationSettingsBackend settings_backend;
+static DeviceSettings device_settings(settings_backend);
+DeviceSettings& deviceSettings() {return device_settings;}
+static void loadUiSettings(void) {device_settings.begin();}
+void persistDeviceSettings() {device_settings.commitPending();}
+void applyDisplayBrightnessLevel(uint8_t level) {device_settings.set(DeviceSetting::brightness,level<1?1:level>5?5:level,false);}
+void setScreenTimeoutMinutes(uint8_t minutes) {device_settings.set(DeviceSetting::timeout,minutes>4?4:minutes,false);}
+void applyUiVolumeLevel(uint8_t level) {device_settings.set(DeviceSetting::volume,level>4?4:level,false);}
 
 
 // Battery-warning tones deliberately bypass the user's UI volume.
@@ -278,7 +162,6 @@ static constexpr uint32_t STARTUP_DURATION_MS =
     STARTUP_DURATION_SECONDS * 1000UL;
 
 static uint32_t last_display_activity_ms = 0;
-static bool display_sleeping = false;
 
 // When the sleeping display is touched, consume the complete
 // wake-up gesture so it cannot accidentally operate a UI control.
@@ -738,7 +621,7 @@ void controllerPowerOff(void) {
 
 
 void setup(void) {
-    websocket_service::initialize(dmx_controller, command_dispatcher);
+    websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings);
     wifi_startup_trace::capture("setup.enter");
     network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.
     wifi_startup_trace::capture("credentials.after");
@@ -766,13 +649,6 @@ void setup(void) {
     // Restore brightness and screen-off time from NVS.
     loadUiSettings();
 
-    // Apply the saved normal UI sound volume.
-    M5.Speaker.setVolume(
-        g_ui_speaker_volume
-    );
-
-    // Display starts at the saved brightness.
-    M5.Display.setBrightness(g_display_normal_brightness);
     last_display_activity_ms = millis();
 
     /* Configure the DMX hardware to the default DMX settings and tell the DMX

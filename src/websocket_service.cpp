@@ -14,7 +14,7 @@ struct CriticalLock final : websocket_bridge::Lock {
 alignas(websocket_bridge::Bridge) unsigned char storage[sizeof(websocket_bridge::Bridge)];
 websocket_bridge::Bridge* bridge=nullptr;
 }
-void initialize(DmxController& c,CommandDispatcher& d){bridge=new(storage) websocket_bridge::Bridge(c,d,lock);}
+void initialize(DmxController& c,CommandDispatcher& d,DeviceSettings* s){bridge=new(storage) websocket_bridge::Bridge(c,d,lock,s);}
 void ownerPoll(bool sender){bridge->ownerPoll(sender);}
 websocket_bridge::Token open(uint64_t now){return bridge->open(now);}
 void close(websocket_bridge::Token t){bridge->close(t);}
