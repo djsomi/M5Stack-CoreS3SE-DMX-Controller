@@ -14,6 +14,11 @@ ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/net
 
 
 def check():
+    # Delivery-only migration: all fourteen approved application factories stay exact.
+    for path in (ROOT / "web/src/js").glob("*.js"):
+        original = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
+            "show", "03872b99b1ccfb256f010342d8e4e8449c515b80:" + path.relative_to(ROOT).as_posix()], cwd=ROOT)
+        assert path.read_bytes().replace(b"\r\n", b"\n") == original, "Application factory changed during delivery split: " + path.name
     check_new_header()
     entries = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
         "ls-tree", "-rz", BASE, "--", *PREFIXES, "platformio.ini"], cwd=ROOT)

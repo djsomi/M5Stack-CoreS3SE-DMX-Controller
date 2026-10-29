@@ -43,7 +43,7 @@ class InfrastructureTests(unittest.TestCase):
             self.assertEqual(data[3:8], b"\x00" * 5)
 
     def test_missing_invalid_and_stale_inputs_rejected(self):
-        path = self.root / "web/src/app.js"
+        path = self.root / "web/src/core.js"
         original = path.read_bytes()
         for invalid in (b"", b"\xff", b"\x00"):
             path.write_bytes(invalid)
@@ -123,7 +123,7 @@ class InfrastructureTests(unittest.TestCase):
         (build / "firmware.bin").write_bytes(b"modified")
         with self.assertRaises(ValueError):
             package(self.root, environment, self.root / "corrupt-bundle")
-        (self.root / "web/src/app.js").write_bytes(b"// changed\n")
+        (self.root / "web/src/ui.js").write_bytes(b"// changed\n")
         with self.assertRaises(ValueError):
             package(self.root, environment, self.root / "stale-bundle")
 

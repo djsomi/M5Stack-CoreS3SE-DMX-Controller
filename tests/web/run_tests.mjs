@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import './test_navigation.mjs';
 import './test_live.mjs';
 import './test_status.mjs';
+import './test_loader.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
 for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {
@@ -18,7 +19,7 @@ for (const name of ['protocol','commands','state','transport','control','actions
   assert.equal(networkCalls, 0);
   assert.deepEqual(Object.keys(context).sort(), ['WebSocket','XMLHttpRequest','fetch']);
 }
-new vm.Script(readFileSync(new URL('web/src/app.js', root), 'utf8'), {filename: 'generated-app.js'});
+for (const name of ['core.js','ui.js']) new vm.Script(readFileSync(new URL('web/src/'+name, root), 'utf8'), {filename: name});
 const initial = modules.state.create().read.current();
 assert.equal(initial.ready, false);
 assert.equal(initial.blackout, null);

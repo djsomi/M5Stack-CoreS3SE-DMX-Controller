@@ -1,4 +1,4 @@
-"""Loopback-only preview of the THREE actual generated assets, with device CSP.
+"""Loopback-only preview of the manifest's generated assets, with device CSP.
 
 Development tool only: no firmware endpoint, device request or runtime dependency.
 """

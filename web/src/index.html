@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark">
   <title>CoreS3SE DMX · Editor</title>
   <link rel="stylesheet" href="{{STYLE_URL}}">
-  <script src="{{SCRIPT_URL}}" defer></script>
+  <script id="core-script" src="{{CORE_URL}}" integrity="{{CORE_INTEGRITY}}" data-ui-src="{{UI_URL}}" data-ui-integrity="{{UI_INTEGRITY}}" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -15,7 +15,7 @@
       <div class="brand"><svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M7 5v22M16 5v22M25 5v22"/><path class="brand-knobs" d="M3 12h8M12 22h8M21 9h8"/></svg><div><span class="brand-name">CoreS3SE <span>DMX</span></span><span class="brand-caption">DIRECT CONTROLLER</span></div></div>
       <div class="header-actions"><span class="connection" role="status" aria-labelledby="connection-label"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Not connected</span></span><button class="blackout-button" id="blackout" disabled aria-describedby="blackout-summary-label">Blackout</button></div>
     </header>
-    <p id="loading-message" class="loading-message" role="status">Loading the interface… If this message remains, reload the page after a few seconds.</p>
+    <p id="loading-message" class="loading-message" role="status">Loading the interface… If this message remains, reload; if it persists, clear the browser cache.</p>
     <noscript><p class="loading-message">JavaScript is needed for local navigation. DMX controls remain disabled.</p></noscript>
     <nav class="section-nav" aria-label="Main sections">
       <a href="#editor" data-section="editor" aria-current="page"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M2 9h6M9 16h6M16 7h6"/></svg><span>Editor</span></a>

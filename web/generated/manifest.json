@@ -4,12 +4,12 @@
       "content_encoding": "gzip",
       "content_type": "text/html; charset=utf-8",
       "file": "index.html.gz",
-      "gzip_size": 3972,
-      "original_size": 15234,
+      "gzip_size": 4109,
+      "original_size": 15438,
       "path": "/",
-      "sha256": "612572b7ccf3587e28942420053936fb1ceac998c69617bf169d3630f7ed3a16",
+      "sha256": "48c8c31e47372769a32a3ca0c4490c56420025f8dd083e071518d13a4d58d040",
       "source": "index.html",
-      "source_sha256": "6c68c2ba6d476667427a6f550cd57d86a78720d2775aef31290157554557e187"
+      "source_sha256": "ebba1b47aaf3ca94cd61124ecbe3164b79e53e9c11c3bffc7980babe90de15d2"
     },
     {
       "content_encoding": "gzip",
@@ -25,16 +25,27 @@
     {
       "content_encoding": "gzip",
       "content_type": "text/javascript; charset=utf-8",
-      "file": "app.js.gz",
-      "gzip_size": 16380,
-      "original_size": 64515,
-      "path": "/app.936061c420578ddb.js",
-      "sha256": "6750d9322cf5710444e0ad3070d4cc4836ecfcda137f5bb36e11c0b782421d3e",
-      "source": "app.js",
-      "source_sha256": "936061c420578ddb2f71aea88cef989e7f1e4751a29cf62346186cdb97c6a108"
+      "file": "core.js.gz",
+      "gzip_size": 8903,
+      "original_size": 34558,
+      "path": "/core.10293e83adcdd841.js",
+      "sha256": "4b667f737126b2d06470dd92aac0950c1938e095b8ff2cefa36b1065a793a795",
+      "source": "core.js",
+      "source_sha256": "10293e83adcdd841959864c6268b3dbd6ca57d15f00fd825a116038dded56674"
+    },
+    {
+      "content_encoding": "gzip",
+      "content_type": "text/javascript; charset=utf-8",
+      "file": "ui.js.gz",
+      "gzip_size": 8841,
+      "original_size": 31824,
+      "path": "/ui.3339e1ee04ad1dbc.js",
+      "sha256": "e1b6fd843f551876bc8049f102b31ac32535b92a12095e085e7eb6cd66fc1190",
+      "source": "ui.js",
+      "source_sha256": "3339e1ee04ad1dbc90df170ec5396855117e19194d9ed042d1c46730794cae8a"
     }
   ],
-  "bundle_sha256": "cbc5b2448a6a055a6fc4c42afdbba32e9423154b2076f1a5dd3f0bd97ab1cce3",
+  "bundle_sha256": "b63d6578c3b02c1fa1346504b3ac5b4b75d47ee6fdcae6158a2167dba49b8edd",
   "generator": {
     "python": "3.11.7",
     "zlib": "1.2.13"

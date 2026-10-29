@@ -8,7 +8,7 @@ const output=option('--output')||path.join(root,'dist/header-browser');fs.mkdirS
 const baseline=option('--baseline'),zlib=require('node:zlib');
 function assets(folder) {const base=path.join(folder,'web/generated'),manifest=JSON.parse(fs.readFileSync(path.join(base,'manifest.json'),'utf8'));return new Map(manifest.assets.map(a=>[a.path,{body:fs.readFileSync(path.join(base,a.file)),type:a.content_type}]));}
 const current=assets(root),before=baseline&&assets(baseline);
-async function prepare(browser,width,resources=current,touch=width<480) {
+async function prepare(browser,width,resources=current,touch=width<480,options={}) {
   const context=await browser.newContext({viewport:{width,height:900},hasTouch:touch,isMobile:touch});
   await context.addInitScript(()=>{
     let revision=0,seq=0,blackout=false,loaded=0,modified=false,values=Array(512).fill(0);
@@ -34,14 +34,15 @@ async function prepare(browser,width,resources=current,touch=width<480) {
     window.WebSocket=FakeWebSocket;
   });
   const page=await context.newPage();
-  await page.route('**/*',async route=>{
+  if(!options.nativeHTTP)await page.route('**/*',async route=>{
     const url=new URL(route.request().url());assert.equal(url.origin,'http://127.0.0.1:8765','No external/device network');
     const asset=resources.get(url.pathname);
     if(asset)return route.fulfill({status:200,headers:{'content-type':asset.type,'content-security-policy':"default-src 'self'; connect-src 'self' ws://192.168.4.1; frame-ancestors 'none'; base-uri 'none'"},body:zlib.gunzipSync(asset.body)});
     const data=url.pathname==='/status'?{ms:1000,phase:'READY',stage:5,ssid:'TEST '+ 'A'.repeat(27),ip:'192.168.4.1',stations:2,max_stations:4,dhcp_router_option:false,build:'a'.repeat(64),profile:'cores3se_unit',layout:'cores3se-16m-ota6-v1',tx_errors:0,tx_stopped:false,websocket:{clients:1},samples:[{event:92,ms:900,internal:153600,minimum:102400,largest:131072,dma:65536,psram:8388608}],dma_free:81920,worker_stack_hwm:4096,http_stack_hwm:2048}:{marker:'WS_DIAGNOSTICS',ms:1000,first:null};
     return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
   });
-  await page.goto('http://127.0.0.1:8765/');await page.waitForFunction(()=>document.querySelector('.connection').dataset.live==='true');
+  await page.goto(options.url||'http://127.0.0.1:8765/');
+  if(options.awaitReady!==false)await page.waitForFunction(()=>document.querySelector('.connection').dataset.live==='true');
   return {page,context};
 }
 async function geometry(page) {return page.evaluate(()=>{
@@ -308,7 +309,7 @@ async function presetBlackoutStability(page,touch) {
   assert.deepEqual(await presentation(),off,'fresh snapshot restores the authoritative presentation');
   assert.deepEqual(await page.evaluate(()=>window.__headerSockets[1].sent),[],'uncertain preset is never replayed');
 }
-(async()=>{
+if(require.main===module)(async()=>{
  const browser=await chromium.launch({headless:true,...(process.env.DMX_CHROME_PATH?{executablePath:process.env.DMX_CHROME_PATH}:{}),args:['--no-sandbox']});
  const measurements=[];
  try {
@@ -362,3 +363,4 @@ async function presetBlackoutStability(page,touch) {
   console.log('PASS headless Chromium: seven widths; preset pending/bulk/ack/reload/foreign/rejected/reconnect blackout presentation and command guards; real ON/OFF and pending/offline states; gestures, faders, compact status, desktop/mobile headers and lower blackout row');
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
+module.exports={prepare,assets};

@@ -35,9 +35,13 @@ class PipelineTests(unittest.TestCase):
         first = bundle.compose(self.root)
         second = bundle.compose(self.root)
         self.assertEqual(first, second)
-        self.assertEqual(first, (self.root / "web/src/app.js").read_bytes().replace(b"\r\n", b"\n"))
-        positions = [first.index(("const " + name + " = (").encode()) for name, _ in bundle.MODULES]
-        self.assertEqual(positions, sorted(positions))
+        for file, names in (("core.js", bundle.CORE), ("ui.js", bundle.UI)):
+            self.assertEqual(first[file], (self.root / "web/src" / file).read_bytes().replace(b"\r\n", b"\n"))
+            positions = [first[file].index(("const " + name + " = (").encode()) for name in names]
+            self.assertEqual(positions, sorted(positions))
+        joined = b"\n".join(first.values())
+        for name, _ in bundle.MODULES:
+            self.assertEqual(joined.count(("const " + name + " = (").encode()), 1)
         path = self.root / "web/src/js/preferences.js"
         path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         self.assertEqual(first, bundle.compose(self.root))
@@ -86,17 +90,36 @@ class PipelineTests(unittest.TestCase):
 
     def test_manifest_actual_bodies_corruption_missing(self):
         manifest = assets.verify(self.root)
-        self.assertEqual(len(manifest["assets"]), 3)
+        self.assertEqual(len(manifest["assets"]), 4)
         for entry in manifest["assets"]:
             data = (self.root / "web/generated" / entry["file"]).read_bytes()
             self.assertLessEqual(len(data), 16384)
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
             self.assertEqual(len(gzip.decompress(data)), entry["original_size"])
-        path = self.root / "web/generated/app.js.gz"; data = path.read_bytes()
+        path = self.root / "web/generated/ui.js.gz"; data = path.read_bytes()
         path.write_bytes(data[:-1])
         with self.assertRaises(ValueError): assets.verify(self.root)
         path.unlink()
-        with self.assertRaises(OSError): assets.verify(self.root)
+        with self.assertRaises((OSError, ValueError)): assets.verify(self.root)
+
+    def test_sequential_loader_integrity_and_obsolete_inventory(self):
+        import base64
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode()
+        scripts = [attrs for tag, attrs in Elements(html).nodes if tag == "script"]
+        self.assertEqual(len(scripts), 1)
+        script = scripts[0]
+        manifest = assets.verify(self.root)
+        routes = {a["source"]: a["path"] for a in manifest["assets"]}
+        self.assertEqual(script["src"], routes["core.js"])
+        self.assertEqual(script["data-ui-src"], routes["ui.js"])
+        for name, attribute in (("core.js", "integrity"), ("ui.js", "data-ui-integrity")):
+            data = (self.root / "web/src" / name).read_bytes()
+            self.assertEqual(script[attribute], "sha256-" + base64.b64encode(hashlib.sha256(data).digest()).decode())
+        (self.root / "web/generated/app.js.gz").write_bytes(b"legacy")
+        with self.assertRaisesRegex(ValueError, "inventory"): assets.verify(self.root)
+        (self.root / "web/generated/app.js.gz").unlink()
+        (self.root / "web/src/app.js").write_bytes(b"legacy")
+        with self.assertRaisesRegex(ValueError, "obsolete"): assets.verify(self.root)
 
     def test_served_markup_safety_and_navigation(self):
         html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode()
@@ -116,7 +139,7 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(any(key.startswith("on") or key == "style" for key in attrs))
             for key in ("src", "href"):
                 if key in attrs: self.assertTrue(attrs[key].startswith(("/", "#")), (tag, attrs))
-        js = (self.root / "web/src/app.js").read_text(encoding='utf-8')
+        js = "\n".join((self.root / "web/src" / name).read_text(encoding='utf-8') for name in bundle.OUTPUTS)
         import re
         self.assertFalse(re.search(r"\b(?:XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
         self.assertEqual(len(re.findall(r"\bfetch\s*\(", js)), 1)
@@ -287,7 +310,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("env(safe-area-inset-bottom)", css[:start])
         self.assertIn("calc(100px + env(safe-area-inset-bottom))", css[:start])
         self.assertNotRegex(css, r"\d+dvh|scroll-behavior:\s*smooth")
-        js = (self.root / "web/src/app.js").read_text(encoding="utf-8")
+        js = "\n".join((self.root / "web/src" / name).read_text(encoding="utf-8") for name in bundle.OUTPUTS)
         self.assertNotIn("visualViewport", js)
         shell = (self.root / "web/src/js/shell.js").read_text(encoding="utf-8")
         self.assertNotRegex(shell, r"\b(?:scrollTo|scrollBy|setTimeout|requestAnimationFrame)\s*\(")

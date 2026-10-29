@@ -1,7 +1,7 @@
 """Loopback-only, finite WebSocket fixture for real-browser projection QA.
 
 Not firmware/a device simulator: no mutations or persistent data. Uses the
-actual three gzip assets/CSP. Mock lifecycle/ordering faults live in Node tests.
+actual manifest gzip assets/CSP. Mock lifecycle/ordering faults live in Node tests.
 """
 import argparse
 import base64

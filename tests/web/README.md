@@ -1,4 +1,10 @@
-# Web UI foundation and live read-only checks
+# Web UI and asset delivery verification
+
+Current delivery uses four gzip resources: HTML, CSS, Core JavaScript and UI
+JavaScript. Core requests UI only after Core execution, with content hashes and
+decoded-content SHA-256 integrity checks. The fourteen application factories are
+unchanged. Historical stage descriptions below are retained; the current delivery
+contract and acceptance checklist are in `docs/STAGE6B_JS_DELIVERY_SPLIT.md`.
 
 Run from the repository root with the existing pinned PlatformIO Python
 3.11.7 / zlib 1.2.13 environment:
@@ -43,7 +49,7 @@ Only existing read-only state.request probes are sent after 15 s of inactivity;
 there is no HTTP polling. These tests do not establish electrical correctness
 or replace device testing.
 
-To inspect the three actual gzip assets locally with the existing device CSP:
+To inspect the four actual gzip assets locally with the existing device CSP:
 
 ```powershell
 python -B tests/web/preview.py --port 8765

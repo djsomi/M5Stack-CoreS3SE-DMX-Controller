@@ -1,5 +1,6 @@
 """Offline asset generator/verifier; standard library only. No build-time writes to sources."""
 import argparse
+import base64
 import gzip
 import hashlib
 import io
@@ -10,10 +11,12 @@ import zlib
 import web_ui_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
-INPUTS = ("index.html", "style.css", "app.js")
+INPUTS = ("index.html", "style.css", "core.js", "ui.js")
 MIME = {"index.html": "text/html; charset=utf-8",
         "style.css": "text/css; charset=utf-8",
-        "app.js": "text/javascript; charset=utf-8"}
+        "core.js": "text/javascript; charset=utf-8",
+        "ui.js": "text/javascript; charset=utf-8"}
+TOKENS = (b"{{STYLE_URL}}", b"{{CORE_URL}}", b"{{UI_URL}}", b"{{CORE_INTEGRITY}}", b"{{UI_INTEGRITY}}")
 GENERATOR = {"python": "3.11.7", "zlib": "1.2.13"}
 LIMIT = 256 * 1024
 MAX_ASSET_BYTES = 16384  # Existing src/http_policy.h HTTP cap; never silently expand.
@@ -39,7 +42,7 @@ def source_files(root):
         if not text.strip() or "\x00" in text or "\r" in text or len(data) > LIMIT:
             raise ValueError("invalid/empty/oversized UTF-8 web input: " + name)
         result[name] = data
-    for token in (b"{{STYLE_URL}}", b"{{SCRIPT_URL}}"):
+    for token in TOKENS:
         if result["index.html"].count(token) != 1:
             raise ValueError("index.html must contain exactly one " + token.decode())
     return result
@@ -54,11 +57,16 @@ def compress(data):
 
 def rendered(root):
     sources = source_files(root)
-    urls = {"style.css": "/style." + sha(sources["style.css"])[:16] + ".css",
-            "app.js": "/app." + sha(sources["app.js"])[:16] + ".js", "index.html": "/"}
+    urls = {name: "/" + name.rsplit(".", 1)[0] + "." + sha(sources[name])[:16] + "." + name.rsplit(".", 1)[1]
+            for name in INPUTS if name != "index.html"}
+    urls["index.html"] = "/"
     bodies = dict(sources)
-    bodies["index.html"] = sources["index.html"].replace(b"{{STYLE_URL}}", urls["style.css"].encode()).replace(
-        b"{{SCRIPT_URL}}", urls["app.js"].encode())
+    replacements = {b"{{STYLE_URL}}": urls["style.css"], b"{{CORE_URL}}": urls["core.js"], b"{{UI_URL}}": urls["ui.js"]}
+    for name in ("core", "ui"):
+        replacements[("{{" + name.upper() + "_INTEGRITY}}").encode()] = "sha256-" + base64.b64encode(
+            hashlib.sha256(sources[name + ".js"]).digest()).decode("ascii")
+    for token, replacement in replacements.items():
+        bodies["index.html"] = bodies["index.html"].replace(token, replacement.encode("ascii"))
     return sources, urls, bodies
 
 
@@ -81,6 +89,7 @@ def generate(root=ROOT, output=None):
     if sum(len(b) for b in blobs.values()) > LIMIT:
         raise ValueError("compressed asset budget exceeded")
     output.mkdir(parents=True, exist_ok=True)
+    (output / "app.js.gz").unlink(missing_ok=True)
     for name, data in blobs.items():
         (output / name).write_bytes(data)
     (output / "manifest.json").write_bytes(canonical(manifest))
@@ -92,6 +101,8 @@ def verify(root=ROOT):
     if not (folder / "manifest.json").is_file():
         raise ValueError("missing generated assets; run python scripts/web_asset_pipeline.py --generate")
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    if {p.name for p in folder.glob("*.gz")} != {name + ".gz" for name in INPUTS}:
+        raise ValueError("unexpected/missing generated asset inventory")
     sources, urls, bodies = rendered(root)
     if manifest.get("schema") != 1 or manifest.get("generator") != GENERATOR:
         raise ValueError("unsupported asset manifest/generator")
@@ -146,8 +157,8 @@ def emit_cpp(root, destination, profile, source_digest):
             json.dumps(a["path"]), json.dumps(a["content_type"]), index, a["gzip_size"],
             a["original_size"], json.dumps(a["sha256"])))
     lines += ['};', '}', 'extern "C" {',
-              'extern const web_assets::Bundle web_asset_bundle = {assets,3,%s,%s,%s,"cores3se-16m-ota6-v1"};' % (
-                  json.dumps(manifest["bundle_sha256"]), json.dumps(source_digest), json.dumps(profile)),
+              'extern const web_assets::Bundle web_asset_bundle = {assets,%d,%s,%s,%s,"cores3se-16m-ota6-v1"};' % (
+                  len(manifest["assets"]), json.dumps(manifest["bundle_sha256"]), json.dumps(source_digest), json.dumps(profile)),
               '}', 'namespace web_assets {', 'const Bundle& bundle() { return web_asset_bundle; }',
               'const Asset* find(const char* path) {', '  if (!path) return nullptr;',
               '  for (size_t i=0; i<bundle().count; ++i)',
