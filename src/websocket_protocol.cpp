@@ -120,6 +120,7 @@ size_t encode(const Event& e,char* out,size_t capacity) {
     }
     else {
         w.add(",\"blackout\":%s,\"sender\":%s",e.blackout?"true":"false",e.sender?"true":"false");
+        w.add(",\"loaded\":%u,\"modified\":%s",unsigned(e.loaded),e.modified?"true":"false");
         if(e.kind==Kind::channel)w.add(",\"channel\":%u,\"value\":%u",unsigned(e.channel),unsigned(e.value));
         if(e.kind==Kind::snapshot||e.kind==Kind::universe) {
             w.add(",\"values\":[");

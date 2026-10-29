@@ -5,9 +5,10 @@ import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import './test_navigation.mjs';
 import './test_live.mjs';
+import './test_status.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
-for (const name of ['protocol','commands','state','transport','control','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {
   const source = readFileSync(new URL('web/src/js/' + name + '.js', root), 'utf8');
   let networkCalls = 0;
   const denied = () => {++networkCalls; throw Error('Unexpected network activity');};

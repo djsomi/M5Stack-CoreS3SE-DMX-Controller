@@ -6,10 +6,17 @@
   function create(read, client, runtime, notify) {
     const entries = new Map(), sent = [];
     const clock = () => runtime.clock ? runtime.clock() : Date.now();
-    let timer = null, flight = null, lastSent = -Infinity, note = "";
-    const available = () => read.current().ready && read.current().sender && client.writable();
+    let timer = null, flight = null, lastSent = -Infinity, note = "", held = false, epoch = 0;
+    let lastBoundary = read.current().boundary;
+    const available = () => !held && read.current().ready && read.current().sender && client.writable() && !client.pending().operation;
     function clearTimer() { if (timer !== null) runtime.clearTimeout(timer); timer = null; }
     function invalidate() { clearTimer(); entries.clear(); flight = null; }
+    function barrier() { invalidate(); epoch = (epoch + 1) >>> 0; }
+    function operationDelay() {
+      const now = clock();
+      while (sent.length && now - sent[0] >= 1000) sent.shift();
+      return sent.length >= 18 ? Math.max(0, 1001 - (now - sent[0])) : 0;
+    }
     function intent(channel, value, active) {
       if (!available() || !Number.isInteger(channel) || channel < 1 || channel > 512 ||
           !Number.isInteger(value) || value < 0 || value > 255) return false;
@@ -19,7 +26,7 @@
         entry = {value, active, dirty: false, sent: false}; entries.set(channel, entry);
       }
       entry.value = value; entry.active = active; entry.dirty = true;
-      note = "CH " + channel + " preview; awaiting Controller confirmation.";
+      note = "";
       pump(); notify(); return true;
     }
     function schedule(delay) {
@@ -48,11 +55,14 @@
       notify();
     }
     read.subscribe(() => {
-      if (!available()) { invalidate(); note = ""; }
+      if (read.current().boundary !== lastBoundary) {
+        lastBoundary = read.current().boundary; barrier();
+      }
+      if (!available()) { if (entries.size || flight) barrier(); note = ""; }
     });
     client.onWrite(result => {
       if (!flight || flight.id !== result.id) return;
-      const {channel, value} = flight; flight = null;
+      const {channel} = flight; flight = null;
       if (result.kind !== "command.ack") {
         invalidate(); note = "CH " + channel + (result.status === "transport_error" ?
           " transport failure; state may have changed." : " rejected: " + result.status + ".") +
@@ -60,14 +70,18 @@
       } else {
         const entry = entries.get(channel);
         if (entry && !entry.active && !entry.dirty) entries.delete(channel);
-        note = "CH " + channel + " " + value + " confirmed by Controller" +
-          (read.channel(channel) !== value ? "; a newer authoritative value is shown." : ".");
+        note = "";
         pump();
       }
       notify();
     });
     return {
       available,
+      epoch: () => epoch,
+      value: channel => read.channel(channel),
+      operationDelay,
+      reserveOperation() { if (operationDelay()) return false; sent.push(clock()); return true; },
+      hold(active) { if (active) barrier(); held = active; notify(); },
       edit(channel, value) { return intent(channel, value, true); },
       setFinal(channel, value) { return intent(channel, value, false); },
       step(channel, delta) {
@@ -89,15 +103,7 @@
         pump();
       },
       preview: channel => entries.has(channel) ? entries.get(channel).value : null,
-      note() {
-        if (note === "Channel control busy; finish existing edits first.") return note;
-        for (const [channel, entry] of entries) {
-          if (entry.active || entry.dirty || flight?.channel === channel)
-            return "CH " + channel + " preview " + entry.value + "; Controller " + read.channel(channel) +
-              (entry.active ? ". Dragging; release to confirm final value." : ". Awaiting confirmation.");
-        }
-        return note;
-      },
+      note: () => note,
       pending: () => entries.size
     };
   }

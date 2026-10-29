@@ -1,23 +1,25 @@
 // module: app
-// requires: state,transport,control,preferences,editor,presets,settings,status,shell
-({state, transport, control, preferences, editor, presets, settings, status, shell}) => {
+// requires: state,transport,control,actions,preferences,editor,presets,settings,status,shell
+({state, transport, control, actions, preferences, editor, presets, settings, status, shell}) => {
   let started = false;
   function start() {
     if (started) return; started = true;
-    let storage = null; try { storage = window.localStorage; } catch (_) { /* Preferences are optional. */ }
+    let storage = null; try { storage = window.localStorage; } catch (_) {}
+    const clock = () => window.performance ? window.performance.now() : Date.now();
+    const runtime = {clock, setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window)};
     const prefs = preferences.create(storage), store = state.create(), read = store.read;
     const labels = {connecting: "Connecting", synchronizing: "Synchronizing", live: "Connected / Live",
       reconnecting: "Reconnecting", disconnected: "Disconnected", paused: "Paused", resynchronizing: "Resynchronizing", error: "Connection error"};
     const label = phase => labels[phase];
     const client = transport.create(store, {WebSocket: window.WebSocket,
       url: (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws",
-      clock: () => window.performance ? window.performance.now() : Date.now(),
-      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), random: Math.random});
-    const writes = control.create(read, client, {clock: () => window.performance ? window.performance.now() : Date.now(),
-      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window)}, schedule);
+      ...runtime, random: Math.random});
+    const writes = control.create(read, client, runtime, schedule);
+    const operations = actions.create(read, client, writes, runtime, schedule);
     let frame = null;
     const editorView = editor.mount(document, window, prefs, read, writes);
-    const presetView = presets.mount(document, read), statusView = status.mount(document, read, label);
+    const presetView = presets.mount(document, read, operations, runtime), statusView = status.mount(document, read, label, {fetch: window.fetch?.bind(window), AbortController: window.AbortController,
+      ...runtime}, schedule);
     settings.mount(document, prefs, editorView.render);
     function text(id, value) { const node = document.getElementById(id); if (node.textContent !== value) node.textContent = value; }
     function render() {
@@ -25,25 +27,35 @@
       text("connection-label", label(current.phase));
       const connection = document.querySelector(".connection"), live = String(current.ready);
       if (connection.dataset.live !== live) connection.dataset.live = live;
-      text("fader-note", writes.note() || (writes.available() ? "Channel control enabled \u00b7 Values confirmed by Controller." : "Channel control unavailable \u00b7 Waiting for a synchronized Sender."));
+      text("fader-note", writes.note() || (writes.available() ? "" : "Channel controls unavailable"));
       const blackout = document.getElementById("blackout");
       const active = String(current.ready && current.blackout);
       if (blackout.dataset.active !== active) blackout.dataset.active = active;
-      const description = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") + ", read-only" : "Blackout state unavailable";
+      const operation = operations.current(), pendingBlackout = operation.pending?.type === "blackout.set";
+      blackout.disabled = !operations.canBlackout();
+      blackout.setAttribute("aria-busy", String(pendingBlackout));
+      if (current.ready) blackout.setAttribute("aria-pressed", String(current.blackout)); else blackout.removeAttribute("aria-pressed");
+      const caption = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") : "Blackout unavailable";
+      if (blackout.textContent !== caption) blackout.textContent = caption;
+      const description = pendingBlackout ? caption + "; awaiting Controller confirmation" : caption;
       if (blackout.getAttribute("aria-label") !== description) blackout.setAttribute("aria-label", description);
       text("blackout-summary-label", current.ready ? "Blackout " + (current.blackout ? "ON \u00b7 output zero" : "OFF") : "Blackout state unavailable");
-      text("blackout-summary-detail", current.ready ? "Controller working values" : "Awaiting live data");
+      text("blackout-summary-detail", pendingBlackout ? "Awaiting Controller confirmation" : operation.last?.type === "blackout.set" && operation.last.status !== "success" ? operation.last.message : current.ready ? "" : "Awaiting live data");
       if (!document.getElementById("view-editor").hidden) editorView.render();
       else { editorView.leave(); writes.leave(); }
-      if (!document.getElementById("view-presets").hidden) presetView.render();
+      if (!document.getElementById("view-presets").hidden) presetView.render(); else presetView.leave();
       store.diagnostics({renderedRevision: current.ready ? current.revision : null}, false);
+      statusView.setActive(!document.hidden && !document.getElementById("view-status").hidden);
       if (!document.getElementById("view-status").hidden) statusView.render();
     }
     function schedule() { if (!document.hidden && frame === null) frame = window.requestAnimationFrame(render); }
     read.subscribe(schedule);
     shell.mount(document, window, {connection: label(read.current().phase)}, schedule);
+    document.getElementById("blackout").addEventListener("click", () => {
+      if (operations.canBlackout()) operations.run("blackout.set", !read.current().blackout);
+    });
     document.getElementById("connection-retry").addEventListener("click", client.retry);
-    function pause() { client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
+    function pause() { statusView.setActive(false); client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
     document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); else { client.resume(); schedule(); } });
     window.addEventListener("pagehide", pause);
     window.addEventListener("pageshow", () => { if (!document.hidden) { client.resume(); schedule(); } });

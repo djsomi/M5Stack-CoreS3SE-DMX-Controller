@@ -1,3 +1,4 @@
+#include "preset_double_tap.h"
 #include "dmx_controller.h"
 #include "../support/fake_preset_storage.h"
 
@@ -270,7 +271,68 @@ static void presetFailures() {
     puts("PASS invalid slots, corrupt/read/write/metadata errors, retry semantics");
 }
 
+
+void loadedProvenance() {
+    FakeStorage storage; DmxController c(storage);
+    CHECK(c.loadedPreset() == 0 && !c.loadedPresetModified());
+    c.setChannel(1, 12); c.savePreset(2); c.savePreset(4);
+    CHECK(c.loadedPreset() == 0); // Saving is never loading.
+    auto revision = c.revision(); c.loadPreset(2);
+    CHECK(c.loadedPreset() == 3 && !c.loadedPresetModified() && c.revision() == revision + 1);
+    revision = c.revision(); c.loadPreset(2); c.setChannel(1, 12);
+    CHECK(c.revision() == revision && !c.loadedPresetModified());
+    c.setChannel(1, 13); c.setChannel(1, 12);
+    CHECK(c.loadedPreset() == 3 && c.loadedPresetModified()); // Conservative history, not matching.
+    c.loadPreset(4); CHECK(c.loadedPreset() == 5 && !c.loadedPresetModified());
+    c.setBlackout(true); c.loadPreset(2); c.setChannel(1, 99);
+    CHECK(c.loadedPreset() == 3 && c.loadedPresetModified() && c.outputPacket()[1] == 0);
+    c.setBlackout(false); CHECK(c.channel(1) == 12 && c.loadedPreset() == 5 && !c.loadedPresetModified());
+    c.setBlackout(true); c.loadPreset(2); c.clearPreset(4); c.setBlackout(false);
+    CHECK(c.loadedPreset() == 0 && c.channel(1) == 12); // Deleted restore identity cannot resurrect.
+    c.loadPreset(2); c.setBlackout(true); c.setChannel(1, 80); c.savePreset(2);
+    CHECK(c.loadedPreset() == 0); c.setBlackout(false); CHECK(c.loadedPreset() == 0 && c.channel(1) == 12);
+    c.loadPreset(2); CHECK(c.channel(1) == 80 && c.loadedPreset() == 3);
+    c.savePreset(2); CHECK(c.loadedPreset() == 3 && !c.loadedPresetModified()); // Identical save is a no-op.
+    c.setChannel(1, 81); storage.fail_save = true; c.savePreset(2);
+    CHECK(c.loadedPreset() == 0 && c.channel(1) == 81); // Failed partial overwrite cannot claim provenance.
+    storage.fail_save = false; c.loadPreset(2); storage.fail_load = true;
+    CHECK(c.loadPreset(4) != Result::ok && c.loadedPreset() == 3);
+    storage.fail_load = false;
+    c.savePreset(6); CHECK(c.loadedPreset() == 3); // Saving another slot does not claim or clear a load.
+    storage.fail_metadata_write = true;
+    CHECK(c.clearPreset(2) == Result::metadata_failed && c.loadedPreset() == 0);
+    storage.fail_metadata_write = false;
+    c.loadPreset(2); c.setBlackout(true); c.setChannel(1,81); c.setBlackout(false);
+    CHECK(c.loadedPreset() == 3 && !c.loadedPresetModified());
+    DmxChannelValue patch[]={{1,82},{512,1}}; c.setChannels(patch,2);
+    CHECK(c.loadedPreset() == 3 && c.loadedPresetModified());
+    CHECK(c.setChannel(513,1) == Result::invalid_channel && c.loadedPreset() == 3);
+    c.reset(); CHECK(c.loadedPreset() == 0 && !c.loadedPresetModified());
+    DmxController reboot(storage); CHECK(reboot.loadedPreset() == 0);
+    puts("PASS transient loaded/modified provenance, same-value loads, save/delete/failure, blackout restore and reboot");
+}
+void presetGestures() {
+    PresetDoubleTap g;
+    auto tap = [&](int slot, uint32_t t, int x=20, int y=20) {
+        CHECK(!g.sample(slot, true, true, false, x, y, t));
+        return g.sample(slot, false, false, true, x, y, t+30);
+    };
+    CHECK(!tap(2,100)); CHECK(tap(2,220)); CHECK(!tap(2,320)); // Triple cannot load twice.
+    CHECK(!tap(4,450)); CHECK(!tap(2,550)); CHECK(!tap(2,1000));
+    CHECK(!g.sample(2,true,true,false,20,20,1100));
+    CHECK(!g.sample(2,false,true,false,40,20,1120));
+    CHECK(!g.sample(2,false,false,true,20,20,1130)); CHECK(!tap(2,1200));
+    CHECK(!g.sample(-1,true,true,false,20,180,1300)); CHECK(!tap(2,1400));
+    CHECK(!g.sample(2,true,true,false,20,20,1500));
+    CHECK(!g.sample(2,false,false,true,20,20,2301)); CHECK(!tap(2,2400));
+    g.reset(); CHECK(!tap(0,UINT32_MAX-70)); CHECK(tap(0,20)); // Clock wrap.
+    g.reset(); CHECK(!tap(7,100)); CHECK(!tap(7,200,40)); CHECK(tap(7,300,40));
+    puts("PASS physical release-qualified preset pair, movement/hold/cancel/other-control/reset/triple/wrap guards");
+}
+
 int main() {
+    loadedProvenance();
+    presetGestures();
     boundsAndRevision();
     everySlotAndValue();
     atomicPatchesAndNoOps();

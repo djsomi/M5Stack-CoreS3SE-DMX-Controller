@@ -27,6 +27,7 @@ struct Event {
     CommandStatus result=CommandStatus::invalid;
     uint8_t domain=0;
     bool blackout=false, sender=false;
+    uint8_t loaded=0; bool modified=false;
     uint16_t channel=0;
     uint8_t value=0, values[512]{}, presets[8]{};
     const char* reason=nullptr; // Only compile-time protocol error literals.

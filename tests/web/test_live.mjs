@@ -4,11 +4,11 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const modules = {};
-for (const name of ['protocol','commands','state','transport','control','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {
   const code = readFileSync(new URL('../../web/src/js/' + name + '.js', import.meta.url), 'utf8');
   modules[name] = new vm.Script('(' + code + ')', {filename: name + '.js'}).runInNewContext()(modules);
 }
-const envelope = (type, seq = '11', revision = '9007199254740993', id = 0) => ({v: 1, type, id, revision, seq});
+const envelope = (type, seq = '11', revision = '9007199254740993', id = 0) => ({v: 1, type, id, revision, seq, ...(type.startsWith('state.') ? {loaded:0,modified:false} : {})});
 const hello = () => ({...envelope('hello','10'), channels: 512, max_message: 256, max_clients: 4, max_outstanding: 4});
 const snapshot = (patch = {}) => ({...envelope('state.snapshot'), values: Array.from({length:512}, (_,i) => i % 256),
   presets: [0,1,2,3,0,1,0,1], blackout: false, sender: true, ...patch});
@@ -371,7 +371,7 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   socket.message(channel({seq:'10020',channel:1,value:99,blackout:true}));flush();
   assert.equal(nodes.blackout.dataset.active,'true');assert.match(nodes['blackout-summary-label'].textContent,/output zero/);
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,String(9999%256),'inactive Editor is not rendered');
-  navigate('editor');assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'99');
+  navigate('editor');assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'99');assert.equal(nodes['fader-note'].textContent,'');
   socket.message({...snapshot({seq:'10021',values:Array(512).fill(7)}),type:'state.update'});flush();
   assert.equal(nodes['fader-grid'].children[0].children[1].textContent,'7');assert.equal(nodes.blackout.dataset.active,'false');
   socket.end();flush();assert.equal(nodes['fader-grid'].dataset.stale,'true');
@@ -386,11 +386,34 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   assert.ok(f.sockets.every(s=>s.sent.length===0),'normal operation/resume sends no JSON requests or mutations');
   // Routine probes are silent in the main shell; detailed pending state stays in Status.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
-  navigate('status');assert.match(nodes['status-sync'].textContent,/checking connection/);
+  navigate('status');assert.equal(nodes['status-sync'].textContent,'Live / synchronized');assert.equal(nodes['status-connection'].textContent,'Connected / Live');
   assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   assert.equal(JSON.parse(resumed.sent[0]).type,'state.request');
   f.advance(9000);resumed.message(snapshot({id:1,seq:'12'}));flush();
-  assert.equal(nodes['connection-label'].textContent,'Connected / Live');assert.equal(nodes['status-sync'].textContent,'Live · read-only');
+  assert.equal(nodes['connection-label'].textContent,'Connected / Live');assert.equal(nodes['status-sync'].textContent,'Live / synchronized');
+  assert.equal(nodes.blackout.disabled,false);nodes.blackout.listeners.click();flush();
+  const blackoutRequest=JSON.parse(resumed.sent.at(-1));assert.equal(blackoutRequest.type,'blackout.set');assert.equal(blackoutRequest.active,true);
+  assert.equal(nodes.blackout.disabled,true);assert.equal(nodes.blackout.dataset.active,'false','pending is not authoritative ON');
+  assert.equal(nodes.blackout.textContent,'Blackout OFF');assert.equal(nodes.blackout.attrs['aria-busy'],'true');assert.match(nodes.blackout.attrs['aria-label'],/OFF; awaiting Controller confirmation/);
+  const beforeRepeat=resumed.sent.length;nodes.blackout.listeners.click();assert.equal(resumed.sent.length,beforeRepeat);
+  resumed.message({...snapshot({seq:'13',revision:'9007199254740994',blackout:true}),type:'state.update'});
+  resumed.message({...envelope('command.ack','14','9007199254740994',blackoutRequest.id),status:'applied',domain:0});flush();
+  assert.equal(nodes.blackout.dataset.active,'true');assert.equal(nodes.blackout.disabled,true);
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes.blackout.attrs['aria-busy'],'false');assert.equal(nodes['blackout-summary-detail'].textContent,'','routine success is silent');
+  assert.equal(f.next(),351);flush();assert.equal(nodes.blackout.disabled,false);
+
+  nodes.blackout.listeners.click();flush();
+  const rejected=JSON.parse(resumed.sent.at(-1));assert.equal(rejected.active,false);
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes.blackout.attrs['aria-busy'],'true');
+  resumed.message({...envelope('command.error','15','9007199254740994',rejected.id),status:'rejected',domain:0});flush();
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes.blackout.attrs['aria-busy'],'false');assert.match(nodes['blackout-summary-detail'].textContent,/failed/);
+  f.advance(351);flush();
+  nodes.blackout.listeners.click();flush();assert.equal(nodes.blackout.textContent,'Blackout ON');
+  // A command deadline invalidates freshness rather than falsely showing requested OFF.
+  f.elapse(5000);flush();assert.equal(nodes.blackout.textContent,'Blackout unavailable');assert.equal(nodes.blackout.disabled,true);
+  resumed.end();f.next();const recovered=f.sockets.at(-1);recovered.open();recovered.message(hello());recovered.message(snapshot({blackout:true}));flush();
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(recovered.sent.length,0,'no mutation replay');
+
   // A missing matching snapshot still invalidates LIVE at the unchanged deadline.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   assert.equal(f.next(),10000);flush();assert.equal(nodes['connection-label'].textContent,'Reconnecting');
@@ -404,10 +427,12 @@ function activeFixture(auto = false) {
   let sequence=11, revision=9007199254740993n, renders=0;
   const control=modules.control.create(f.read,f.client,{...f.runtime,clock:f.runtime.now},()=>++renders);
   function authority(channelNumber,value) {
+    sequence=Math.max(sequence,Number(f.read.current().seq||0)); revision=revision>BigInt(f.read.current().revision||0)?revision:BigInt(f.read.current().revision||0);
     socket.message(channel({seq:String(++sequence),revision:String(++revision),channel:channelNumber,value}));
   }
   function reply(command,status='applied',publish=true) {
     if(publish && status==='applied') authority(command.channel,command.value);
+    sequence=Math.max(sequence,Number(f.read.current().seq||0)); revision=revision>BigInt(f.read.current().revision||0)?revision:BigInt(f.read.current().revision||0);
     socket.message({...envelope(status==='applied'||status==='no_change'?'command.ack':'command.error',
       String(++sequence),String(revision),command.id),status,domain:0});
   }
@@ -463,7 +488,7 @@ test('release bypasses ordinary pacing when credit exists, waits behind in-fligh
 
 test('preview resists remote values during drag, then reconciles to authoritative ordered results',()=>{
   const f=activeFixture();f.control.edit(1,80);f.authority(1,33);
-  assert.equal(f.read.channel(1),33);assert.equal(f.control.preview(1),80);assert.match(f.control.note(),/preview 80; Controller 33/);
+  assert.equal(f.read.channel(1),33);assert.equal(f.control.preview(1),80);assert.equal(f.control.note(),'','drag helpers are not visible');
   f.reply(f.events[0]);f.authority(1,34);assert.equal(f.control.preview(1),80);
   f.control.release(1);assert.equal(f.events.at(-1).value,80);
   f.reply(f.events.at(-1));assert.equal(f.control.preview(1),null);assert.equal(f.read.channel(1),80);
@@ -696,4 +721,235 @@ test('channel512 numeric and fine controls obey exact boundaries at all bank siz
   }
 });
 
+// Stage6B.4 operations use the real transport, command IDs and existing Controller event schemas.
+function operationsFixture() {
+  const f=editorFixture(), slots=Array.from({length:8},(_,i)=>{
+    const slot=new Element();slot.dataset.preset='P'+(i+1);const label=new Element();label.className='slot-state';slot.append(label);return slot;
+  }), nodes={};
+  for(const id of ['selected-preset','preset-load','preset-save','preset-clear','preset-confirmation','preset-confirm-text','preset-confirm','preset-cancel','preset-feedback'])nodes[id]=new Element();
+  const operations=modules.actions.create(f.read,f.client,f.control,{...f.runtime,clock:f.runtime.now},()=>{});
+  const view=modules.presets.mount({getElementById:id=>nodes[id],querySelectorAll:()=>slots},f.read,operations,{clock:f.runtime.now});
+  function publish(patch={},sameRevision=false) {
+    const revision=String(BigInt(f.read.current().revision)+(sameRevision?0n:1n));
+    const message={...snapshot({values:Array.from({length:512},(_,i)=>f.read.channel(i+1)),presets:Array.from({length:8},(_,i)=>f.read.preset(i)),blackout:f.read.current().blackout,loaded:f.read.current().loaded,modified:f.read.current().modified}),type:'state.update',
+      seq:String(BigInt(f.read.current().seq)+1n),revision,...patch};
+    f.socket.message(message);view.render();f.view.render();
+  }
+  function result(status='applied',patch=null) {
+    const op=f.client.pending().operation;assert.ok(op,'operation in flight');
+    if(patch!==null)publish(patch,status==='no_change');
+    f.socket.message({...envelope(status==='applied'||status==='no_change'?'command.ack':'command.error',String(BigInt(f.read.current().seq)+1n),f.read.current().revision,op.id),status,domain:0});
+    view.render();f.view.render();
+  }
+  const click=id=>nodes[id].listeners.click();
+  const select=slot=>slots[slot-1].listeners.click();
+  return {...f,slots,nodes,operations,presetView:view,publish,result,click,select};
+}
+
+test('operation encoders are strict, bounded and share v1 IDs with channel/snapshot requests',()=>{
+  const c=modules.commands.create();c.begin();assert.equal(c.channel(1,1).id,1);assert.equal(JSON.parse(c.snapshot()).id,2);
+  const op=c.operation('blackout.set',true);assert.deepEqual(JSON.parse(op.data),{v:1,id:3,type:'blackout.set',active:true});
+  assert.equal(c.operation('preset.save',1),null);assert.equal(c.completeOperation({id:99}),null);
+  assert.equal(c.completeOperation({id:3,type:'command.ack',status:'applied',domain:0}).active,true);
+  for(const slot of [0,9,-1,1.5,'1',null,true])assert.equal(c.operation('preset.save',slot),null);
+  for(const value of [0,1,'true',null])assert.equal(c.operation('blackout.set',value),null);
+  for(const type of ['preset.delete','preset.copy','preset.rename','reset_sender'])assert.equal(c.operation(type,1),null);
+  for(const type of ['preset.load','preset.save','preset.clear'])for(const slot of [1,8]){
+    const value=c.operation(type,slot);assert.equal(JSON.parse(value.data).slot,slot);c.completeOperation({id:value.id,type:'command.ack',status:'no_change',domain:0});
+  }
+  c.cancel();assert.equal(c.current().operation,null);
+});
+
+test('save empty P1 sends only slot, waits for applied persistence and synchronizes occupancy',()=>{
+  const f=operationsFixture();assert.equal(f.nodes['preset-load'].disabled,true);assert.equal(f.nodes['preset-clear'].disabled,true);assert.equal(f.nodes['preset-save'].disabled,false);
+  f.click('preset-save');assert.equal(f.events.length,1);assert.deepEqual(JSON.parse(f.socket.sent[0]),{v:1,id:1,type:'preset.save',slot:1});
+  assert.equal(f.read.preset(0),0);assert.match(f.slots[0].children[0].textContent,/Pending/);assert.equal(f.control.available(),false);
+  f.click('preset-save');assert.equal(f.events.length,1,'pending duplicate is not queued');
+  const presets=Array.from({length:8},(_,i)=>f.read.preset(i));presets[0]=1;
+  f.publish({presets});assert.ok(f.operations.current().pending);assert.equal(f.read.preset(0),1,'publication is not the operation ack');
+  f.result('applied');assert.equal(f.operations.current().pending,null);assert.equal(f.control.available(),true);
+  assert.match(f.nodes['preset-feedback'].textContent,/confirmed by Controller/);assert.equal(f.nodes['preset-load'].disabled,false);
+});
+
+test('overwrite and Delete require explicit slot-specific confirmation; Cancel and selection changes do not write',()=>{
+  const f=operationsFixture();f.select(2);f.click('preset-save');assert.equal(f.events.length,0);
+  assert.equal(f.nodes['preset-confirmation'].hidden,false);assert.match(f.nodes['preset-confirm-text'].textContent,/Overwrite P2/);assert.equal(f.nodes['preset-confirm'].focusOptions.preventScroll,true);
+  f.click('preset-cancel');assert.equal(f.nodes['preset-confirmation'].hidden,true);assert.equal(f.events.length,0);
+  f.click('preset-clear');assert.match(f.nodes['preset-confirm-text'].textContent,/Delete P2/);f.select(8);f.click('preset-confirm');assert.equal(f.events.length,0);
+  f.select(2);f.click('preset-save');f.click('preset-confirm');assert.equal(f.events[0].type,'preset.save');assert.equal(f.events[0].slot,2);f.result('no_change');
+  f.click('preset-clear');f.click('preset-confirm');assert.equal(f.events[1].type,'preset.clear');assert.equal(f.events[1].slot,2);
+  const presets=Array.from({length:8},(_,i)=>f.read.preset(i));presets[1]=0;f.result('applied',{presets});
+  assert.equal(f.read.preset(1),0);assert.equal(f.nodes['preset-load'].disabled,true);assert.equal(f.read.channel(1),0,'clear does not fabricate channel values');
+});
+
+test('remote bulk changes invalidate stale overwrite consent even when occupancy remains occupied',()=>{
+  const f=operationsFixture();f.select(2);f.click('preset-save');f.publish({},true);
+  assert.equal(f.nodes['preset-confirmation'].hidden,true);f.click('preset-confirm');assert.equal(f.events.length,0);
+  f.click('preset-save');f.presetView.leave();f.click('preset-confirm');assert.equal(f.events.length,0);
+});
+
+test('corrupt/error slots remain distinct; no destructive clear bypass or unsupported renaming',()=>{
+  const f=operationsFixture();f.select(3);assert.equal(f.nodes['preset-load'].disabled,true);assert.equal(f.nodes['preset-clear'].disabled,true);assert.equal(f.nodes['preset-save'].disabled,false);
+  f.click('preset-save');assert.match(f.nodes['preset-confirm-text'].textContent,/Overwrite P3/);assert.equal(f.events.length,0);
+  f.select(4);assert.equal(f.nodes['preset-save'].disabled,true);f.click('preset-save');assert.equal(f.events.length,0);assert.match(f.slots[3].children[0].textContent,/Storage error/);
+});
+
+test('occupied load has no dialog, publishes all512 values, keeps P8 identity and rejects empty load locally',()=>{
+  const f=operationsFixture();assert.equal(f.operations.run('preset.load',1),false);assert.equal(f.events.length,0);
+  f.select(8);f.click('preset-load');assert.equal(f.nodes['preset-confirmation'].hidden,true);assert.equal(f.events[0].slot,8);
+  f.result('applied',{values:Array(512).fill(37)});for(let i=1;i<=512;++i)assert.equal(f.read.channel(i),37);
+  assert.equal(f.card().value.textContent,'37');assert.match(f.nodes['preset-feedback'].textContent,/P8 load confirmed/);
+});
+
+test('blackout is explicit, authoritative, one pending operation and burst-suppressed without queued toggles',()=>{
+  const f=operationsFixture();assert.equal(f.operations.run('blackout.set',true),true);assert.equal(f.read.current().blackout,false);
+  for(let i=0;i<20;++i)assert.equal(f.operations.run('blackout.set',false),false);
+  assert.equal(f.events.length,1);assert.equal(f.events[0].active,true);assert.equal(f.operations.canBlackout(),false);
+  f.result('applied',{blackout:true});assert.equal(f.read.current().blackout,true);assert.equal(f.operations.canBlackout(),false);
+  f.elapse(350);assert.equal(f.operations.canBlackout(),true);assert.equal(f.operations.run('blackout.set',false),true);assert.equal(f.events[1].active,false);
+  f.result('applied',{blackout:false});assert.equal(f.read.current().blackout,false);assert.equal(f.events.length,2);
+});
+
+test('local critical operation bypasses unsent fader backlog but preserves already sent order',()=>{
+  const f=operationsFixture();for(let ch=1;ch<=8;++ch)f.control.edit(ch,100+ch);
+  assert.equal(f.events.length,1);assert.equal(f.client.pending().write.id,1);
+  assert.equal(f.operations.run('blackout.set',true),true);assert.equal(f.events.length,2);assert.equal(f.events[1].id,2);
+  assert.equal(f.control.pending(),0);assert.equal(f.control.edit(1,200),false);assert.ok(f.client.pending().write);
+  f.reply(f.events[0]);f.result('applied',{blackout:true});f.elapse(1000);assert.equal(f.events.length,2,'no obsolete final replay');
+});
+
+test('remote preset/blackout boundaries cancel a held range and numeric draft, including no-op bulk',()=>{
+  for(const patch of [{values:Array(512).fill(37)},{blackout:true}]){
+    const f=operationsFixture(),c=f.card();c.input.listeners.pointerdown();c.input.value='100';c.input.listeners.input();
+    f.publish(patch,true);f.reply(f.events[0],'applied',false);const sent=f.events.length;
+    c.input.value='200';c.input.listeners.input();c.input.listeners.change();c.input.listeners.pointerup();assert.equal(f.events.length,sent);
+    c.value.listeners.click();c.field.value='222';f.publish({},true);f.submit(c);assert.equal(c.form.hidden,true);assert.equal(f.events.length,sent);
+  }
+});
+
+test('operation and channel traffic share18 rolling mutation credits; budget denial never retries an intent',()=>{
+  const f=operationsFixture();for(let i=0;i<18;++i)assert.equal(f.control.reserveOperation(),true);
+  assert.equal(f.operations.available(),false);assert.equal(f.operations.run('preset.save',1),false);assert.equal(f.events.length,0);
+  assert.equal(f.operations.current().last.status,'not_sent');f.elapse(1002);assert.equal(f.operations.available(),true);assert.equal(f.events.length,0);
+  assert.equal(f.operations.run('preset.save',1),true);f.result('no_change');assert.equal(f.events.length,1);
+});
+
+test('lost operation ack leaves an honest uncertain outcome, closes generation and never replays',()=>{
+  const f=operationsFixture();f.operations.run('preset.save',1);f.publish({presets:Array(8).fill(1)});f.elapse(5000);
+  assert.equal(f.read.current().ready,false);assert.equal(f.operations.current().pending,null);assert.equal(f.operations.current().last.status,'uncertain');
+  f.socket.end();f.next();const fresh=f.ready();f.presetView.render();assert.equal(fresh.sent.length,0);
+  assert.equal(f.operations.current().last.status,'uncertain');assert.match(f.nodes['preset-feedback'].textContent,/outcome unknown/);
+});
+
+test('storage error may have persisted data; result stays failed while read-only snapshot repairs occupancy',()=>{
+  const f=operationsFixture();f.operations.run('preset.save',1);f.result('storage_error');
+  assert.equal(f.operations.current().last.status,'failed');assert.equal(f.read.current().ready,false);
+  const request=JSON.parse(f.socket.sent.at(-1));assert.equal(request.type,'state.request');
+  f.socket.message(snapshot({id:request.id,seq:'99',presets:Array(8).fill(1)}));f.presetView.render();
+  assert.equal(f.read.preset(0),1);assert.equal(f.operations.current().last.status,'failed');assert.match(f.nodes['preset-feedback'].textContent,/Persistent slot may have changed/);
+  assert.equal(f.events.filter(e=>e.type==='preset.save').length,1);
+});
+
+test('disconnect cancels confirmations and pending actions; fresh synchronization enables only deliberate new requests',()=>{
+  const f=operationsFixture();f.select(2);f.click('preset-save');f.socket.end();f.presetView.render();
+  assert.equal(f.nodes['preset-confirmation'].hidden,true);f.click('preset-confirm');assert.equal(f.events.length,0);
+  f.next();const fresh=f.ready();f.presetView.render();assert.equal(fresh.sent.length,0);assert.equal(f.operations.available(),true);
+  f.operations.run('preset.save',1);fresh.end();assert.equal(f.operations.current().last.status,'uncertain');
+  f.client.resume();assert.equal(f.client.pending().operation,null);
+});
+
+test('flag-only remote blackout invalidates old held inputs without adding a browser blackout interpretation',()=>{
+  const f=operationsFixture(),c=f.card();c.input.listeners.pointerdown();c.input.value='50';c.input.listeners.input();f.reply(f.events[0]);
+  const count=f.events.length;
+  f.socket.message({...envelope('state.update',String(BigInt(f.read.current().seq)+1n),String(BigInt(f.read.current().revision)+1n)),blackout:true,sender:true});
+  c.input.value='200';c.input.listeners.input();c.input.listeners.pointerup();assert.equal(f.events.length,count);
+  c.input.listeners.pointerdown();c.input.value='60';c.input.listeners.input();assert.equal(f.control.preview(1),60,'new deliberate working-value edits remain allowed during blackout');
+});
+
+test('foreground resync during an operation retains uncertainty and blocks new mutations until old request settles',()=>{
+  const f=operationsFixture();f.operations.run('preset.save',1);f.client.resync();
+  assert.equal(f.operations.current().last.status,'uncertain');const request=JSON.parse(f.socket.sent.at(-1));
+  f.socket.message(snapshot({id:request.id,seq:'99'}));assert.equal(f.read.current().ready,true);assert.equal(f.operations.available(),false);assert.equal(f.control.available(),false);
+  assert.equal(f.operations.run('preset.save',1),false);
+  f.result('no_change');assert.equal(f.operations.current().last.status,'uncertain');assert.equal(f.operations.available(),true);assert.equal(f.control.available(),true);
+});
+
+test('background cancels all operation timers and callbacks; lifecycle reconnect never replays',()=>{
+  const f=operationsFixture();f.operations.run('blackout.set',true);assert.ok(f.jobs.size>=2);
+  const late=f.socket.onmessage;f.client.suspend();assert.equal(f.jobs.size,0);assert.equal(f.operations.current().last.status,'uncertain');
+  f.client.resume();f.socket.end();const fresh=f.ready();
+  late({data:JSON.stringify({...envelope('command.ack','99','9007199254740993',1),status:'no_change',domain:0})});
+  assert.equal(fresh.sent.length,0);assert.equal(f.operations.current().pending,null);assert.equal(f.operations.current().last.status,'uncertain');
+});
+
+test('metadata recovery broadcast followed by a higher-sequence health snapshot completes without false stale state',()=>{
+  const f=operationsFixture();f.next();const request=JSON.parse(f.socket.sent.at(-1));assert.equal(request.type,'state.request');
+  f.publish({presets:Array(8).fill(1)},true);assert.equal(f.client.pending().pending,request.id);
+  f.socket.message(snapshot({id:request.id,seq:String(BigInt(f.read.current().seq)+1n),revision:f.read.current().revision,presets:Array(8).fill(1)}));
+  assert.equal(f.client.pending().pending,null);assert.equal(f.read.current().ready,true);assert.equal(f.read.preset(7),1);
+  assert.equal(f.events.filter(e=>e.type!=='state.request').length,0);
+});
+
+
+test('loaded identity is authoritative, selection-independent, modified and rehydrated by a complete snapshot',()=>{
+  const f=operationsFixture();f.publish({presets:Array(8).fill(1),loaded:3,modified:false});
+  assert.match(f.slots[2].children[0].textContent,/Loaded/);assert.equal(f.slots[2].dataset.loaded,'true');
+  f.select(5);assert.match(f.slots[2].children[0].textContent,/Loaded/);assert.equal(f.slots[4].attrs['aria-pressed'],'true');
+  f.publish({loaded:3,modified:true});assert.match(f.slots[2].children[0].textContent,/Modified/);
+  f.publish({loaded:5,modified:false,blackout:true});assert.match(f.slots[4].children[0].textContent,/Loaded/);
+  f.publish({loaded:3,modified:true,blackout:false});assert.match(f.slots[2].children[0].textContent,/Modified/);
+  f.publish({loaded:0,modified:false});assert.ok(f.slots.every(slot=>slot.dataset.loaded==='false'));
+  f.socket.end();f.presetView.render();assert.ok(f.slots.every(slot=>slot.dataset.loaded==='false'));
+  const peer=fixture();peer.client.start();const sock=peer.sockets[0];sock.open();sock.message(hello());sock.message(snapshot({loaded:8,modified:true}));
+  assert.equal(peer.read.current().loaded,8);assert.equal(peer.read.current().modified,true);
+  for(const patch of [{loaded:9},{loaded:-1},{loaded:'3'},{modified:1},{loaded:0,modified:true}])assert.throws(()=>parse(snapshot(patch)));
+  const missing=snapshot();delete missing.loaded;assert.throws(()=>parse(missing));
+});
+function presetTap(f, slot, {x=20,y=20,move=0,duration=30,cancel=false,detail=1}={}) {
+  const e={clientX:x,clientY:y,pointerId:1,isPrimary:true,button:0},tile=f.slots[slot-1];
+  tile.listeners.pointerdown(e);f.advance(duration);
+  if(move)tile.listeners.pointermove({...e,clientX:x+move});
+  tile.listeners[cancel?'pointercancel':'pointerup'](e);
+  tile.listeners.click({detail});
+}
+test('preset pointer pair loads once, native dblclick is not a second path; explicit Load and keyboard remain',()=>{
+  const f=operationsFixture();presetTap(f,2);assert.equal(f.events.length,0);
+  f.advance(60);presetTap(f,2);assert.equal(f.events.length,1);assert.equal(f.events[0].type,'preset.load');assert.equal(f.events[0].slot,2);
+  assert.equal(f.slots[1].listeners.dblclick,undefined);presetTap(f,2);assert.equal(f.events.length,1);
+  f.result('no_change');f.click('preset-load');assert.equal(f.events.length,2);f.result('no_change');
+  f.slots[1].listeners.click({detail:0});assert.equal(f.events.length,2,'keyboard selects, explicit Load remains available');
+});
+test('preset pairs reject empty slots, movement, scroll cancellation, long press, intervening tile and expired first tap',()=>{
+  for(const options of [{move:25},{cancel:true},{duration:450}]) {
+    const f=operationsFixture();presetTap(f,2,options);presetTap(f,2);assert.equal(f.events.length,0);
+  }
+  const f=operationsFixture();presetTap(f,1);presetTap(f,1);assert.equal(f.events.length,0);
+  presetTap(f,2);presetTap(f,8);presetTap(f,2);assert.equal(f.events.length,0);
+  f.advance(500);presetTap(f,2);assert.equal(f.events.length,0);
+  f.presetView.leave();presetTap(f,2);assert.equal(f.events.length,0);
+  f.socket.end();presetTap(f,2);presetTap(f,2);assert.equal(f.events.length,0,'offline pair never queues a mutation');
+});
+test('preset action and authoritative boundaries cancel a pending first tap',()=>{
+  const f=operationsFixture();presetTap(f,2);f.publish({},true);presetTap(f,2);assert.equal(f.events.length,0);
+  f.click('preset-save');f.click('preset-cancel');presetTap(f,2);assert.equal(f.events.length,0,'Save/confirmation controls are not preset tile taps');
+});
+
+test('cancelled or cross-tile pointer clicks cannot change the single logical selection',()=>{
+  const f=operationsFixture();f.select(5);
+  for(const options of [{move:25},{cancel:true},{duration:450}]) {
+    presetTap(f,2,options);assert.equal(f.slots[4].attrs['aria-pressed'],'true');
+    assert.equal(f.slots.filter(slot=>slot.attrs['aria-pressed']==='true').length,1);assert.equal(f.events.length,0);
+  }
+  const e={clientX:20,clientY:20,pointerId:1,isPrimary:true,button:0};
+  f.slots[1].listeners.pointerdown(e);f.slots[2].listeners.pointerup(e);f.slots[2].listeners.click({detail:1,pointerType:'touch'});
+  assert.equal(f.slots[4].attrs['aria-pressed'],'true');assert.equal(f.events.length,0);
+  f.slots[2].listeners.click({detail:0});assert.equal(f.slots[2].attrs['aria-pressed'],'true','keyboard selection works after cancellation');
+});
+test('touch click with zero detail still requires a valid release, and a pair loads exactly once',()=>{
+  const f=operationsFixture();const tile=f.slots[1],e={clientX:20,clientY:20,pointerId:1,isPrimary:true,button:0};
+  for(let i=0;i<2;++i){tile.listeners.pointerdown(e);f.advance(30);tile.listeners.pointerup(e);tile.listeners.click({detail:0,pointerType:'touch'});f.advance(30);}
+  assert.equal(f.events.length,1);assert.equal(f.events[0].type,'preset.load');f.result('no_change');
+  f.select(5);tile.listeners.pointerdown(e);tile.listeners.pointercancel();tile.listeners.click({detail:0,pointerType:'touch'});
+  assert.equal(f.slots[4].attrs['aria-pressed'],'true');assert.equal(f.events.length,1);
+});
 console.log('PASS '+groups+' live integration groups; no hardware/electrical assertions');

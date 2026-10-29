@@ -126,6 +126,7 @@ void presets() {
     r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,0));r.drain(t);
     r.send(t,"{\"v\":1,\"id\":3,\"type\":\"preset.load\",\"slot\":1}");r.apply();r.drain(t);CHECK(r.controller.channel(1)==70);
     r.storage.fail_save=true;r.send(t,"{\"v\":1,\"id\":4,\"type\":\"preset.save\",\"slot\":2}");r.apply();
+    CHECK(r.bridge.take(t,r.event)&&r.event.kind==Kind::universe);
     CHECK(r.bridge.take(t,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);
 }
 void boundsAndCleanup() {
@@ -316,5 +317,141 @@ void activeWebControl() {
     r.send(writer,channel(id++,1,60));r.send(observer,channel(3,1,70));r.apply();r.apply();
     CHECK(r.controller.channel(1)==70&&r.controller.workingPacket()[0]==0);
 }
-int main(){activeWebControl();protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();stabilityBackpressure();httpRejectionDiagnostics();diagnosticBounds();
+struct PublicationProbe {
+    DmxController& controller;unsigned calls=0;uint8_t packet[513]{};
+    explicit PublicationProbe(DmxController& c):controller(c){}
+    static int publish(void* context,const ControllerCommand&) {
+        auto& p=*static_cast<PublicationProbe*>(context);++p.calls;memcpy(p.packet,p.controller.outputPacket(),513);return 0;
+    }
+};
+std::string presetCommand(unsigned id,const char* type,int slot) {
+    return "{\"v\":1,\"id\":"+std::to_string(id)+",\"type\":\""+type+"\",\"slot\":"+std::to_string(slot)+"}";
+}
+void webPresetBlackoutOperations() {
+    Rig r;auto a=r.connect(),b=r.connect(),c=r.connect();PublicationProbe pub(r.controller);
+    r.dispatcher.setPublisher(PublicationProbe::publish,&pub);unsigned id=0;
+    auto drain=[&](){r.drain(a);r.drain(b);r.drain(c);};
+    auto send=[&](const char* type,int slot){r.clock+=1001;r.send(a,presetCommand(++id,type,slot));r.apply();};
+    auto bulkAck=[&](CommandStatus status) {
+        CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);const auto seq=r.event.sequence;
+        CHECK(r.bridge.take(b,r.event)&&r.event.kind==Kind::universe&&r.event.sequence==seq);
+        CHECK(r.bridge.take(c,r.event)&&r.event.kind==Kind::universe&&r.event.sequence==seq);
+        CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::ack&&r.event.id==id&&r.event.result==status&&r.event.sequence>seq);
+        CHECK(!r.bridge.take(a,r.event)&&!r.bridge.take(b,r.event)&&!r.bridge.take(c,r.event));
+    };
+    const char* invalid[]={
+        R"({"v":1,"id":1,"type":"preset.load","slot":0})",
+        R"({"v":1,"id":1,"type":"preset.save","slot":9})",
+        R"({"v":1,"id":1,"type":"preset.clear","slot":-1})",
+        R"({"v":1,"id":1,"type":"preset.save","slot":"1"})",
+        R"({"v":1,"id":1,"type":"preset.save","slot":1.5})",
+        R"({"v":1,"id":1,"type":"preset.save","slot":true})",
+        R"({"v":1,"id":1,"type":"preset.clear"})",
+        R"({"v":1,"id":1,"type":"preset.delete","slot":1})",
+        R"({"v":1,"id":1,"type":"preset.save","slot":1,"target":2})",
+        R"({"v":1,"id":1,"type":"blackout.set","active":1})",
+        R"({"v":1,"id":1,"type":"blackout.set","active":"true"})",
+        R"({"v":1,"id":1,"type":"blackout.set","active":null})",
+        R"({"v":1,"id":1,"type":"blackout.set"})"
+    };
+    for(const auto text:invalid) {
+        r.clock+=1001;r.send(a,text);r.apply();
+        CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error);drain();
+        CHECK(r.storage.saves==0&&r.storage.metadata_writes==0&&r.controller.revision()==0&&pub.calls==0&&!r.controller.blackoutActive());
+    }
+    send("preset.load",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.domain==unsigned(DmxController::Result::empty));drain();
+    r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,77));drain();
+    const auto calls=pub.calls;const auto revision=r.controller.revision();
+    send("preset.save",1);CHECK(r.storage.saves==1&&r.controller.revision()==revision+1&&pub.calls==calls&&r.controller.outputPacket()[1]==77);
+    CHECK(r.storage.packets[0][0]==0&&r.storage.packets[0][1]==77&&r.controller.presetExists(0));bulkAck(CommandStatus::applied);
+    send("preset.save",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::ack&&r.event.result==CommandStatus::no_change);CHECK(r.storage.saves==1&&pub.calls==calls);drain();
+    r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,12));drain();
+    send("preset.load",1);CHECK(r.controller.channel(1)==77&&pub.packet[1]==77);bulkAck(CommandStatus::applied);
+    const auto beforeNoop=r.bridge.metrics();const auto noopRevision=r.controller.revision();
+    send("preset.load",1);CHECK(r.controller.revision()==noopRevision);bulkAck(CommandStatus::no_change);
+    CHECK(r.bridge.metrics().controller_events==beforeNoop.controller_events&&r.bridge.metrics().broadcasts==beforeNoop.broadcasts+1);
+    r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,12));drain();
+    r.clock+=1001;r.send(a,blackout(++id,true));r.apply();bulkAck(CommandStatus::applied);
+    r.clock+=1001;r.send(a,channel(++id,1,99));r.apply();drain();CHECK(r.controller.outputPacket()[1]==0);
+    send("preset.save",8);CHECK(r.storage.packets[7][1]==99&&r.controller.outputPacket()[1]==0);bulkAck(CommandStatus::applied);
+    send("preset.load",1);CHECK(r.controller.channel(1)==77&&r.controller.outputPacket()[1]==0);bulkAck(CommandStatus::applied);
+    const auto beforeClear=pub.calls;send("preset.clear",8);CHECK(pub.calls==beforeClear&&r.storage.mask==128&&r.storage.packets[7][1]==99&&!r.controller.presetExists(7));bulkAck(CommandStatus::applied);
+    r.clock+=1001;r.send(a,blackout(++id,true));r.apply();CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::ack&&r.event.result==CommandStatus::no_change);drain();
+    r.clock+=1001;r.send(a,blackout(++id,false));r.apply();CHECK(r.controller.channel(1)==12&&r.controller.outputPacket()[1]==12);bulkAck(CommandStatus::applied);
+    const auto writes=r.storage.saves;const auto stable=r.controller.revision();
+    r.storage.fail_save=true;send("preset.save",2);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();
+    CHECK(r.storage.saves==writes&&r.controller.revision()==stable&&r.controller.channel(1)==12);r.storage.fail_save=false;
+    r.storage.fail_metadata_write=true;send("preset.save",8);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();
+    CHECK(r.storage.saves==writes+1&&r.storage.mask==128&&r.controller.revision()==stable&&!r.controller.presetExists(7));
+    send("preset.clear",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();CHECK(r.controller.presetExists(0));r.storage.fail_metadata_write=false;
+    r.storage.fail_load=true;send("preset.load",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();CHECK(r.controller.channel(1)==12);r.storage.fail_load=false;
+    r.storage.states[2]=DmxPresetStorage::SlotState::corrupt;
+    send("preset.load",3);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error);drain();
+    send("preset.clear",3);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error);drain();
+    // Cross-client serialization: already received writes cannot be canceled by a browser.
+    r.clock+=1001;r.send(a,channel(++id,1,33));r.send(b,presetCommand(1,"preset.load",1));r.apply();r.apply();drain();CHECK(r.controller.channel(1)==77);
+    r.send(c,channel(1,1,44));r.apply();drain();CHECK(r.controller.channel(1)==44);
+    // An admitted save can complete after disconnection; the replacement sees its occupancy.
+    r.clock+=1001;r.send(a,presetCommand(++id,"preset.save",2));r.bridge.ownerPoll(true);r.bridge.close(a);r.dispatcher.process();
+    auto replacement=r.connect();CHECK(r.controller.presetExists(1)&&r.event.values[0]==44&&r.event.presets[1]==1);r.bridge.close(replacement);drain();
+    const auto stableOutput=pub.calls;
+    r.clock+=1001;r.send(b,presetCommand(2,"preset.save",3));r.send(c,presetCommand(2,"preset.clear",1));r.apply();r.apply();drain();
+    CHECK(r.controller.presetExists(2)&&!r.controller.presetExists(0)&&r.controller.channel(1)==44&&pub.calls==stableOutput);
+    const auto metadataWrites=r.storage.metadata_writes;
+    r.send(c,presetCommand(2,"preset.clear",1));r.apply();CHECK(r.bridge.take(c,r.event)&&r.event.kind==Kind::error&&r.event.reason&&!strcmp(r.event.reason,"id_order"));drain();
+    CHECK(r.storage.metadata_writes==metadataWrites);
+    r.dispatcher.setSenderActive(false);r.send(b,presetCommand(3,"preset.load",3));r.bridge.ownerPoll(false);
+    bool universe=false;while(r.bridge.take(b,r.event))if(r.event.kind==Kind::universe)universe=true;
+    CHECK(!universe&&r.controller.channel(1)==44);
+}
+void presetObservationRecovery() {
+    Rig r;auto a=r.connect(),b=r.connect();const auto revision=r.controller.revision();
+    r.storage.states[1]=DmxPresetStorage::SlotState::error;
+    r.send(a,presetCommand(1,"preset.save",2));r.apply();
+    CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==3&&r.event.revision==revision);
+    CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);
+    CHECK(r.bridge.take(b,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==3);
+    // A later read can recover; a prior error must not stick forever in the cache.
+    r.storage.states[1]=DmxPresetStorage::SlotState::valid;r.storage.packets[1][1]=42;
+    const auto inspections=r.storage.inspections;
+    r.send(a,R"({"v":1,"id":2,"type":"state.request"})");r.apply();
+    CHECK(r.storage.inspections>inspections&&r.controller.revision()==revision);
+    CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==1);const auto update=r.event.sequence;
+    CHECK(r.bridge.take(b,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==1&&r.event.sequence==update);
+    CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::snapshot&&r.event.id==2&&r.event.sequence>update&&r.event.presets[1]==1);
+    CHECK(r.storage.saves==0&&r.storage.metadata_writes==0&&r.controller.channel(1)==0);
+    const auto reads=r.storage.inspections;
+    r.send(a,R"({"v":1,"id":3,"type":"state.request"})");r.apply();CHECK(r.storage.inspections==reads);r.drain(a);r.drain(b);
+}
+
+void loadedPresetSync() {
+    Rig r;r.controller.setChannel(1,12);r.controller.savePreset(2);r.controller.savePreset(4);
+    auto a=r.connect(),b=r.connect();CHECK(r.event.loaded==0&&!r.event.modified);
+    auto local=[&](ControllerCommand c){return r.dispatcher.executeLocal(c);};
+    local(ControllerCommand::presetCommand(CommandType::load_preset,2));
+    for(auto t:{a,b}) {CHECK(r.bridge.take(t,r.event)&&r.event.kind==Kind::universe&&r.event.loaded==3&&!r.event.modified);r.drain(t);}
+    auto revision=r.controller.revision();
+    local(ControllerCommand::channelCommand(CommandType::set_channel,1,13));
+    for(auto t:{a,b}) {CHECK(r.bridge.take(t,r.event)&&r.event.kind==Kind::channel&&r.event.loaded==3&&r.event.modified);r.drain(t);}
+    CHECK(r.controller.revision()==revision+1);
+    // Both clients load in admitted order. Last application wins, even identical values.
+    r.send(a,R"({"v":1,"id":1,"type":"preset.load","slot":3})");
+    r.send(b,R"({"v":1,"id":1,"type":"preset.load","slot":5})");r.apply();r.apply();
+    for(auto t:{a,b}) {
+        unsigned found=0;while(r.bridge.take(t,r.event))if(r.event.kind==Kind::universe){++found;CHECK(r.event.loaded==(found==1?3:5)&&!r.event.modified);}
+        CHECK(found==2);
+    }
+    CHECK(r.controller.loadedPreset()==5);r.bridge.close(a);auto c=r.connect();CHECK(r.event.loaded==5&&!r.event.modified);
+    char json[max_json];CHECK(encode(r.event,json,sizeof(json)));CHECK(strstr(json,"\"loaded\":5,\"modified\":false"));
+    local(ControllerCommand::blackoutCommand(true));r.drain(b);r.drain(c);
+    local(ControllerCommand::presetCommand(CommandType::load_preset,2));r.drain(b);r.drain(c);
+    local(ControllerCommand::channelCommand(CommandType::set_channel,1,99));r.drain(b);r.drain(c);
+    CHECK(r.controller.outputPacket()[1]==0&&r.controller.loadedPreset()==3&&r.controller.loadedPresetModified());
+    local(ControllerCommand::blackoutCommand(false));
+    for(auto t:{b,c}){CHECK(r.bridge.take(t,r.event)&&r.event.loaded==5&&!r.event.modified&&r.event.values[0]==12);r.drain(t);}
+    local(ControllerCommand::presetCommand(CommandType::clear_preset,4));
+    for(auto t:{b,c}){CHECK(r.bridge.take(t,r.event)&&r.event.loaded==0&&!r.event.modified);r.drain(t);}
+}
+
+int main(){loadedPresetSync();presetObservationRecovery();webPresetBlackoutOperations();activeWebControl();protocol();wireProtocol();lifecycleAndOrder();snapshotRaceAndSources();blackoutAndFailure();inFlightDisconnectAndLatest();presets();boundsAndCleanup();crossTaskStress();pumpRegression();stabilityBackpressure();httpRejectionDiagnostics();diagnosticBounds();
     printf("PASS protocol/session/revision/snapshot races/Dispatcher/touch/blackout/mode/presets/backpressure/generation/cleanup/cross-task stress; Bridge=%zu Event=%zu Request=%zu\n",sizeof(Bridge),sizeof(Event),sizeof(Request));}

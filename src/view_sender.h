@@ -4,6 +4,7 @@
 #include "common.h"
 #include "logo_sender.h"
 #include "dmx_controller.h"
+#include "preset_double_tap.h"
 #include "command_dispatcher.h"
 #include "dmx_transport.h"
 #include "hardware_diagnostics.h"
@@ -160,6 +161,7 @@ class view_sender_t : public view_t {
             // PRESET OPTIONS MODAL
             // --------------------------------------------------
             if (preset_options_screen) {
+                preset_double_tap.reset();
 
                 // Consume the release of the long-press that opened
                 // the modal so it cannot accidentally press an option.
@@ -202,6 +204,12 @@ class view_sender_t : public view_t {
             // NORMAL PRESET GRID
             // --------------------------------------------------
 
+            if (preset_copy_mode) preset_double_tap.reset();
+            const int tapped_slot = getPresetSlotAt(tp.x, tp.y);
+            const bool double_load = !preset_copy_mode && preset_double_tap.sample(
+                tapped_slot, tp.wasPressed(), tp.isPressed(), tp.wasClicked(),
+                tp.x, tp.y, millis());
+
             // Long-pressing an occupied P1-P8 opens COPY/CLEAR options.
             if (!preset_copy_mode &&
                 handlePresetSlotLongPress(tp)) {
@@ -222,7 +230,8 @@ class view_sender_t : public view_t {
 
                 handlePresetScreenTouch(
                     tp.base_x,
-                    tp.base_y
+                    tp.base_y,
+                    double_load
                 );
 
                 modified = true;
@@ -526,6 +535,7 @@ class view_sender_t : public view_t {
     bool preset_screen      = false;
     uint8_t selected_preset = 0;
     char preset_status[32]  = "";
+    PresetDoubleTap preset_double_tap;
 
     M5Canvas canvas[2];
     bool canvas_flip;
@@ -3159,6 +3169,7 @@ bool loadPreset(uint8_t slot) {
     }
 
     void openPresetScreen(void) {
+        preset_double_tap.reset();
         resetPrecisionState();
         setActiveFullscreenPage(fullscreen_page_preset);
         preset_screen = true;
@@ -3187,6 +3198,7 @@ bool loadPreset(uint8_t slot) {
     }
 
     void closePresetScreen(void) {
+        preset_double_tap.reset();
         preset_screen = false;
         setActiveFullscreenPage(fullscreen_page_none);
 
@@ -3275,6 +3287,14 @@ bool loadPreset(uint8_t slot) {
                 x + (preset_slot_w >> 1),
                 y + (preset_slot_h >> 1)
             );
+
+            // Loaded provenance is independent of the white selection outline.
+            if (controller.loadedPreset() == slot + 1) {
+                M5.Display.setFont(&fonts::Font0);
+                M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
+                M5.Display.drawString(controller.loadedPresetModified() ? "MODIFIED" : "LOADED",
+                    x + (preset_slot_w >> 1), y + preset_slot_h - 7);
+            }
 
             // Green square = preset contains stored DMX data.
             if (occupied) {
@@ -3928,7 +3948,7 @@ bool loadPreset(uint8_t slot) {
     }
 
 
-    void handlePresetScreenTouch(int touch_x, int touch_y) {
+    void handlePresetScreenTouch(int touch_x, int touch_y, bool double_load) {
         // ------------------------------------------------------
         // Select P1-P8
         // ------------------------------------------------------
@@ -3969,7 +3989,8 @@ bool loadPreset(uint8_t slot) {
                 }
 
                 selected_preset = slot;
-                preset_status[0] = '\0';
+                if (double_load && presetExists(slot)) loadPreset(slot);
+                else preset_status[0] = '\0';
 
                 drawPresetScreen();
                 return;

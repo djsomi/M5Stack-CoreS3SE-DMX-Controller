@@ -16,11 +16,13 @@ void DmxController::changed(ChangeKind kind, uint16_t channel, uint8_t slot) {
 }
 
 void DmxController::reset() {
-    bool dirty = blackout_;
+    bool dirty = blackout_ || loaded_preset_ || restore_loaded_preset_;
     for (size_t i = 0; i < packet_size; ++i) dirty = dirty || working_[i] || restore_[i];
     memset(working_, 0, sizeof(working_));
     memset(restore_, 0, sizeof(restore_));
     blackout_ = false;
+    loaded_preset_ = restore_loaded_preset_ = 0;
+    loaded_modified_ = restore_loaded_modified_ = false;
     if (dirty) changed(ChangeKind::reset);
 }
 
@@ -33,6 +35,7 @@ DmxController::Result DmxController::setChannel(int index, int value) {
     if (value < 0 || value > 255) return Result::invalid_value;
     if (working_[index] != value) {
         working_[index] = static_cast<uint8_t>(value);
+        if (loaded_preset_) loaded_modified_ = true;
         changed(ChangeKind::channel, static_cast<uint16_t>(index));
     }
     return Result::ok;
@@ -61,7 +64,10 @@ DmxController::Result DmxController::setChannels(const DmxChannelValue* values, 
         dirty = dirty || working_[values[i].channel] != values[i].value;
         working_[values[i].channel] = static_cast<uint8_t>(values[i].value);
     }
-    if (dirty) changed(ChangeKind::universe);
+    if (dirty) {
+        if (loaded_preset_) loaded_modified_ = true;
+        changed(ChangeKind::universe);
+    }
     return Result::ok;
 }
 
@@ -74,9 +80,13 @@ void DmxController::setBlackout(bool active) {
     if (active == blackout_) return;
     if (active) {
         memcpy(restore_, working_, sizeof(working_));
+        restore_loaded_preset_ = loaded_preset_;
+        restore_loaded_modified_ = loaded_modified_;
     } else {
         memcpy(working_, restore_, sizeof(working_));
         working_[0] = 0;
+        loaded_preset_ = restore_loaded_preset_;
+        loaded_modified_ = restore_loaded_modified_;
     }
     blackout_ = active;
     changed(ChangeKind::blackout);
@@ -125,7 +135,11 @@ DmxController::Result DmxController::loadPreset(uint8_t slot) {
     uint8_t packet[packet_size] = {};
     if (!storage_.load(slot, packet)) return Result::read_failed;
     packet[0] = 0;
-    if (memcmp(working_, packet, sizeof(working_)) != 0) {
+    const bool dirty = memcmp(working_, packet, sizeof(working_)) != 0 ||
+        loaded_preset_ != slot + 1 || loaded_modified_;
+    loaded_preset_ = slot + 1;
+    loaded_modified_ = false;
+    if (dirty) {
         memcpy(working_, packet, sizeof(working_));
         changed(ChangeKind::universe);
     }
@@ -142,8 +156,16 @@ DmxController::Result DmxController::savePreset(uint8_t slot) {
         if (!storage_.load(slot, saved)) return Result::read_failed;
         if (memcmp(saved, working_, packet_size) == 0) return Result::ok;
     }
-    if (!storage_.save(slot, working_)) return Result::write_failed;
-    if (!markCleared(slot, false)) return Result::metadata_failed;
+    // Even a failed partial replacement invalidates old load provenance.
+    const bool invalidated = invalidateLoaded(slot);
+    if (!storage_.save(slot, working_)) {
+        if (invalidated) changed(ChangeKind::preset, 0, slot);
+        return Result::write_failed;
+    }
+    if (!markCleared(slot, false)) {
+        if (invalidated) changed(ChangeKind::preset, 0, slot);
+        return Result::metadata_failed;
+    }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
 }
@@ -170,7 +192,22 @@ DmxController::Result DmxController::clearPreset(uint8_t slot) {
     Result result = readablePreset(slot);
     if (result != Result::ok) return result;
     // Keep the legacy blob; logical occupancy is the existing cleared mask.
-    if (!markCleared(slot, true)) return Result::metadata_failed;
+    const bool invalidated = invalidateLoaded(slot);
+    if (!markCleared(slot, true)) {
+        if (invalidated) changed(ChangeKind::preset, 0, slot);
+        return Result::metadata_failed;
+    }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
+}
+
+bool DmxController::invalidateLoaded(uint8_t slot) {
+    bool dirty = false;
+    if (loaded_preset_ == slot + 1) {
+        loaded_preset_ = 0; loaded_modified_ = false; dirty = true;
+    }
+    if (restore_loaded_preset_ == slot + 1) {
+        restore_loaded_preset_ = 0; restore_loaded_modified_ = false; dirty = true;
+    }
+    return dirty;
 }

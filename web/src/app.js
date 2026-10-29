@@ -25,7 +25,8 @@ const protocol = (
       extra = ["channels", "max_message", "max_clients", "max_outstanding"];
       if (message.id !== 0 || message.channels !== 512 || message.max_message !== 256 || message.max_clients !== 4 || message.max_outstanding !== 4 || sequence === 0n) fail();
     } else if (message.type === "state.snapshot" || message.type === "state.update") {
-      extra = ["blackout", "sender"];
+      extra = ["blackout", "sender", "loaded", "modified"];
+      if (!integer(message.loaded, 0, 8) || typeof message.modified !== "boolean" || (!message.loaded && message.modified)) fail("protocol_loaded");
       if (typeof message.blackout !== "boolean" || typeof message.sender !== "boolean" || sequence === 0n) fail();
       if (message.type === "state.update" && message.id !== 0) fail();
       const bulk = message.type === "state.snapshot" || "values" in message || "presets" in message;
@@ -66,11 +67,12 @@ const commands = (
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, write = null, last = null;
+    let next = 0, pending = null, write = null, operation = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
       write = null;
+      operation = null;
     }
     return {
       begin() { cancel(); next = 0; },
@@ -90,6 +92,21 @@ const commands = (
         const result = Object.freeze({...write, status: message.status, kind: message.type});
         write = null; return result;
       },
+      operation(type, argument) {
+        if (operation || next === 4294967295) return null;
+        const blackout = type === "blackout.set";
+        if (blackout ? typeof argument !== "boolean" :
+            !["preset.load", "preset.save", "preset.clear"].includes(type) ||
+            !Number.isInteger(argument) || argument < 1 || argument > 8) return null;
+        const fields = blackout ? {active: argument} : {slot: argument};
+        operation = Object.freeze({id: ++next, type, ...fields});
+        return {id: next, data: JSON.stringify({v: 1, ...operation})};
+      },
+      completeOperation(message) {
+        if (!operation || operation.id !== message.id) return null;
+        const result = Object.freeze({...operation, status: message.status, kind: message.type, domain: message.domain});
+        operation = null; return result;
+      },
       matches(id) { return !!pending && pending.id === id; },
       complete(message) {
         if (!pending || pending.id !== message.id) return false;
@@ -97,7 +114,7 @@ const commands = (
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, write, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, last})
     };
   }
   return {create};
@@ -111,13 +128,13 @@ const state = (
 () => {
   function create() {
     let values = null, presets = null, sequence = null, revision = null;
-    let ready = false, phase = "disconnected", error = "", blackout = null, sender = null;
+    let ready = false, phase = "disconnected", error = "", blackout = null, sender = null, loaded = null, modified = false, boundary = 0;
     const listeners = new Set();
     let health = Object.freeze({transportOpen: false, attempt: 0, closeCode: null, wasClean: null,
       classification: "", receivedAt: null, receivedRevision: null, renderedRevision: null, background: false, probePending: false});
     const current = () => Object.freeze({ready, hasSnapshot: !!values, phase, error,
       revision: revision === null ? null : revision.toString(), seq: sequence === null ? null : sequence.toString(),
-      blackout: ready ? blackout : null, sender: ready ? sender : null, health});
+      blackout: ready ? blackout : null, sender: ready ? sender : null, loaded: ready ? loaded : null, modified: ready && modified, boundary, health});
     function emit() { listeners.forEach(listener => listener()); }
     function connection(next, detail = "") { phase = next; error = detail; ready = false; emit(); }
     const read = Object.freeze({current,
@@ -139,9 +156,12 @@ const state = (
         const message = event.message;
         if (message.type !== "hello") {
           if (message.type === "state.update" && !ready) return "not_ready";
+          if ((message.type === "state.update" && message.values) ||
+              (ready && blackout !== message.blackout) ||
+              (message.type === "state.snapshot" && ready && event.revision !== revision)) boundary = (boundary + 1) >>> 0;
           if (message.values) { values = new Uint8Array(message.values); presets = new Uint8Array(message.presets); }
           else if (message.channel) values[message.channel - 1] = message.value;
-          blackout = message.blackout; sender = message.sender;
+          blackout = message.blackout; sender = message.sender; loaded = message.loaded; modified = message.modified;
           if (message.type === "state.snapshot") { ready = true; phase = "live"; error = ""; }
         }
         revision = event.revision; sequence = event.sequence; emit(); return "applied";
@@ -164,9 +184,10 @@ const transport = (
     let integrityFailures = 0;
     const idleMs = 15000, probeMs = 10000, resumeGraceMs = 5000;
     let probing = false, lastAuthority = 0;
-    let writeTimer = null;
-    const writeListeners = new Set();
+    let writeTimer = null, operationTimer = null;
+    const writeListeners = new Set(), operationListeners = new Set();
     function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
+    function cancelOperationTimer() { if (operationTimer !== null) runtime.clearTimeout(operationTimer); operationTimer = null; }
     const writable = () => started && !suspended && !waiting && store.read.current().ready &&
       store.read.current().sender && socket?.readyState === 1;
     const now = () => runtime.now ? runtime.now() : Date.now();
@@ -191,7 +212,7 @@ const transport = (
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); cancelWriteTimer(); ++generation; requests.cancel(); store.connection(phase, detail);
+      clear(); cancelWriteTimer(); cancelOperationTimer(); ++generation; requests.cancel(); store.connection(phase, detail);
       probing = false; store.diagnostics({transportOpen: false, probePending: false}, false);
       if (retry && detail.includes("timed out")) store.diagnostics({classification: "synchronization_timeout"}, false);
       const old = socket;
@@ -282,6 +303,14 @@ const transport = (
         const message = decoded.message;
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          const operation = requests.completeOperation(message);
+          if (operation) {
+            cancelOperationTimer();
+            if (message.type === "command.ack" && decoded.revision > BigInt(store.read.current().revision)) {
+              retire("reconnecting", "Missing authoritative operation publication"); return;
+            }
+            operationListeners.forEach(listener => listener(operation)); return;
+          }
           const result = requests.completeWrite(message);
           if (result) {
             cancelWriteTimer();
@@ -324,7 +353,7 @@ const transport = (
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); cancelWriteTimer(); ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); ++generation; requests.cancel(); probing = false;
         store.diagnostics({probePending: false}, false); schedule();
       };
     }
@@ -342,8 +371,23 @@ const transport = (
       resync,
       writable,
       onWrite(listener) { writeListeners.add(listener); return () => writeListeners.delete(listener); },
-      setChannel(channel, value) {
+      onOperation(listener) { operationListeners.add(listener); return () => operationListeners.delete(listener); },
+      setOperation(type, argument) {
         if (!writable()) return null;
+        const command = requests.operation(type, argument);
+        if (!command) return null;
+        const epoch = generation;
+        try { socket.send(command.data); }
+        catch (_) { retire("reconnecting", "Operation send failed; outcome uncertain"); return null; }
+        operationTimer = runtime.setTimeout(() => {
+          operationTimer = null;
+          if (epoch === generation && requests.current().operation?.id === command.id)
+            retire("reconnecting", "Operation acknowledgment timed out; outcome uncertain");
+        }, 5000);
+        return command.id;
+      },
+      setChannel(channel, value) {
+        if (!writable() || requests.current().operation) return null;
         const command = requests.channel(channel, value);
         if (!command) return null;
         const epoch = generation;
@@ -374,10 +418,17 @@ const control = (
   function create(read, client, runtime, notify) {
     const entries = new Map(), sent = [];
     const clock = () => runtime.clock ? runtime.clock() : Date.now();
-    let timer = null, flight = null, lastSent = -Infinity, note = "";
-    const available = () => read.current().ready && read.current().sender && client.writable();
+    let timer = null, flight = null, lastSent = -Infinity, note = "", held = false, epoch = 0;
+    let lastBoundary = read.current().boundary;
+    const available = () => !held && read.current().ready && read.current().sender && client.writable() && !client.pending().operation;
     function clearTimer() { if (timer !== null) runtime.clearTimeout(timer); timer = null; }
     function invalidate() { clearTimer(); entries.clear(); flight = null; }
+    function barrier() { invalidate(); epoch = (epoch + 1) >>> 0; }
+    function operationDelay() {
+      const now = clock();
+      while (sent.length && now - sent[0] >= 1000) sent.shift();
+      return sent.length >= 18 ? Math.max(0, 1001 - (now - sent[0])) : 0;
+    }
     function intent(channel, value, active) {
       if (!available() || !Number.isInteger(channel) || channel < 1 || channel > 512 ||
           !Number.isInteger(value) || value < 0 || value > 255) return false;
@@ -387,7 +438,7 @@ const control = (
         entry = {value, active, dirty: false, sent: false}; entries.set(channel, entry);
       }
       entry.value = value; entry.active = active; entry.dirty = true;
-      note = "CH " + channel + " preview; awaiting Controller confirmation.";
+      note = "";
       pump(); notify(); return true;
     }
     function schedule(delay) {
@@ -416,11 +467,14 @@ const control = (
       notify();
     }
     read.subscribe(() => {
-      if (!available()) { invalidate(); note = ""; }
+      if (read.current().boundary !== lastBoundary) {
+        lastBoundary = read.current().boundary; barrier();
+      }
+      if (!available()) { if (entries.size || flight) barrier(); note = ""; }
     });
     client.onWrite(result => {
       if (!flight || flight.id !== result.id) return;
-      const {channel, value} = flight; flight = null;
+      const {channel} = flight; flight = null;
       if (result.kind !== "command.ack") {
         invalidate(); note = "CH " + channel + (result.status === "transport_error" ?
           " transport failure; state may have changed." : " rejected: " + result.status + ".") +
@@ -428,14 +482,18 @@ const control = (
       } else {
         const entry = entries.get(channel);
         if (entry && !entry.active && !entry.dirty) entries.delete(channel);
-        note = "CH " + channel + " " + value + " confirmed by Controller" +
-          (read.channel(channel) !== value ? "; a newer authoritative value is shown." : ".");
+        note = "";
         pump();
       }
       notify();
     });
     return {
       available,
+      epoch: () => epoch,
+      value: channel => read.channel(channel),
+      operationDelay,
+      reserveOperation() { if (operationDelay()) return false; sent.push(clock()); return true; },
+      hold(active) { if (active) barrier(); held = active; notify(); },
       edit(channel, value) { return intent(channel, value, true); },
       setFinal(channel, value) { return intent(channel, value, false); },
       step(channel, delta) {
@@ -457,16 +515,84 @@ const control = (
         pump();
       },
       preview: channel => entries.has(channel) ? entries.get(channel).value : null,
-      note() {
-        if (note === "Channel control busy; finish existing edits first.") return note;
-        for (const [channel, entry] of entries) {
-          if (entry.active || entry.dirty || flight?.channel === channel)
-            return "CH " + channel + " preview " + entry.value + "; Controller " + read.channel(channel) +
-              (entry.active ? ". Dragging; release to confirm final value." : ". Awaiting confirmation.");
-        }
-        return note;
-      },
+      note: () => note,
       pending: () => entries.size
+    };
+  }
+  return {create};
+}
+)({});
+
+// Source: web/src/js/actions.js
+const actions = (
+// module: actions
+// requires:
+() => {
+  function create(read, client, controls, runtime, notify) {
+    const clock = () => runtime.clock ? runtime.clock() : Date.now();
+    let pending = null, last = null, timer = null, blackoutUntil = 0;
+    function refreshTimer() {
+      if (timer !== null) runtime.clearTimeout(timer);
+      timer = null;
+      const delay = Math.max(controls.operationDelay(), blackoutUntil - clock());
+      if (delay > 0 && read.current().ready) timer = runtime.setTimeout(() => { timer = null; notify(); }, delay + 1);
+    }
+    const available = () => {
+      const ready = read.current().ready && read.current().sender && client.writable() && !pending && !client.pending().operation;
+      const delay = controls.operationDelay();
+      if (ready && delay && timer === null) refreshTimer();
+      return ready && !delay;
+    };
+    const canBlackout = () => available() && clock() >= blackoutUntil;
+    function record(operation, status, message) { last = Object.freeze({...operation, status, message}); }
+    read.subscribe(() => {
+      if (!client.writable()) {
+        if (pending) record(pending, "uncertain", "Connection changed; outcome unknown. Inspect Controller state before retrying.");
+        pending = null; controls.hold(false);
+        if (timer !== null) runtime.clearTimeout(timer);
+        timer = null;
+      }
+    });
+    client.onOperation(result => {
+      if (!pending) { controls.hold(false); refreshTimer(); notify(); return; }
+      if (result.id !== pending.id) return;
+      pending = null; controls.hold(false);
+      const name = result.type === "blackout.set" ? "Blackout " + (result.active ? "ON" : "OFF") : "P" + result.slot + " " + result.type.slice(7);
+      if (result.kind === "command.ack") record(result, "success", name + " confirmed by Controller (" + result.status + ").");
+      else record(result, "failed", name + " failed: " + result.status +
+        (result.status === "storage_error" ? ". Persistent slot may have changed; refreshing state." : ". Showing Controller state."));
+      refreshTimer(); notify();
+      if (result.status === "storage_error" || result.status === "transport_error") client.resync();
+    });
+    return {
+      available, canBlackout,
+      current: () => Object.freeze({pending, last}),
+      run(type, argument) {
+        const blackout = type === "blackout.set";
+        if (blackout ? typeof argument !== "boolean" : !["preset.load", "preset.save", "preset.clear"].includes(type) ||
+            !Number.isInteger(argument) || argument < 1 || argument > 8) return false;
+        if (pending || client.pending().operation || (blackout && clock() < blackoutUntil)) return false;
+        if (!read.current().ready || !read.current().sender || !client.writable()) return false;
+        const operation = blackout ? {type, active: argument} : {type, slot: argument};
+        if (!blackout) {
+          const state = read.preset(argument - 1);
+          if ((type !== "preset.save" && state !== 1) || (type === "preset.save" && state === 3)) {
+            record(operation, "failed", "Preset unavailable in the current Controller state."); notify(); return false;
+          }
+        }
+        if (!controls.reserveOperation()) {
+          record(operation, "not_sent", "Command budget busy; not sent. Tap again after a moment."); refreshTimer(); notify(); return false;
+        }
+        controls.hold(true); // Discard unsent channel intents BEFORE sending the ordered operation.
+        const id = client.setOperation(type, argument);
+        if (id === null) {
+          controls.hold(false); record(operation, "uncertain", "Operation unavailable; inspect Controller state before retrying.");
+          refreshTimer(); notify(); return false;
+        }
+        pending = Object.freeze({id, ...operation});
+        if (blackout) blackoutUntil = clock() + 350; // Disabled burst suppression, never a queued toggle.
+        refreshTimer(); notify(); return true;
+      }
     };
   }
   return {create};
@@ -520,17 +646,30 @@ const fader = (
     const input = document.createElement("input");
     input.type = "range"; input.min = "0"; input.max = "255";
     input.disabled = true; input.step = "1"; input.setAttribute("aria-label", label.textContent);
-    let lastPosition = "0", actual = null, stale = true, showPercent = false, draft = false, retired = false;
+    let lastPosition = "0", actual = null, stale = true, showPercent = false, draft = false, retired = false, gestureEpoch = null, draftEpoch = null;
     const available = () => !retired && !stale && !!control?.available();
     function refresh() { render(actual, stale, showPercent); }
     // Native range input supplies mouse/touch/keyboard semantics and capture.
-    input.addEventListener("input", () => {
-      if (!available() || !control?.edit(channel, Number(input.value))) input.value = lastPosition;
+    const era = () => control?.epoch() ?? 0;
+    function finish(cancel = false) {
+      if (!retired && gestureEpoch === era()) {
+        if (cancel) control?.cancel(channel); else control?.release(channel);
+      }
+      gestureEpoch = null;
+    }
+    input.addEventListener("pointerdown", () => { gestureEpoch = era(); });
+    input.addEventListener("keydown", event => {
+      if (!event.repeat && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) gestureEpoch = era();
     });
-    input.addEventListener("change", () => { if (!retired) control?.release(channel); });
-    input.addEventListener("pointerup", () => { if (!retired) control?.release(channel); });
-    input.addEventListener("pointercancel", () => { if (!retired) control?.cancel(channel); });
-    input.addEventListener("blur", () => { if (!retired) control?.release(channel); });
+    input.addEventListener("input", () => {
+      if (gestureEpoch === null) gestureEpoch = era();
+      if (!available() || gestureEpoch !== era() || !control?.edit(channel, Number(input.value)))
+        input.value = String(control?.preview(channel) ?? control?.value(channel) ?? lastPosition);
+    });
+    input.addEventListener("change", () => finish());
+    input.addEventListener("pointerup", () => finish());
+    input.addEventListener("pointercancel", () => finish(true));
+    input.addEventListener("blur", () => finish());
     function stepButton(delta) {
       const button = document.createElement("button");
       button.type = "button"; button.className = "fader-step " + (delta > 0 ? "fader-plus" : "fader-minus");
@@ -567,7 +706,7 @@ const fader = (
     value.addEventListener("click", () => {
       if (!available()) return;
       if (!draft) {
-        onDraft?.(); draft = true; field.value = String(control.preview(channel) ?? actual);
+        onDraft?.(); draft = true; draftEpoch = era(); field.value = String(control.preview(channel) ?? actual);
         form.hidden = false; rail.hidden = true; value.setAttribute("aria-expanded", "true");
         error.textContent = ""; field.removeAttribute("aria-invalid");
       }
@@ -575,7 +714,7 @@ const fader = (
     });
     form.addEventListener("submit", event => {
       event.preventDefault();
-      if (!draft || !available()) { closeDraft(); refresh(); return; }
+      if (!draft || !available() || draftEpoch !== era()) { closeDraft(); refresh(); return; }
       const raw = field.value.trim(), number = Number(raw);
       if (!/^\d{1,3}$/.test(raw) || number > 255) {
         error.textContent = "Use 0\u2013255."; field.setAttribute("aria-invalid", "true"); field.focus(); return;
@@ -591,7 +730,7 @@ const fader = (
     function text(node, next) { if (node.textContent !== next) node.textContent = next; }
     function render(nextActual, nextStale, nextPercent) {
       actual = nextActual; stale = nextStale; showPercent = nextPercent;
-      if (!available() && draft) closeDraft();
+      if (draft && (!available() || draftEpoch !== era())) closeDraft();
       const preview = control?.preview(channel) ?? null;
       const visible = preview === null ? actual : preview;
       input.disabled = value.disabled = !available();
@@ -674,20 +813,102 @@ const presets = (
 // module: presets
 // requires:
 () => {
-  function mount(document, state) {
+  function mount(document, state, actions, runtime = {}) {
     const slots = [...document.querySelectorAll("[data-preset]")];
-    slots.forEach(button => button.addEventListener("click", () => {
-      slots.forEach(slot => slot.setAttribute("aria-pressed", String(slot === button)));
-      document.getElementById("selected-preset").textContent = "Preset " + button.dataset.preset;
-    }));
-    return {render() {
-      const ready = state.current().ready;
-      slots.forEach((slot, index) => {
-        const label = ready ? ["Empty", "Occupied", "Corrupt", "Storage error"][state.preset(index)] : "Unknown";
-        const node = slot.querySelector(".slot-state");
-        if (node.textContent !== label) node.textContent = label;
+    let selected = 1, confirmation = null, press = null, tap = null, pointer = false;
+    const clock = () => runtime.clock ? runtime.clock() : Date.now();
+    const far = (a, b) => Math.abs(a - b) > 12;
+    function resetTap() { press = tap = null; }
+    const node = id => document.getElementById(id);
+    const labels = ["Empty", "Occupied", "Corrupt", "Storage error"];
+    function clearConfirmation() { confirmation = null; if (actions) node("preset-confirmation").hidden = true; }
+    slots.forEach((button, index) => {
+      button.addEventListener("pointerdown", event => {
+        pointer = true;
+        if (event.isPrimary === false || (event.button ?? 0) !== 0) { resetTap(); return; }
+        press = {slot: index, id: event.pointerId, x: event.clientX, y: event.clientY, at: clock(), up: false};
       });
-    }};
+      button.addEventListener("pointermove", event => {
+        if (press && (event.pointerId !== press.id || far(event.clientX, press.x) || far(event.clientY, press.y))) resetTap();
+      });
+      button.addEventListener("pointercancel", resetTap);
+      button.addEventListener("pointerup", event => {
+        if (!press || press.id !== event.pointerId || far(event.clientX, press.x) || far(event.clientY, press.y) || clock() - press.at > 350) resetTap();
+        else press.up = true;
+      });
+      button.addEventListener("click", event => {
+        const now = clock(), valid = press?.up && press.slot === index && now - press.at <= 400;
+        if (pointer && (event?.detail || event?.pointerType) && !valid) { resetTap(); return; }
+        const pair = valid && tap?.slot === index && now - tap.at <= 350 && !far(press.x, tap.x) && !far(press.y, tap.y);
+        tap = valid && !pair ? {slot: index, at: now, x: press.x, y: press.y} : null; press = null;
+        selected = index + 1; clearConfirmation();
+        slots.forEach(slot => slot.setAttribute("aria-pressed", String(slot === button)));
+        node("selected-preset").textContent = "Preset P" + selected;
+        if (pair) ask("preset.load");
+        render();
+      });
+    });
+    function stillValid() {
+      return confirmation && actions.available() && confirmation.slot === selected &&
+        confirmation.boundary === state.current().boundary && confirmation.state === state.preset(selected - 1);
+    }
+    function ask(type) {
+      resetTap();
+      if (!actions?.available()) return;
+      const occupied = state.preset(selected - 1);
+      if (type === "preset.load") { if (occupied === 1) actions.run(type, selected); }
+      else if (type === "preset.save" && occupied === 0) actions.run(type, selected);
+      else if ((type === "preset.save" && (occupied === 1 || occupied === 2)) || (type === "preset.clear" && occupied === 1)) {
+        confirmation = {type, slot: selected, state: occupied, boundary: state.current().boundary};
+      }
+      render();
+      if (confirmation) node("preset-confirm").focus({preventScroll: true});
+    }
+    if (actions) {
+      node("preset-load").addEventListener("click", () => ask("preset.load"));
+      node("preset-save").addEventListener("click", () => ask("preset.save"));
+      node("preset-clear").addEventListener("click", () => ask("preset.clear"));
+      node("preset-cancel").addEventListener("click", () => { clearConfirmation(); render(); slots[selected - 1].focus({preventScroll: true}); });
+      node("preset-confirm").addEventListener("click", () => {
+        if (!stillValid()) { clearConfirmation(); render(); return; }
+        const {type, slot} = confirmation; clearConfirmation(); actions.run(type, slot); render(); slots[selected - 1].focus({preventScroll: true});
+      });
+      let boundary = state.current().boundary;
+      state.subscribe(() => {
+        if (!state.current().ready || boundary !== state.current().boundary) resetTap();
+        boundary = state.current().boundary;
+        if (confirmation && !stillValid()) clearConfirmation();
+      });
+    }
+    function render() {
+      const ready = state.current().ready;
+      const current = actions?.current();
+      slots.forEach((slot, index) => {
+        let label = ready ? labels[state.preset(index)] : "Unknown";
+        const loaded = ready && state.current().loaded === index + 1;
+        slot.dataset.loaded = String(loaded);
+        if (loaded) label += state.current().modified ? " · Modified" : " · Loaded";
+        if (current?.pending?.slot === index + 1) label += " · Pending";
+        else if (current?.last?.slot === index + 1 && ["failed", "uncertain", "not_sent"].includes(current.last.status)) label += " · " + current.last.status;
+        const value = slot.querySelector(".slot-state");
+        if (value.textContent !== label) value.textContent = label;
+        slot.setAttribute("aria-busy", String(current?.pending?.slot === index + 1));
+      });
+      if (!actions) return;
+      if (confirmation && !stillValid()) clearConfirmation();
+      const available = actions.available(), occupied = ready ? state.preset(selected - 1) : null;
+      node("preset-load").disabled = !available || occupied !== 1 || !!confirmation;
+      node("preset-save").disabled = !available || ![0,1,2].includes(occupied) || !!confirmation;
+      node("preset-clear").disabled = !available || occupied !== 1 || !!confirmation;
+      node("preset-confirmation").hidden = !confirmation;
+      if (confirmation) {
+        node("preset-confirm-text").textContent = (confirmation.type === "preset.clear" ? "Delete P" : "Overwrite P") + confirmation.slot + "? This changes the stored preset.";
+        node("preset-confirm").textContent = confirmation.type === "preset.clear" ? "Delete P" + confirmation.slot : "Overwrite P" + confirmation.slot;
+      }
+      node("preset-feedback").textContent = current.pending?.slot ? "P" + current.pending.slot + " operation pending Controller confirmation." : current.last?.slot ? current.last.message :
+        available ? "Save uses current Controller values. Delete clears slot occupancy." : "Preset actions unavailable until a synchronized Sender is ready.";
+    }
+    render(); return {render, leave() { clearConfirmation(); resetTap(); }};
   }
   return {mount};
 }
@@ -711,31 +932,88 @@ const status = (
 // module: status
 // requires:
 () => {
-  function mount(document, state, connectionLabel) {
-    return {render() {
+  const uint = value => Number.isInteger(value) && value >= 0 && value <= 4294967295;
+  function duration(value) {
+    if (!uint(value)) return null;
+    const s = Math.floor(value / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    return d ? d + "d " + h % 24 + "h " + m % 60 + "m" : h ? h + "h " + m % 60 + "m" : m ? m + "m " + s % 60 + "s" : s + "s";
+  }
+  function mount(document, state, connectionLabel, runtime = {}, notify = () => {}) {
+    const rows = [...document.querySelectorAll("[data-field]")].filter(row => row.dataset.field);
+    const sources = ["/status", "/ws-diagnostics"].map(path => ({path, data: null, at: 0, ok: false}));
+    const clock = () => runtime.clock ? runtime.clock() : Date.now();
+    let active = false, generation = 0, timer = null, cancel = null;
+    const fresh = source => source.ok && active && clock() - source.at < 20000;
+    async function cycle(epoch) {
+      for (const source of sources) {
+        if (document.hidden || document.getElementById("view-status").hidden) setActive(false);
+        if (!active || epoch !== generation) return;
+        const controller = new runtime.AbortController(); let deadline;
+        const timeout = new Promise((_, reject) => {
+          cancel = () => { runtime.clearTimeout(deadline); controller.abort(); reject(Error()); };
+          deadline = runtime.setTimeout(cancel, 3500);
+        });
+        try {
+          const data = await Promise.race([runtime.fetch(source.path, {signal: controller.signal, cache: "no-store", redirect: "error"})
+            .then(response => { if (!response.ok) throw Error(); return response.text(); })
+            .then(text => { if (text.length > 4096) throw Error(); return JSON.parse(text); }), timeout]);
+          if (!active || epoch !== generation) return;
+          if (!data || Array.isArray(data) || !uint(data.ms) || (source === sources[0] ? !["OFF","PREPARED","STARTING","READY","FAILED"].includes(data.phase) : data.marker !== "WS_DIAGNOSTICS")) throw Error();
+          data.current = data.samples?.find?.(sample => sample.event === 92 && uint(sample.ms) && sample.ms > 0);
+          data.failure = data.first === null ? "None recorded" : data.first?.closure?.reason;
+          source.data = data; source.at = clock(); source.ok = true;
+        } catch (_) { if (epoch === generation) source.ok = false; }
+        finally { runtime.clearTimeout(deadline); if (epoch === generation) cancel = null; }
+        if (epoch === generation) notify();
+      }
+      if (active && epoch === generation) timer = runtime.setTimeout(() => cycle(epoch), 10000);
+    }
+    function setActive(next) {
+      if (active === next) return;
+      active = next; ++generation;
+      runtime.clearTimeout(timer); timer = null;
+      cancel?.(); cancel = null;
+      sources.forEach(source => { source.ok = false; });
+      if (active && runtime.fetch && runtime.AbortController) cycle(generation);
+    }
+    function put(id, text) { const node = document.getElementById(id); if (node.textContent !== text) node.textContent = text; }
+    function telemetry() {
+      const local = {data: state.current().health, ok: true, at: clock()};
+      rows.forEach(row => {
+        const source = row.dataset.source === "2" ? local : sources[Number(row.dataset.source || 0)];
+        let value = row.dataset.field.split(".").reduce((object, key) => object?.[key], source.data);
+        const unit = row.dataset.unit;
+        if (unit === "duration") value = duration(value);
+        else if (unit === "memory") value = uint(value) ? (value / (value >= 1048576 ? 1048576 : 1024)).toFixed(1) + (value >= 1048576 ? " MiB" : " KiB") : null;
+        else if (unit === "build") value = typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value.slice(0,12) : null;
+        else if (unit === "bool") value = typeof value === "boolean" ? (value ? "Yes" : "No") : null;
+        else if (unit === "text") value = typeof value === "string" && value.length > 0 && value.length <= (row.dataset.field === "ssid" ? 32 : 128) ? value : null;
+        else if (unit === "signed") value = Number.isInteger(value) && value >= -2147483648 && value <= 2147483647 ? value : null;
+        else if (!uint(value)) value = null;
+        const text = value == null ? "Unavailable" : String(value) + (fresh(source) ? "" : " · stale");
+        if (row.textContent !== text) row.textContent = text;
+      });
+      sources.forEach((source,index) => put("telemetry-" + index, fresh(source) ? "Updated " + Math.floor((clock()-source.at)/1000) + " s ago" : source.data ? "Stale · refresh failed or paused" : "Not available · awaiting refresh"));
+    }
+    return {setActive, render() {
+      telemetry();
       const current = state.current();
       const health = current.health;
       const fields = {"status-connection": connectionLabel(current.phase),
-        "status-sync": current.ready ? (health.probePending ? "Snapshot synchronized · checking connection" : "Live · read-only") : "Not synchronized",
+        "status-sync": current.ready ? "Live / synchronized" : "Not synchronized",
         "status-revision": current.ready ? current.revision : "Unavailable",
         "status-sequence": current.ready ? current.seq : "Unavailable",
         "status-sender": current.ready ? (current.sender ? "Active" : "Inactive") : "Unavailable",
         "status-blackout": current.ready ? (current.blackout ? "ON" : "OFF") : "Unavailable",
         "connection-error": current.error,
-        "status-transport": health.transportOpen ? "Open (not a liveness guarantee)" : "Not open",
         "status-close": health.closeCode === null ? "Unavailable" : String(health.closeCode) + " / clean: " + String(health.wasClean),
         "status-recovery": String(health.attempt) + " / " + (health.classification || "None"),
-        "status-received": health.receivedRevision === null ? "Unavailable" : health.receivedRevision,
-        "status-message-age": health.receivedAt === null ? "Unavailable" : String(Math.max(0, Math.round((Date.now() - health.receivedAt) / 1000))) + " s (at render)",
-        "status-rendered": health.renderedRevision || "Unavailable",
-        "status-background": health.background ? "Background" : "Foreground"};
-      Object.entries(fields).forEach(([id, text]) => {
-        const node = document.getElementById(id); if (node.textContent !== text) node.textContent = text;
-      });
+        "status-message-age": health.receivedAt === null ? "Unavailable" : String(Math.max(0, Math.round((Date.now() - health.receivedAt) / 1000))) + " s (at render)"};
+      Object.entries(fields).forEach(([id, text]) => put(id, text));
       document.getElementById("connection-retry").hidden = current.ready;
     }};
   }
-  return {mount};
+  return {mount, duration};
 }
 )({});
 
@@ -747,7 +1025,12 @@ const shell = (
   const sections = ["editor", "presets", "settings", "status"];
   function mount(document, window, foundation, onNavigate = () => {}) {
     const links = [...document.querySelectorAll("[data-section]")];
+    const content = document.querySelector(".app-container");
     let current = null;
+    if (window.navigator?.maxTouchPoints > 0) {
+      for (const type of ["gesturestart", "gesturechange", "dblclick"])
+        content.addEventListener(type, event => { if (event.cancelable && (type !== "dblclick" || !event.target.closest("input,textarea,[contenteditable],dd,#connection-error"))) event.preventDefault(); }, {passive: false});
+    }
     document.getElementById("connection-label").textContent = foundation.connection;
     function navigate(focusHeading) {
       const requested = window.location.hash.slice(1), active = sections.includes(requested) ? requested : "editor";
@@ -763,7 +1046,6 @@ const shell = (
       });
       document.title = "CoreS3SE DMX · " + active[0].toUpperCase() + active.slice(1);
       // Reset the mobile content scroller, or the document in wider/fallback layouts.
-      const content = document.querySelector(".app-container");
       const scroller = window.getComputedStyle(content).overflowY === "auto" ? content : document.scrollingElement;
       scroller.scrollTop = 0;
       // Touch/mouse keep focus on the nav; keyboard/AT activation announces the heading.
@@ -777,7 +1059,6 @@ const shell = (
       if (window.location.hash !== hash) window.history.pushState(null, "", hash);
       navigate(event.detail === 0);
     }));
-    // History traversal may emit both events; current prevents a duplicate view/focus update.
     window.addEventListener("popstate", () => navigate(false));
     window.addEventListener("hashchange", () => navigate(false)); navigate(false);
   }
@@ -788,25 +1069,27 @@ const shell = (
 // Source: web/src/js/app.js
 const app = (
 // module: app
-// requires: state,transport,control,preferences,editor,presets,settings,status,shell
-({state, transport, control, preferences, editor, presets, settings, status, shell}) => {
+// requires: state,transport,control,actions,preferences,editor,presets,settings,status,shell
+({state, transport, control, actions, preferences, editor, presets, settings, status, shell}) => {
   let started = false;
   function start() {
     if (started) return; started = true;
-    let storage = null; try { storage = window.localStorage; } catch (_) { /* Preferences are optional. */ }
+    let storage = null; try { storage = window.localStorage; } catch (_) {}
+    const clock = () => window.performance ? window.performance.now() : Date.now();
+    const runtime = {clock, setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window)};
     const prefs = preferences.create(storage), store = state.create(), read = store.read;
     const labels = {connecting: "Connecting", synchronizing: "Synchronizing", live: "Connected / Live",
       reconnecting: "Reconnecting", disconnected: "Disconnected", paused: "Paused", resynchronizing: "Resynchronizing", error: "Connection error"};
     const label = phase => labels[phase];
     const client = transport.create(store, {WebSocket: window.WebSocket,
       url: (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host + "/ws",
-      clock: () => window.performance ? window.performance.now() : Date.now(),
-      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window), random: Math.random});
-    const writes = control.create(read, client, {clock: () => window.performance ? window.performance.now() : Date.now(),
-      setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window)}, schedule);
+      ...runtime, random: Math.random});
+    const writes = control.create(read, client, runtime, schedule);
+    const operations = actions.create(read, client, writes, runtime, schedule);
     let frame = null;
     const editorView = editor.mount(document, window, prefs, read, writes);
-    const presetView = presets.mount(document, read), statusView = status.mount(document, read, label);
+    const presetView = presets.mount(document, read, operations, runtime), statusView = status.mount(document, read, label, {fetch: window.fetch?.bind(window), AbortController: window.AbortController,
+      ...runtime}, schedule);
     settings.mount(document, prefs, editorView.render);
     function text(id, value) { const node = document.getElementById(id); if (node.textContent !== value) node.textContent = value; }
     function render() {
@@ -814,25 +1097,35 @@ const app = (
       text("connection-label", label(current.phase));
       const connection = document.querySelector(".connection"), live = String(current.ready);
       if (connection.dataset.live !== live) connection.dataset.live = live;
-      text("fader-note", writes.note() || (writes.available() ? "Channel control enabled \u00b7 Values confirmed by Controller." : "Channel control unavailable \u00b7 Waiting for a synchronized Sender."));
+      text("fader-note", writes.note() || (writes.available() ? "" : "Channel controls unavailable"));
       const blackout = document.getElementById("blackout");
       const active = String(current.ready && current.blackout);
       if (blackout.dataset.active !== active) blackout.dataset.active = active;
-      const description = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") + ", read-only" : "Blackout state unavailable";
+      const operation = operations.current(), pendingBlackout = operation.pending?.type === "blackout.set";
+      blackout.disabled = !operations.canBlackout();
+      blackout.setAttribute("aria-busy", String(pendingBlackout));
+      if (current.ready) blackout.setAttribute("aria-pressed", String(current.blackout)); else blackout.removeAttribute("aria-pressed");
+      const caption = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") : "Blackout unavailable";
+      if (blackout.textContent !== caption) blackout.textContent = caption;
+      const description = pendingBlackout ? caption + "; awaiting Controller confirmation" : caption;
       if (blackout.getAttribute("aria-label") !== description) blackout.setAttribute("aria-label", description);
       text("blackout-summary-label", current.ready ? "Blackout " + (current.blackout ? "ON \u00b7 output zero" : "OFF") : "Blackout state unavailable");
-      text("blackout-summary-detail", current.ready ? "Controller working values" : "Awaiting live data");
+      text("blackout-summary-detail", pendingBlackout ? "Awaiting Controller confirmation" : operation.last?.type === "blackout.set" && operation.last.status !== "success" ? operation.last.message : current.ready ? "" : "Awaiting live data");
       if (!document.getElementById("view-editor").hidden) editorView.render();
       else { editorView.leave(); writes.leave(); }
-      if (!document.getElementById("view-presets").hidden) presetView.render();
+      if (!document.getElementById("view-presets").hidden) presetView.render(); else presetView.leave();
       store.diagnostics({renderedRevision: current.ready ? current.revision : null}, false);
+      statusView.setActive(!document.hidden && !document.getElementById("view-status").hidden);
       if (!document.getElementById("view-status").hidden) statusView.render();
     }
     function schedule() { if (!document.hidden && frame === null) frame = window.requestAnimationFrame(render); }
     read.subscribe(schedule);
     shell.mount(document, window, {connection: label(read.current().phase)}, schedule);
+    document.getElementById("blackout").addEventListener("click", () => {
+      if (operations.canBlackout()) operations.run("blackout.set", !read.current().blackout);
+    });
     document.getElementById("connection-retry").addEventListener("click", client.retry);
-    function pause() { client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
+    function pause() { statusView.setActive(false); client.suspend(); if (frame !== null) window.cancelAnimationFrame(frame); frame = null; }
     document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); else { client.resume(); schedule(); } });
     window.addEventListener("pagehide", pause);
     window.addEventListener("pageshow", () => { if (!document.hidden) { client.resume(); schedule(); } });
@@ -844,7 +1137,7 @@ const app = (
   }
   return {start};
 }
-)({state, transport, control, preferences, editor, presets, settings, status, shell});
+)({state, transport, control, actions, preferences, editor, presets, settings, status, shell});
 
 app.start();
 })();

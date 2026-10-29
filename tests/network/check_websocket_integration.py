@@ -1,5 +1,6 @@
 """Stage6A source/task guards + extract actual endpoint/I/O for native API mocks."""
 from pathlib import Path
+from preset_loaded_guard_support import prior
 import argparse,subprocess,re
 root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser(description=__doc__)
@@ -15,7 +16,7 @@ for name in ['src/view_sender.h','src/view_receiver.h','src/dmx_controller.cpp',
              'src/dmx_transport_esp_dmx.h','src/preset_store.h','platformio.ini','include/dmx_hardware.h',
              'scripts/esp_dmx_tx_patch.py','patches/esp_dmx_v202/tx_service.h',
              'patches/esp_dmx_v202/tx_core.h','scripts/package_firmware.py','partitions/cores3se_16mb_ota.csv']:
-    assert read(name)==old(name),name
+    assert prior(name,read(name))==old(name),name
 for folder in ['patches']:
     for path in (root/folder).rglob('*'):
         if path.is_file():assert path.read_bytes()==subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show',baseline+':'+path.relative_to(root).as_posix()],cwd=root),str(path)

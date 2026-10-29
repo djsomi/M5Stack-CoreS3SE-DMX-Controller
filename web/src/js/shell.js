@@ -4,7 +4,12 @@
   const sections = ["editor", "presets", "settings", "status"];
   function mount(document, window, foundation, onNavigate = () => {}) {
     const links = [...document.querySelectorAll("[data-section]")];
+    const content = document.querySelector(".app-container");
     let current = null;
+    if (window.navigator?.maxTouchPoints > 0) {
+      for (const type of ["gesturestart", "gesturechange", "dblclick"])
+        content.addEventListener(type, event => { if (event.cancelable && (type !== "dblclick" || !event.target.closest("input,textarea,[contenteditable],dd,#connection-error"))) event.preventDefault(); }, {passive: false});
+    }
     document.getElementById("connection-label").textContent = foundation.connection;
     function navigate(focusHeading) {
       const requested = window.location.hash.slice(1), active = sections.includes(requested) ? requested : "editor";
@@ -20,7 +25,6 @@
       });
       document.title = "CoreS3SE DMX · " + active[0].toUpperCase() + active.slice(1);
       // Reset the mobile content scroller, or the document in wider/fallback layouts.
-      const content = document.querySelector(".app-container");
       const scroller = window.getComputedStyle(content).overflowY === "auto" ? content : document.scrollingElement;
       scroller.scrollTop = 0;
       // Touch/mouse keep focus on the nav; keyboard/AT activation announces the heading.
@@ -34,7 +38,6 @@
       if (window.location.hash !== hash) window.history.pushState(null, "", hash);
       navigate(event.detail === 0);
     }));
-    // History traversal may emit both events; current prevents a duplicate view/focus update.
     window.addEventListener("popstate", () => navigate(false));
     window.addEventListener("hashchange", () => navigate(false)); navigate(false);
   }

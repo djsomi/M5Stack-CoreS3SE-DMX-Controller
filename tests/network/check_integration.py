@@ -4,11 +4,12 @@ import re
 import subprocess
 from canvas_guard_support import stage5a_view
 from softap_guard_support import stage5b_view
+from preset_loaded_guard_support import prior
 root=Path(__file__).resolve().parents[2]
 def base(name):
     return subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show','f31411a:'+name],cwd=root).decode('utf-8')
 app=(root/'src/src.cpp').read_text(encoding='utf-8')
-view=(root/'src/view_sender.h').read_text(encoding='utf-8')
+view=prior('src/view_sender.h',(root/'src/view_sender.h').read_text(encoding='utf-8'))
 # Stage 5A adds nine capture-only setup calls; strip exactly these for baseline checks.
 trace_steps=re.findall(r'    wifi_startup_trace::capture\("([^"]+)"[^\n]*\n',app)
 assert trace_steps==['setup.enter','credentials.after','M5.begin.before','M5.begin.after','sender.cells.after','receiver.canvas.before','receiver.canvas.after','dmx.startup.before','dmx.startup.after'],trace_steps
@@ -52,7 +53,7 @@ for name in ['src/dmx_transport.cpp','src/dmx_transport.h','src/dmx_transport_es
         # Stage6B.1 adds only checked UI composition and tighter asset-size gates.
         # All other firmware/build inputs are also protected by check_scope.py.
         continue
-    assert (root/name).read_text(encoding='utf-8')==base(name),name
+    assert prior(name,(root/name).read_text(encoding='utf-8'))==base(name),name
 net=(root/'src/network_service.cpp').read_text()
 assert all(s not in net for s in ['M5.', 'DmxController', 'CommandDispatcher', 'DmxTransport', 'Serial.', 'HWCDC', 'WiFi.begin('])
 assert net.index('esp_wifi_set_config(WIFI_IF_AP,&ap)')<net.index('esp_wifi_start()')

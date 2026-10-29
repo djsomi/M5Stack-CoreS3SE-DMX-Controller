@@ -49,6 +49,9 @@ class DmxController {
     const uint8_t* workingPacket() const { return working_; }
     const uint8_t* outputPacket() const;
     bool blackoutActive() const { return blackout_; }
+    // Transient provenance: 0 means unknown, otherwise P1-P8.
+    uint8_t loadedPreset() const { return loaded_preset_; }
+    bool loadedPresetModified() const { return loaded_modified_; }
     void setBlackout(bool active);
     uint64_t revision() const { return revision_; }
 
@@ -62,6 +65,7 @@ class DmxController {
  private:
     bool loadMetadata();
     bool markCleared(uint8_t slot, bool cleared);
+    bool invalidateLoaded(uint8_t slot);
     Result readablePreset(uint8_t slot);
     void changed(ChangeKind kind, uint16_t channel = 0, uint8_t slot = 0);
 
@@ -69,6 +73,8 @@ class DmxController {
     uint8_t working_[packet_size] = {};
     uint8_t restore_[packet_size] = {};
     bool blackout_ = false;
+    uint8_t loaded_preset_ = 0, restore_loaded_preset_ = 0;
+    bool loaded_modified_ = false, restore_loaded_modified_ = false;
     bool metadata_loaded_ = false;
     uint8_t cleared_mask_ = 0;
     uint64_t revision_ = 0;

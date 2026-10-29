@@ -44,7 +44,7 @@ class Fixture(Handler):
             self.connection.sendall(frame + payload)
 
         def snapshot(request_id=0):
-            send("state.snapshot", id=request_id, values=values, presets=[0, 1, 2, 3, 0, 1, 0, 1], blackout=blackout, sender=True)
+            send("state.snapshot", id=request_id, values=values, presets=[0, 1, 2, 3, 0, 1, 0, 1], blackout=blackout, sender=True, loaded=0, modified=False)
 
         try:
             send("hello", channels=512, max_message=256, max_clients=4, max_outstanding=4)
@@ -77,7 +77,7 @@ class Fixture(Handler):
                 if not self.quiet and (self.stall_after is None or time.monotonic() - started < self.stall_after) and time.monotonic() - tick >= .1:
                     tick = time.monotonic(); values[0] = (values[0] + 1) % 256
                     blackout = values[0] // 20 % 2 == 1
-                    send("state.update", channel=1, value=values[0], blackout=blackout, sender=True)
+                    send("state.update", channel=1, value=values[0], blackout=blackout, sender=True, loaded=0, modified=False)
         except (OSError, ValueError, IndexError):
             pass
         finally:

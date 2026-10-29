@@ -1,3 +1,4 @@
+#include "status_ssid.h"
 #include "network_service.h"
 #include "hardware_diagnostics.h"
 #include "http_policy.h"
@@ -505,8 +506,15 @@ esp_err_t serve(httpd_req_t* r) {
             if(!length)return reject(r,"503 Service Unavailable");
             httpd_resp_set_type(r,"application/json");return finish(r,httpd_resp_send(r,json,length));
         }
+        const auto& bundle=web_assets::bundle();
+        wifi_config_t active{};
+        char ssid_json[67];
+        const bool have_ssid=esp_wifi_get_config(WIFI_IF_AP,&active)==ESP_OK &&
+            status_telemetry::ssidJson(active.ap.ssid,active.ap.ssid_len?active.ap.ssid_len:
+                strnlen(reinterpret_cast<const char*>(active.ap.ssid),sizeof(active.ap.ssid)),ssid_json);
         int n=snprintf(json,sizeof(json),
-            "{\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
+            "{\"build\":\"%s\",\"profile\":\"%s\",\"layout\":\"%s\",\"ssid\":%s,\"ms\":%lu,\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
+            bundle.source_sha256,bundle.profile,bundle.layout,have_ssid?ssid_json:"null",(unsigned long)(uint32_t(now/1000)),
             phaseName(s.phase),s.ip,(unsigned long)s.clients,(unsigned long)s.max_clients,s.router_option_disabled?"false":"true",
             (unsigned long)s.requests,(unsigned long)s.rejected,
             (unsigned long)s.max_loop_gap_us,(unsigned long)s.tx_errors,s.tx_stopped?"true":"false",

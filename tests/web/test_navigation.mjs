@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 
 const source = readFileSync(new URL('../../web/src/js/shell.js', import.meta.url), 'utf8');
 const names = ['editor', 'presets', 'settings', 'status'];
-function fixture(hash = '#editor', internalScroll = true) {
+function fixture(hash = '#editor', internalScroll = true, touch = false) {
   const focusCalls = [], transitions = [], history = [], listeners = {}, nodes = {};
-  const content = {scrollTop: 0}, documentScroller = {scrollTop: 0};
+  const content = {scrollTop: 0, handlers: {}, addEventListener(type, handler, options) {this.handlers[type]={handler,options};}}, documentScroller = {scrollTop: 0};
   const links = names.map(section => ({
     dataset: {section}, attrs: {}, listeners: {},
     addEventListener(type, handler) {this.listeners[type] = handler;},
@@ -32,7 +32,7 @@ function fixture(hash = '#editor', internalScroll = true) {
   nodes['connection-label'] = {};
   const document = {querySelectorAll: () => links, querySelector: () => content,
     scrollingElement: documentScroller, getElementById: id => nodes[id], title: ''};
-  const window = {getComputedStyle: element => {
+  const window = {navigator: {maxTouchPoints: touch ? 5 : 0}, getComputedStyle: element => {
     assert.equal(element, content); return {overflowY: internalScroll ? 'auto' : 'visible'};
   }, location: {hash}, history: {
     pushState(_, unused, url) {history.push(url); window.location.hash = url;},
@@ -113,3 +113,16 @@ for (const internalScroll of [true, false]) {
   assert.deepEqual(scrolling.focusCalls, [{name: 'settings', preventScroll: true}]);
 }
 console.log('PASS shell: synchronous routing/scroll reset, same-tab position, mobile/document owners, persistent nav, 100 switches, pointer/keyboard focus, history and deep links');
+
+// The fixed-scale compatibility hooks never receive/cancel ordinary touch sequences.
+const touchPage=fixture('#editor',true,true);
+assert.deepEqual(Object.keys(touchPage.content.handlers).sort(),['dblclick','gesturechange','gesturestart']);
+for(const [type,{handler,options}] of Object.entries(touchPage.content.handlers)) {
+  assert.equal(options.passive,false);let prevented=0;
+  handler({target:{closest:()=>null},cancelable:true,preventDefault(){++prevented;}});assert.equal(prevented,1);
+  handler({target:{closest:()=>null},cancelable:false,preventDefault(){++prevented;}});assert.equal(prevented,1);
+  if(type==='dblclick') {handler({target:{closest:()=>({})},cancelable:true,preventDefault(){++prevented;}});assert.equal(prevented,1,'editable and diagnostic selection is preserved');}
+}
+assert.equal(Object.keys(page.content.handlers).length,0,'desktop has no compatibility hooks');
+touchPage.content.scrollTop=200;touchPage.click('presets');assert.equal(touchPage.content.scrollTop,0);
+console.log('PASS fixed-scale touch-only app hooks, cancelable WebKit gestures/dblclick, no touchstart/move/end interception or synthesized clicks');

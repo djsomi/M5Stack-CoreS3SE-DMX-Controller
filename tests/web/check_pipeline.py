@@ -103,7 +103,7 @@ class PipelineTests(unittest.TestCase):
         for name in ("editor", "presets", "settings", "status"):
             self.assertIn("view-" + name, ids); self.assertIn("heading-" + name, ids)
         actions = [a for _, a in elements.nodes if "data-device-action" in a or a.get("id") == "blackout"]
-        self.assertEqual(len(actions), 5); self.assertTrue(all("disabled" in a for a in actions))
+        self.assertEqual(len(actions), 4); self.assertTrue(all("disabled" in a for a in actions))
         slots = [a for _, a in elements.nodes if "data-preset" in a]; self.assertEqual(len(slots), 8)
         self.assertNotIn("preview-note", html)
         self.assertNotIn("monitor-tag", html)
@@ -114,18 +114,28 @@ class PipelineTests(unittest.TestCase):
                 if key in attrs: self.assertTrue(attrs[key].startswith(("/", "#")), (tag, attrs))
         js = (self.root / "web/src/app.js").read_text(encoding='utf-8')
         import re
-        self.assertFalse(re.search(r"\b(?:fetch|XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
-        self.assertNotRegex(js, r'"(?:blackout\.set|preset\.(?:load|save|copy|clear))"')
+        self.assertFalse(re.search(r"\b(?:XMLHttpRequest|EventSource|sendBeacon|eval)\s*\(", js))
+        self.assertEqual(len(re.findall(r"\bfetch\s*\(", js)), 1)
+        telemetry = (self.root / "web/src/js/status.js").read_text(encoding="utf-8")
+        self.assertIn('["/status", "/ws-diagnostics"]', telemetry)
+        self.assertIn('redirect: "error"', telemetry)
+        self.assertIn('cache: "no-store"', telemetry)
+        self.assertNotIn("localStorage", telemetry)
+        self.assertNotRegex(js, r'"(?:preset\.copy|preset\.rename|scene\.play)"')
         self.assertIn('type: "state.request"', js)
         self.assertIn('type: "channel.set"', js)
         self.assertNotIn("setInterval(", js)
 
     def test_bank_arrow_touch_action_is_scoped_and_zoom_remains_available(self):
         css = (self.root / "web/src/style.css").read_text(encoding="utf-8")
-        rules = re.findall(r"([^{}]+)\{([^{}]*touch-action\s*:[^{}]*)\}", css)
-        self.assertEqual(len(rules), 2)
-        self.assertEqual({selector.strip() for selector, _ in rules}, {".bank-buttons .icon-button", ".fader-step, .fader-value"})
-        self.assertTrue(all(declarations.strip() == "touch-action: manipulation;" for _, declarations in rules))
+        rules = re.findall(r"([^{}]+)\{([^{}]*touch-action\s*:[^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S))
+        self.assertEqual(len(rules), 5)
+        self.assertEqual({selector.strip() for selector, _ in rules}, {".bank-buttons .icon-button", ".fader-step, .fader-value", ".preset-actions button, .preset-slot, .blackout-button", ".fader input[type=range]", ".app-container, .app-container *"})
+        for selector, declarations in rules:
+            if selector.strip() == ".fader input[type=range]":
+                self.assertIn("touch-action: none;", declarations)
+            else:
+                self.assertEqual(declarations.strip(), "touch-action: pan-x pan-y;")
         html = (self.root / "web/src/index.html").read_text(encoding="utf-8")
         controls = re.search(r'<div class="bank-buttons">(.*?)</div>', html).group(1)
         buttons = [attrs for tag, attrs in Elements(controls).nodes if tag == "button"]
@@ -149,7 +159,9 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("-webkit-user-select: none;", slider)
         self.assertIn("user-select: none;", slider)
         self.assertNotIn("touch-callout", css)  # No evidence a callout restriction is needed.
-        self.assertNotRegex(css, r"touch-action:\s*none|pointer-events:\s*none")
+        self.assertNotRegex(css, r"pointer-events:\s*none")
+        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 1)
+        self.assertRegex(css, r"\.fader input\[type=range\]\s*\{[^}]*touch-action: none;")
         html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
         nodes = Elements(html).nodes
         self.assertTrue(any(tag == "input" and attrs.get("id") == "channel-jump" for tag, attrs in nodes))
@@ -166,7 +178,7 @@ class PipelineTests(unittest.TestCase):
     def test_compact_numeric_and_step_layout_contract(self):
         css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
         self.assertNotIn(".preview-note", css)
-        self.assertRegex(css, r"\.fader-step\s*\{[^}]*width: 44px;[^}]*min-height: 44px;")
+        self.assertRegex(css, r"\.fader-step\s*\{[^}]*width: var\(--fader-control-width\);[^}]*min-height: 44px;")
         self.assertRegex(css, r"\.fader-plus\s*\{\s*order: -1;")
         self.assertRegex(css, r"\.fader-minus\s*\{\s*order: 1;")
         self.assertRegex(css, r"\.value-entry \.dmx-draft-input\s*\{[^}]*font-size: 18px;")
@@ -185,6 +197,70 @@ class PipelineTests(unittest.TestCase):
         for _,attrs in nodes:
             for key in ("aria-describedby", "aria-labelledby"):
                 for target in attrs.get(key, "").split(): self.assertIn(target, ids)
+
+    def test_preset_blackout_actions_remain_bounded_and_initially_disabled(self):
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
+        nodes = Elements(html).nodes
+        by_id = {attrs["id"]:(tag,attrs) for tag,attrs in nodes if "id" in attrs}
+        for name in ("preset-load", "preset-save", "preset-clear", "blackout"):
+            self.assertIn("disabled", by_id[name][1])
+        self.assertIn("hidden", by_id["preset-confirmation"][1])
+        self.assertIn("preset-confirm", by_id); self.assertIn("preset-cancel", by_id)
+        self.assertNotIn('data-device-action="preset.copy"', html)
+        self.assertIn('role="status"', html)
+        commands = (self.root / "web/src/js/commands.js").read_text(encoding="utf-8")
+        for operation in ("preset.load", "preset.save", "preset.clear", "blackout.set"):
+            self.assertIn(operation, commands)
+        self.assertNotIn("preset.rename", commands)
+        self.assertNotIn("preset.delete", commands)
+        actions = (self.root / "web/src/js/actions.js").read_text(encoding="utf-8")
+        self.assertNotRegex(actions, r"localStorage|fetch\(|setInterval|window.confirm|prompt\(")
+
+    def test_polished_header_faders_footer_and_status_layout(self):
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode("utf-8")
+        css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
+        self.assertEqual(html.count('id="connection-label"'), 1)
+        self.assertIn('role="status" aria-labelledby="connection-label"', html)
+        self.assertNotIn("connection-compact", html + css)
+        mobile = css[css.index("@media (max-width: 479px)"):css.index("@media (min-width: 480px)")]
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 100px", mobile)
+        self.assertRegex(mobile, r"\.connection\s*\{[^}]*grid-row: 2;[^}]*white-space: nowrap;")
+        self.assertNotIn("overflow-wrap: anywhere", mobile)
+        self.assertNotRegex(mobile, r"\.brand(?:-mark|-name|-caption)?\s*\{[^}]*(?:font-size|width|display)")
+        self.assertIn("width: 33px; height: 33px", css)
+        self.assertIn("font-size: 19px", css)
+        self.assertIn("--fader-control-width: 44px", css)
+        self.assertIn("width: min(calc(var(--fader-control-width) + 10px), 100%)", css)
+        self.assertNotIn("--thumb-width", css)
+        for vendor in ("webkit-slider-thumb", "moz-range-thumb"):
+            self.assertRegex(css, r"::-" + vendor + r"\s*\{[^}]*box-sizing: border-box;[^}]*width: var\(--fader-control-width\);[^}]*height: 18px;")
+        self.assertRegex(mobile, r"\.view\s*\{\s*margin-top: 4px;")
+        self.assertRegex(css, r"@media \(hover: hover\) and \(pointer: fine\)")
+        self.assertIn("button:hover:not(:disabled):not(.preset-slot)", css)
+        self.assertRegex(css, r"\.status-grid\s*\{[^}]*align-items: start;")
+        self.assertNotRegex(css, r"\.status-grid\s*\{[^}]*repeat\(2")
+        self.assertRegex(css, r"details\.status-panel\s*\{\s*margin-top: 16px;")
+        self.assertIn("System &amp; Firmware", html)
+        self.assertIn("Memory &amp; Resources", html)
+        self.assertNotRegex(html, r"<details[^>]*\bopen\b")
+        self.assertNotIn("flex-direction: column; gap: 8px", css)
+        self.assertRegex(css, r"\.app-footer\s*\{[^}]*justify-content: flex-start;[^}]*white-space: nowrap;")
+        app = (self.root / "web/src/js/app.js").read_text(encoding="utf-8")
+        self.assertNotIn("Controller working values", app)
+        self.assertIn('operation.last.message', app)
+
+    def test_fixed_scale_application_policy_preserves_scroll_and_lower_blackout(self):
+        css = gzip.decompress((self.root / "web/generated/style.css.gz").read_bytes()).decode("utf-8")
+        self.assertRegex(css, r"\.app-container, \.app-container \*\s*\{\s*touch-action: pan-x pan-y;")
+        self.assertEqual(len(re.findall(r"touch-action:\s*none", css)), 1)
+        self.assertRegex(css, r"\.fader input\[type=range\]\s*\{[^}]*touch-action: none;")
+        html = (self.root / "web/src/index.html").read_text(encoding="utf-8")
+        self.assertIn('class="blackout-summary"', html)
+        self.assertIn('id="blackout-summary-label"', html)
+        self.assertIn("maximum-scale=1,user-scalable=no", html)
+        for name in ("app", "presets", "fader", "shell"):
+            js = (self.root / ("web/src/js/" + name + ".js")).read_text(encoding="utf-8")
+            self.assertNotRegex(js, r"addEventListener\(\s*[\"'](?:touchstart|touchmove|touchend|dblclick)[\"']")
 
     def test_served_mobile_viewport_contract(self):
         # Test shipped bytes, not merely the presence of an authored filename.
@@ -206,7 +282,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("position: fixed", css[:start])  # Unsupported-svh fallback.
         self.assertIn("env(safe-area-inset-bottom)", css[:start])
         self.assertIn("calc(100px + env(safe-area-inset-bottom))", css[:start])
-        self.assertNotRegex(css, r"\d+dvh|touch-action:\s*none|scroll-behavior:\s*smooth")
+        self.assertNotRegex(css, r"\d+dvh|scroll-behavior:\s*smooth")
         js = (self.root / "web/src/app.js").read_text(encoding="utf-8")
         self.assertNotIn("visualViewport", js)
         shell = (self.root / "web/src/js/shell.js").read_text(encoding="utf-8")
@@ -215,8 +291,8 @@ class PipelineTests(unittest.TestCase):
         viewport = next(attrs["content"] for tag, attrs in Elements(html).nodes
                         if tag == "meta" and attrs.get("name") == "viewport")
         self.assertIn("viewport-fit=cover", viewport)
-        self.assertNotIn("maximum-scale", viewport)
-        self.assertNotIn("user-scalable", viewport)
+        self.assertIn("maximum-scale=1", viewport)
+        self.assertIn("user-scalable=no", viewport)
 
 
 if __name__ == "__main__":

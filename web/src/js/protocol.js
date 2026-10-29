@@ -20,7 +20,8 @@
       extra = ["channels", "max_message", "max_clients", "max_outstanding"];
       if (message.id !== 0 || message.channels !== 512 || message.max_message !== 256 || message.max_clients !== 4 || message.max_outstanding !== 4 || sequence === 0n) fail();
     } else if (message.type === "state.snapshot" || message.type === "state.update") {
-      extra = ["blackout", "sender"];
+      extra = ["blackout", "sender", "loaded", "modified"];
+      if (!integer(message.loaded, 0, 8) || typeof message.modified !== "boolean" || (!message.loaded && message.modified)) fail("protocol_loaded");
       if (typeof message.blackout !== "boolean" || typeof message.sender !== "boolean" || sequence === 0n) fail();
       if (message.type === "state.update" && message.id !== 0) fail();
       const bulk = message.type === "state.snapshot" || "values" in message || "presets" in message;

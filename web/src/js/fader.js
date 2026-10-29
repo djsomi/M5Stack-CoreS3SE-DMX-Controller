@@ -14,17 +14,30 @@
     const input = document.createElement("input");
     input.type = "range"; input.min = "0"; input.max = "255";
     input.disabled = true; input.step = "1"; input.setAttribute("aria-label", label.textContent);
-    let lastPosition = "0", actual = null, stale = true, showPercent = false, draft = false, retired = false;
+    let lastPosition = "0", actual = null, stale = true, showPercent = false, draft = false, retired = false, gestureEpoch = null, draftEpoch = null;
     const available = () => !retired && !stale && !!control?.available();
     function refresh() { render(actual, stale, showPercent); }
     // Native range input supplies mouse/touch/keyboard semantics and capture.
-    input.addEventListener("input", () => {
-      if (!available() || !control?.edit(channel, Number(input.value))) input.value = lastPosition;
+    const era = () => control?.epoch() ?? 0;
+    function finish(cancel = false) {
+      if (!retired && gestureEpoch === era()) {
+        if (cancel) control?.cancel(channel); else control?.release(channel);
+      }
+      gestureEpoch = null;
+    }
+    input.addEventListener("pointerdown", () => { gestureEpoch = era(); });
+    input.addEventListener("keydown", event => {
+      if (!event.repeat && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) gestureEpoch = era();
     });
-    input.addEventListener("change", () => { if (!retired) control?.release(channel); });
-    input.addEventListener("pointerup", () => { if (!retired) control?.release(channel); });
-    input.addEventListener("pointercancel", () => { if (!retired) control?.cancel(channel); });
-    input.addEventListener("blur", () => { if (!retired) control?.release(channel); });
+    input.addEventListener("input", () => {
+      if (gestureEpoch === null) gestureEpoch = era();
+      if (!available() || gestureEpoch !== era() || !control?.edit(channel, Number(input.value)))
+        input.value = String(control?.preview(channel) ?? control?.value(channel) ?? lastPosition);
+    });
+    input.addEventListener("change", () => finish());
+    input.addEventListener("pointerup", () => finish());
+    input.addEventListener("pointercancel", () => finish(true));
+    input.addEventListener("blur", () => finish());
     function stepButton(delta) {
       const button = document.createElement("button");
       button.type = "button"; button.className = "fader-step " + (delta > 0 ? "fader-plus" : "fader-minus");
@@ -61,7 +74,7 @@
     value.addEventListener("click", () => {
       if (!available()) return;
       if (!draft) {
-        onDraft?.(); draft = true; field.value = String(control.preview(channel) ?? actual);
+        onDraft?.(); draft = true; draftEpoch = era(); field.value = String(control.preview(channel) ?? actual);
         form.hidden = false; rail.hidden = true; value.setAttribute("aria-expanded", "true");
         error.textContent = ""; field.removeAttribute("aria-invalid");
       }
@@ -69,7 +82,7 @@
     });
     form.addEventListener("submit", event => {
       event.preventDefault();
-      if (!draft || !available()) { closeDraft(); refresh(); return; }
+      if (!draft || !available() || draftEpoch !== era()) { closeDraft(); refresh(); return; }
       const raw = field.value.trim(), number = Number(raw);
       if (!/^\d{1,3}$/.test(raw) || number > 255) {
         error.textContent = "Use 0\u2013255."; field.setAttribute("aria-invalid", "true"); field.focus(); return;
@@ -85,7 +98,7 @@
     function text(node, next) { if (node.textContent !== next) node.textContent = next; }
     function render(nextActual, nextStale, nextPercent) {
       actual = nextActual; stale = nextStale; showPercent = nextPercent;
-      if (!available() && draft) closeDraft();
+      if (draft && (!available() || draftEpoch !== era())) closeDraft();
       const preview = control?.preview(channel) ?? null;
       const visible = preview === null ? actual : preview;
       input.disabled = value.disabled = !available();

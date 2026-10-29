@@ -80,11 +80,15 @@ void Bridge::receive(Token t,const char* data,size_t length,uint64_t now) {
 Event Bridge::state(Kind kind,uint32_t id) {
     Event e;e.kind=kind;e.id=id;e.revision=controller_.revision();e.sequence=++sequence_;
     e.blackout=controller_.blackoutActive();e.sender=sender_;
+    e.loaded=controller_.loadedPreset();e.modified=controller_.loadedPresetModified();
     if(kind==Kind::snapshot||kind==Kind::universe) {
         memcpy(e.values,controller_.workingPacket()+1,512);
         if(!presets_ready_) {
-            for(unsigned i=0;i<8;++i)presets_[i]=uint8_t(controller_.presetState(uint8_t(i)));
             presets_ready_=true;
+            for(unsigned i=0;i<8;++i) {
+                presets_[i]=uint8_t(controller_.presetState(uint8_t(i)));
+                if(presets_[i]==uint8_t(DmxPresetStorage::SlotState::error))presets_ready_=false;
+            }
         }
         memcpy(e.presets,presets_,sizeof(presets_));
     }
@@ -112,7 +116,14 @@ void Bridge::ownerPoll(bool sender) {
         // the same owner task; concurrent HTTP work only copies the queues.
         Event hello;
         if(r.initial)hello=state(Kind::hello);
+        uint8_t previous_presets[8];memcpy(previous_presets,presets_,8);
         Event e=state(Kind::snapshot,r.id);
+        if(memcmp(previous_presets,e.presets,8)!=0) {
+            // A read after a persistence error may discover metadata changes
+            // without a domain revision. Notify peers before the newer snapshot.
+            e.kind=Kind::universe;e.id=0;broadcast(e);
+            e.kind=Kind::snapshot;e.id=r.id;e.sequence=++sequence_;
+        }
         Guard guard(lock_);
         if(auto* c=client(r.token)) {
             if(r.initial)push(*c,hello);
@@ -132,8 +143,18 @@ void Bridge::completed(void* context,const ControllerCommand& command,const Comm
     if(command.type==CommandType::load_preset||command.type==CommandType::save_preset||
        command.type==CommandType::copy_preset||command.type==CommandType::clear_preset||
        command.type==CommandType::reset_sender)self.presets_ready_=false;
-    if(result.revision_after!=result.revision_before) {
+    const bool changed=result.revision_after!=result.revision_before;
+    if(changed) {
         {Guard guard(self.lock_);++self.metrics_.controller_events;self.metrics_.last_controller_revision=result.revision_after;}
+    }
+    // Even an unchanged successful load supersedes older browser gestures.
+    // Publish the existing bulk shape/sequence; never fabricate a revision.
+    const bool loaded=command.type==CommandType::load_preset&&result.domain==DmxController::Result::ok&&
+        (result.status==CommandStatus::applied||result.status==CommandStatus::no_change||result.status==CommandStatus::transport_error);
+    const bool storage_refresh=result.status==CommandStatus::storage_error&&
+        (command.type==CommandType::load_preset||command.type==CommandType::save_preset||
+         command.type==CommandType::clear_preset||command.type==CommandType::copy_preset);
+    if(changed||loaded||storage_refresh) {
         const bool channel=command.type==CommandType::set_channel||command.type==CommandType::adjust_channel;
         auto e=self.state(channel?Kind::channel:Kind::universe);
         if(channel){e.channel=uint16_t(command.payload.channel.channel);e.value=self.controller_.channel(e.channel);}
