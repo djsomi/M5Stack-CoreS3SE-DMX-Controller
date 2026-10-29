@@ -280,7 +280,8 @@ int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writin
     const size_t amount=std::min(size_t(256),std::min(length,limit-used));
     if(!amount) return HTTPD_SOCK_ERR_FAIL;
     const int64_t remaining=stage5::session_us-(esp_timer_get_time()-s->budget.opened);
-    if(remaining<=0) return HTTPD_SOCK_ERR_FAIL;
+    // lwIP truncates timeval to milliseconds; zero would mean unlimited wait.
+    if(remaining<1000) return HTTPD_SOCK_ERR_FAIL;
     const int64_t wait=std::min(int64_t(1000000),remaining);
     timeval timeout{static_cast<long>(wait/1000000),static_cast<long>(wait%1000000)};
     if(setsockopt(fd,SOL_SOCKET,writing?SO_SNDTIMEO:SO_RCVTIMEO,&timeout,sizeof(timeout))) return HTTPD_SOCK_ERR_FAIL;

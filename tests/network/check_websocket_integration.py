@@ -62,15 +62,17 @@ assert 'WS_FIRST_FAILURE' in net and '++ws_diag.wifi_disconnects' in net
 assert '"/ws-diagnostics"' in net and 'native_evictions\\\":null' in read('src/websocket_diagnostics.cpp')
 if a.adapter_header:
     target=a.adapter_header.resolve();assert (root/'dist').resolve() in target.parents
-    def function(signature):
-        start=net.index(signature);opening=net.index('{',start);depth=0
+    def function(signature, source=net):
+        start=source.index(signature);opening=source.index('{',start);depth=0
         # Functions under test contain no braces in strings/comments.
-        for i in range(opening,len(net)):
-            if net[i]=='{':depth+=1
-            if net[i]=='}':
+        for i in range(opening,len(source)):
+            if source[i]=='{':depth+=1
+            if source[i]=='}':
                 depth-=1
-                if not depth:return net[start:i+1]+'\n'
+                if not depth:return source[start:i+1]+'\n'
         raise AssertionError(signature)
     signatures=['void recordClosure(','int ioFailure(','int io(','bool wsSend(','bool header(','esp_err_t handlerFailure(','esp_err_t websocket(']
-    target.write_text(''.join(function(s) for s in signatures),encoding='utf-8')
+    # Exercise the real HTTP accounting alongside the extracted socket override.
+    budget='namespace stage5 {\n'+function('bool Budget::allow(',read('src/http_policy.cpp'))+'}\n'
+    target.write_text(budget+''.join(function(s) for s in signatures),encoding='utf-8')
 print('PASS Stage6A exact Stage5 domain/UI/driver/assets/layout preservation; owner-only Dispatcher bridge; native endpoint/socket/queue/stack guards')

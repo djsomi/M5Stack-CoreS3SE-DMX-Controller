@@ -1,4 +1,4 @@
-"""Read-only /status addition: exact native source scope and formatted header contract."""
+"""Exact /status changes and reviewed HTTP deadline guard; formatted header contract."""
 from pathlib import Path
 import ast
 import json
@@ -24,6 +24,12 @@ query = """        wifi_config_t active{};
 expected = expected.replace('        const auto& bundle=web_assets::bundle();\n', '        const auto& bundle=web_assets::bundle();\n' + query)
 expected = expected.replace(r'\"layout\":\"%s\",\"ms\":', r'\"layout\":\"%s\",\"ssid\":%s,\"ms\":')
 expected = expected.replace('bundle.layout,(unsigned long)', 'bundle.layout,have_ssid?ssid_json:"null",(unsigned long)')
+# Permit only the reviewed ordinary-HTTP guard; preserve the complete WS branch.
+deadline_old = '    if(remaining<=0) return HTTPD_SOCK_ERR_FAIL;\n'
+deadline_new = ('    // lwIP truncates timeval to milliseconds; zero would mean unlimited wait.\n'
+                '    if(remaining<1000) return HTTPD_SOCK_ERR_FAIL;\n')
+assert expected.count(deadline_old) == 1
+expected = expected.replace(deadline_old, deadline_new)
 assert current == expected, "Unrelated network behavior changed"
 assert 'esp_wifi_get_config(WIFI_IF_AP,&active)==ESP_OK &&' in current
 assert 'active.ap.password' not in current and 'esp_wifi_set_config' not in query
@@ -45,7 +51,7 @@ assert '90+i' in current and 'static char json[4096]' in current
 assert 'max_sessions = 6' in current and 'if(++window_requests>12)' in current
 assert 'httpd_resp_set_hdr(r,"Connection","close")' in current
 assert 'heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA)' in current
-print('PASS exact native /status-only source addition, actual formatted metadata schema, timestamped event92 memory and unchanged HTTP/radio/task/socket limits')
+print('PASS exact native /status additions and ordinary-HTTP sub-ms guard, actual metadata schema, event92 memory and unchanged WS/radio/task/socket/byte/session limits')
 
 # Use every actual /status format string with maximum-width numeric values.
 branch = current.split('const auto& bundle=web_assets::bundle();',1)[1].split('if(!header(r,"Accept-Encoding"',1)[0]

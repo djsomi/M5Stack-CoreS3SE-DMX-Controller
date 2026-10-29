@@ -3,6 +3,7 @@
 #include "websocket_bridge.h"
 #include "websocket_wire.h"
 #include "websocket_diagnostics.h"
+#include "http_policy.h"
 #include <algorithm>
 #include <string>
 #include <string.h>
@@ -29,13 +30,26 @@ unsigned window_requests=0;int bytes=0,chunk=3;bool blocked=false,frame_error=fa
 std::string input="{}",host="192.168.4.1",origin="http://192.168.4.1";
 httpd_ws_frame_t input_frame;
 const char wire_input[]={char(0x81),char(0x82),'a','b','c','d','x','y'};size_t wire_offset=0;
+unsigned socket_options=0,send_calls=0,recv_calls=0;
+int last_option=0,option_error=0,send_error=0;
+int64_t socket_wait_us=0,send_delay_us=100;
+bool obey_socket_timeout=false;
 int64_t esp_timer_get_time(){return clock_us;}
-int setsockopt(int,int,int,const void*,size_t){return 0;}
-int send(int,const char*,size_t n,int){clock_us+=100;if(blocked){clock_us+=100000;errno=ETIMEDOUT;return -1;}const int sent=int(std::min(n,size_t(chunk)));bytes+=sent;if(delayed_partial){clock_us+=518230;delayed_partial=false;}return sent;}
-int recv(int,char* p,size_t n,int){clock_us+=100;if(recv_eof)return 0;if(recv_error){errno=recv_error;return -1;}if(blocked)return -1;size_t got=std::min(n,std::min(size_t(chunk),sizeof(wire_input)-wire_offset));if(!got)return -1;memcpy(p,wire_input+wire_offset,got);wire_offset+=got;return int(got);}
+int setsockopt(int,int,int option,const void* value,size_t size){
+    CHECK(size==sizeof(timeval));const auto& timeout=*static_cast<const timeval*>(value);
+    ++socket_options;last_option=option;
+    // Match pinned lwIP's integer-millisecond conversion: zero means unlimited.
+    socket_wait_us=(int64_t(timeout.tv_sec)*1000+timeout.tv_usec/1000)*1000;
+    if(option_error){errno=option_error;return -1;}return 0;
+}
+int send(int,const char*,size_t n,int){
+    ++send_calls;
+    if(obey_socket_timeout&&socket_wait_us>0&&send_delay_us>socket_wait_us){clock_us+=socket_wait_us;errno=EWOULDBLOCK;return -1;}
+    clock_us+=send_delay_us;if(send_error){errno=send_error;return -1;}
+    if(blocked){clock_us+=100000;errno=ETIMEDOUT;return -1;}const int sent=int(std::min(n,size_t(chunk)));bytes+=sent;if(delayed_partial){clock_us+=518230;delayed_partial=false;}return sent;
+}
+int recv(int,char* p,size_t n,int){++recv_calls;clock_us+=100;if(recv_eof)return 0;if(recv_error){errno=recv_error;return -1;}if(blocked)return -1;size_t got=std::min(n,std::min(size_t(chunk),sizeof(wire_input)-wire_offset));if(!got)return -1;memcpy(p,wire_input+wire_offset,got);wire_offset+=got;return int(got);}
 namespace stage5 {
-constexpr size_t max_tx_bytes=20480,max_rx_bytes=2048;constexpr int64_t session_us=3000000;
-struct Budget{size_t sent=0,received=0;int64_t opened=0;bool allow(int64_t,size_t,bool){return true;}};
 bool allowedHost(const char* p){return !strcmp(p,"192.168.4.1");}
 bool allowedOrigin(const char* p){return !*p||!strcmp(p,"http://192.168.4.1");}
 }
@@ -70,8 +84,66 @@ websocket_bridge::ClientInfo clientInfo(websocket_bridge::Token){return {};}
 websocket_bridge::Metrics metrics(){return {};}
 }
 #include "ws_adapter_under_test.h"
-void reset(){connection=Session{};clock_us+=2000000;host="192.168.4.1";origin="http://192.168.4.1";blocked=false;frame_error=false;delayed_partial=false;frame_socket_read=recv_eof=false;recv_error=0;input="{}";input_frame=httpd_ws_frame_t{};websocket_service::capacity=true;}
+void reset(){connection=Session{};clock_us+=2000000;host="192.168.4.1";origin="http://192.168.4.1";blocked=false;frame_error=false;delayed_partial=false;frame_socket_read=recv_eof=false;recv_error=0;input="{}";input_frame=httpd_ws_frame_t{};websocket_service::capacity=true;
+    socket_options=send_calls=recv_calls=0;last_option=option_error=send_error=0;
+    socket_wait_us=0;send_delay_us=100;obey_socket_timeout=false;wire_offset=0;
+}
 void handshake(){httpd_req_t req;CHECK(websocket(&req)==ESP_OK&&connection.websocket);}
+void httpDeadlineTests(){
+    char packet[600]{};
+    // Test both halves of the shared ordinary-HTTP override. Rejected budgets
+    // must never reach setsockopt or a socket operation, not just fail afterward.
+    for(bool writing:{false,true})for(int64_t remaining:{-1,0,1,500,999,1000,1500,10000,1000000,3000000}){
+        reset();connection.budget.opened=clock_us-stage5::session_us+remaining;
+        const int result=io(nullptr,5,packet,1,0,writing);
+        if(remaining<1000){
+            CHECK(result==HTTPD_SOCK_ERR_FAIL&&socket_options==0&&send_calls==0&&recv_calls==0);
+            CHECK(connection.budget.sent==0&&connection.budget.received==0);
+        }else{
+            CHECK(result==1&&socket_options==1&&socket_wait_us>=1000&&socket_wait_us<=1000000);
+            CHECK(socket_wait_us==(std::min(remaining,int64_t(1000000))/1000)*1000);
+            CHECK(last_option==(writing?SO_SNDTIMEO:SO_RCVTIMEO));
+        }
+    }
+    // Ordinary short writes retain the byte cap, do not renew the deadline,
+    // and remain independent of a following WebSocket upgrade/session.
+    reset();connection.budget.opened=clock_us;chunk=1000;
+    const int64_t opened=connection.budget.opened;
+    CHECK(io(nullptr,5,packet,sizeof(packet),0,true)==256);
+    CHECK(io(nullptr,5,packet,sizeof(packet),0,true)==256);
+    CHECK(connection.budget.sent==512&&connection.budget.opened==opened);
+    connection.budget.sent=stage5::max_tx_bytes-1;
+    CHECK(io(nullptr,5,packet,sizeof(packet),0,true)==1);
+    const unsigned calls=send_calls;CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL&&send_calls==calls);
+    reset();connection.budget.opened=clock_us;connection.budget.received=stage5::max_rx_bytes-1;
+    CHECK(io(nullptr,5,packet,2,0,false)==1);
+    CHECK(io(nullptr,5,packet,1,0,false)==HTTPD_SOCK_ERR_FAIL&&recv_calls==1);
+    // A simulated stalled peer respects the finite timeout. Drip attempts do
+    // not extend the three-second absolute budget or permit a last <1ms call.
+    reset();connection.budget.opened=clock_us;send_delay_us=2000000;obey_socket_timeout=true;
+    for(int i=0;i<3;++i)CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_TIMEOUT);
+    CHECK(clock_us-connection.budget.opened==stage5::session_us&&send_calls==3);
+    CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL&&send_calls==3);
+    reset();connection.budget.opened=clock_us-stage5::session_us+1500;send_delay_us=501;
+    CHECK(io(nullptr,5,packet,1,0,true)==1);
+    CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL&&send_calls==1);
+    // Even if a socket call returns after the deadline, accounting rejects it.
+    reset();connection.budget.opened=clock_us-stage5::session_us+1000;send_delay_us=1000;
+    CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL&&send_calls==1&&connection.budget.sent==0);
+    // Preserve existing errors/EOF conventions used by IDF session cleanup.
+    reset();connection.budget.opened=clock_us;option_error=EINVAL;
+    CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL&&send_calls==0);
+    reset();connection.budget.opened=clock_us;send_error=ECONNRESET;
+    CHECK(io(nullptr,5,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL);
+    reset();connection.budget.opened=clock_us;recv_eof=true;
+    CHECK(io(nullptr,5,packet,1,0,false)==0);
+    reset();connection.budget.opened=clock_us;recv_error=EWOULDBLOCK;
+    CHECK(io(nullptr,5,packet,1,0,false)==HTTPD_SOCK_ERR_TIMEOUT);
+    CHECK(io(nullptr,99,packet,1,0,true)==HTTPD_SOCK_ERR_FAIL); // Retired/missing session.
+    handshake();chunk=3;CHECK(wsSend(connection,HTTPD_WS_TYPE_TEXT,reinterpret_cast<uint8_t*>(packet),sizeof(packet)));
+    CHECK(socket_wait_us>0&&last_option==SO_SNDTIMEO);
+    puts("PASS actual HTTP I/O: 20 deadline boundaries; finite lwIP timeouts; partial/byte budgets; slow/expired clients; errors/EOF; HTTP-to-WebSocket isolation");
+}
 int main(){
     httpd_req_t req;
     reset();origin="http://evil.example";CHECK(websocket(&req)==ESP_FAIL&&!connection.websocket);
@@ -126,5 +198,6 @@ int main(){
     CHECK(websocket(&req)==ESP_FAIL&&ws_diag.last.reason==WsReason::peer_close);
     CHECK(!ws_diag.first_present&&ws_diag.close_frames_sent==1&&ws_diag.send_failures==0);
     reset();req.method=HTTP_GET;connection.wire.httpBytes("GET /ws HTTP/1.1\r\n\r\nx",21);CHECK(websocket(&req)==ESP_FAIL);
+    httpDeadlineTests();
     puts("PASS actual native endpoint/I/O with API mocks: upgrade policy/capacity/control/binary/fragment/oversize/incomplete/deadline/short-write behavior");
 }
