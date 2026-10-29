@@ -14,11 +14,28 @@ ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/net
 
 
 def check():
-    # Delivery-only migration: all fourteen approved application factories stay exact.
+    # Preserve the accepted split; allow only the reviewed action presentation block.
     for path in (ROOT / "web/src/js").glob("*.js"):
         original = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
-            "show", "03872b99b1ccfb256f010342d8e4e8449c515b80:" + path.relative_to(ROOT).as_posix()], cwd=ROOT)
-        assert path.read_bytes().replace(b"\r\n", b"\n") == original, "Application factory changed during delivery split: " + path.name
+            "show", "4e6fbbeada642e5dc8345421a1d11eb9acc6baa5:" + path.relative_to(ROOT).as_posix()], cwd=ROOT)
+        if path.name == "presets.js":
+            old = b'''      node("preset-load").disabled = !available || occupied !== 1 || !!confirmation;
+      node("preset-save").disabled = !available || ![0,1,2].includes(occupied) || !!confirmation;
+      node("preset-clear").disabled = !available || occupied !== 1 || !!confirmation;
+'''
+            new = b'''      const unavailable = !ready || !state.current().sender;
+      node("preset-load").disabled = unavailable || occupied !== 1 || !!confirmation;
+      node("preset-save").disabled = unavailable || ![0,1,2].includes(occupied) || !!confirmation;
+      node("preset-clear").disabled = unavailable || occupied !== 1 || !!confirmation;
+      // Temporary admission blocking preserves appearance and keyboard focus.
+      for (const id of ["preset-load", "preset-save", "preset-clear"]) {
+        const button = node(id);
+        button.setAttribute("aria-disabled", String(button.disabled || !available));
+      }
+'''
+            assert original.count(old) == 1
+            original = original.replace(old, new)
+        assert path.read_bytes().replace(b"\r\n", b"\n") == original, "Unexpected application factory change: " + path.name
     check_new_header()
     entries = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
         "ls-tree", "-rz", BASE, "--", *PREFIXES, "platformio.ini"], cwd=ROOT)

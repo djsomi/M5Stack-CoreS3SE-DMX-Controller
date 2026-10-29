@@ -85,9 +85,15 @@
       if (!actions) return;
       if (confirmation && !stillValid()) clearConfirmation();
       const available = actions.available(), occupied = ready ? state.preset(selected - 1) : null;
-      node("preset-load").disabled = !available || occupied !== 1 || !!confirmation;
-      node("preset-save").disabled = !available || ![0,1,2].includes(occupied) || !!confirmation;
-      node("preset-clear").disabled = !available || occupied !== 1 || !!confirmation;
+      const unavailable = !ready || !state.current().sender;
+      node("preset-load").disabled = unavailable || occupied !== 1 || !!confirmation;
+      node("preset-save").disabled = unavailable || ![0,1,2].includes(occupied) || !!confirmation;
+      node("preset-clear").disabled = unavailable || occupied !== 1 || !!confirmation;
+      // Temporary admission blocking preserves appearance and keyboard focus.
+      for (const id of ["preset-load", "preset-save", "preset-clear"]) {
+        const button = node(id);
+        button.setAttribute("aria-disabled", String(button.disabled || !available));
+      }
       node("preset-confirmation").hidden = !confirmation;
       if (confirmation) {
         node("preset-confirm-text").textContent = (confirmation.type === "preset.clear" ? "Delete P" : "Overwrite P") + confirmation.slot + "? This changes the stored preset.";

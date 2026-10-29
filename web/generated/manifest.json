@@ -4,10 +4,10 @@
       "content_encoding": "gzip",
       "content_type": "text/html; charset=utf-8",
       "file": "index.html.gz",
-      "gzip_size": 4109,
+      "gzip_size": 4114,
       "original_size": 15438,
       "path": "/",
-      "sha256": "48c8c31e47372769a32a3ca0c4490c56420025f8dd083e071518d13a4d58d040",
+      "sha256": "2c3b3bacbe1dc535fbcc29cd712e3ecb98ba019ee03572347e9f675d1e88b18d",
       "source": "index.html",
       "source_sha256": "ebba1b47aaf3ca94cd61124ecbe3164b79e53e9c11c3bffc7980babe90de15d2"
     },
@@ -37,15 +37,15 @@
       "content_encoding": "gzip",
       "content_type": "text/javascript; charset=utf-8",
       "file": "ui.js.gz",
-      "gzip_size": 8841,
-      "original_size": 31824,
-      "path": "/ui.3339e1ee04ad1dbc.js",
-      "sha256": "e1b6fd843f551876bc8049f102b31ac32535b92a12095e085e7eb6cd66fc1190",
+      "gzip_size": 8941,
+      "original_size": 32166,
+      "path": "/ui.22b825a7734b5a67.js",
+      "sha256": "ecaac1ac8a409bd70529c90bf745fa9e1a360ade6755b5f10237ffa8294a63c6",
       "source": "ui.js",
-      "source_sha256": "3339e1ee04ad1dbc90df170ec5396855117e19194d9ed042d1c46730794cae8a"
+      "source_sha256": "22b825a7734b5a675ee1621ea6cfb67d0e664e5d5f91613e8d78793e3c3a398c"
     }
   ],
-  "bundle_sha256": "b63d6578c3b02c1fa1346504b3ac5b4b75d47ee6fdcae6158a2167dba49b8edd",
+  "bundle_sha256": "e4325e7e1f09d60b5147c9aefa32cc156bec347721415cbfab71b4536f07c065",
   "generator": {
     "python": "3.11.7",
     "zlib": "1.2.13"

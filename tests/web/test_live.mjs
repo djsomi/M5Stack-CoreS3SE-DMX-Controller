@@ -853,6 +853,29 @@ test('preset pending preserves live blackout state while command admission remai
   }
 });
 
+test('preset actions retain visual availability but expose transient blocking through aria-disabled',()=>{
+  const ids=['preset-load','preset-save','preset-clear'];
+  for(const [type,argument]of [['preset.load',2],['blackout.set',true]]) {
+    const f=operationsFixture();f.select(2);f.presetView.render();
+    assert.ok(ids.every(id=>!f.nodes[id].disabled&&f.nodes[id].attrs['aria-disabled']==='false'));
+    assert.equal(f.operations.run(type,argument),true);f.presetView.render();
+    assert.ok(ids.every(id=>!f.nodes[id].disabled&&f.nodes[id].attrs['aria-disabled']==='true'));
+    for(const id of ids)f.click(id);
+    assert.equal(f.events.length,1);assert.equal(f.nodes['preset-confirmation'].hidden,true);
+    f.result('applied',type==='preset.load'?{values:Array(512).fill(37),loaded:2,modified:false}:{blackout:true});
+    assert.ok(ids.every(id=>!f.nodes[id].disabled&&f.nodes[id].attrs['aria-disabled']==='false'));
+    f.click('preset-save');assert.ok(ids.every(id=>f.nodes[id].disabled));
+    f.click('preset-cancel');assert.ok(ids.every(id=>!f.nodes[id].disabled));
+    f.publish({sender:false});assert.ok(ids.every(id=>f.nodes[id].disabled));
+  }
+  const f=operationsFixture();f.select(2);
+  for(let i=0;i<18;++i)assert.equal(f.control.reserveOperation(),true);
+  f.presetView.render();assert.ok(ids.every(id=>!f.nodes[id].disabled&&f.nodes[id].attrs['aria-disabled']==='true'));
+  for(const id of ids)f.click(id);assert.equal(f.events.length,0);
+  f.elapse(1002);f.presetView.render();assert.ok(ids.every(id=>f.nodes[id].attrs['aria-disabled']==='false'));
+  f.socket.end();f.presetView.render();assert.ok(ids.every(id=>f.nodes[id].disabled&&f.nodes[id].attrs['aria-disabled']==='true'));
+});
+
 test('blackout is explicit, authoritative, one pending operation and burst-suppressed without queued toggles',()=>{
   const f=operationsFixture();assert.equal(f.operations.run('blackout.set',true),true);assert.equal(f.read.current().blackout,false);
   for(let i=0;i<20;++i)assert.equal(f.operations.run('blackout.set',false),false);
