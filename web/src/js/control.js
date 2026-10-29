@@ -6,7 +6,7 @@
   function create(read, client, runtime, notify) {
     const entries = new Map(), sent = [];
     const clock = () => runtime.clock ? runtime.clock() : Date.now();
-    let timer = null, flight = null, lastSent = -Infinity, note = "", held = false, epoch = 0;
+    let timer = null, flight = null, lastSent = -Infinity, note = "", lastChannel = 0, held = false, epoch = 0;
     let lastBoundary = read.current().boundary;
     const available = () => !held && read.current().ready && read.current().sender && client.writable() && !client.pending().operation;
     function clearTimer() { if (timer !== null) runtime.clearTimeout(timer); timer = null; }
@@ -22,7 +22,7 @@
           !Number.isInteger(value) || value < 0 || value > 255) return false;
       let entry = entries.get(channel);
       if (!entry) {
-        if (entries.size === 8) { note = "Channel control busy; finish existing edits first."; notify(); return false; }
+        if (entries.size === 8) { note = "Channel control busy."; notify(); return false; }
         entry = {value, active, dirty: false, sent: false}; entries.set(channel, entry);
       }
       entry.value = value; entry.active = active; entry.dirty = true;
@@ -47,7 +47,7 @@
         entry.active ? 60 - (now - lastSent) : 0);
       if (delay > 0) { schedule(delay); return; }
       const id = client.setChannel(channel, entry.value);
-      if (id === null) { invalidate(); note = "Channel command unavailable; no value replayed."; notify(); return; }
+      if (id === null) { invalidate(); note = "Channel command unavailable."; notify(); return; }
       entry.dirty = false; entry.sent = true;
       flight = {id, channel, value: entry.value}; lastSent = now; sent.push(now);
       // Rotate serviced channels so simultaneous controls cannot starve each other.
@@ -65,12 +65,11 @@
       const {channel} = flight; flight = null;
       if (result.kind !== "command.ack") {
         invalidate(); note = "CH " + channel + (result.status === "transport_error" ?
-          " transport failure; state may have changed." : " rejected: " + result.status + ".") +
-          " Showing authoritative Controller values.";
+          " transport failure; state may have changed." : " rejected: " + result.status + ".");
       } else {
         const entry = entries.get(channel);
         if (entry && !entry.active && !entry.dirty) entries.delete(channel);
-        note = "";
+        note = ""; lastChannel = channel;
         pump();
       }
       notify();
@@ -103,7 +102,7 @@
         pump();
       },
       preview: channel => entries.has(channel) ? entries.get(channel).value : null,
-      note: () => note,
+      note: () => note || (read.current().ready && lastChannel ? "CH " + String(lastChannel).padStart(3, "0") + " · " + read.channel(lastChannel) : ""),
       pending: () => entries.size
     };
   }

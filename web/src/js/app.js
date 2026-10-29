@@ -32,7 +32,7 @@
       const active = String(current.ready && current.blackout);
       if (blackout.dataset.active !== active) blackout.dataset.active = active;
       const operation = operations.current(), pendingBlackout = operation.pending?.type === "blackout.set";
-      blackout.disabled = !operations.canBlackout();
+      blackout.disabled = !(current.sender && operation.pending?.slot || operations.canBlackout());
       blackout.setAttribute("aria-busy", String(pendingBlackout));
       if (current.ready) blackout.setAttribute("aria-pressed", String(current.blackout)); else blackout.removeAttribute("aria-pressed");
       const caption = current.ready ? "Blackout " + (current.blackout ? "ON" : "OFF") : "Blackout unavailable";

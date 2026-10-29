@@ -19,6 +19,7 @@ async function prepare(browser,width,resources=current,touch=width<480) {
       snapshot(id=0,type='state.snapshot'){this.message(type,{id,values,presets:[1,1,1,1,1,1,1,0],blackout,sender:true,loaded,modified});}
       send(text){const r=JSON.parse(text);this.sent.push(r);queueMicrotask(()=>{
         if(r.type==='state.request')return this.snapshot(r.id);
+        if(r.type==='preset.load'&&this.holdPresets){this.pendingPreset=r;return;}
         if(r.type==='channel.set'){values[r.channel-1]=r.value;modified=!!loaded;++revision;this.message('state.update',{channel:r.channel,value:r.value,blackout,sender:true,loaded,modified});}
         else if(r.type==='preset.load'){loaded=r.slot;modified=false;++revision;values=Array(512).fill(0);this.snapshot(0,'state.update');}
         else return;
@@ -26,6 +27,8 @@ async function prepare(browser,width,resources=current,touch=width<480) {
       });}
       confirm(){const request=this.sent.at(-1);blackout=request.active;++revision;this.snapshot(0,'state.update');this.message('command.ack',{id:request.id,status:'applied',domain:0});}
       remoteBlackout(active){blackout=active;++revision;this.snapshot(0,'state.update');}
+      publishPreset(slot,same=false){loaded=slot;modified=false;values=Array(512).fill(slot);if(!same)++revision;this.snapshot(0,'state.update');}
+      finishPreset(status='applied'){const r=this.pendingPreset;this.pendingPreset=null;this.message(status==='applied'||status==='no_change'?'command.ack':'command.error',{id:r.id,status,domain:0});}
       close(){this.readyState=3;}
     }
     window.WebSocket=FakeWebSocket;
@@ -186,11 +189,16 @@ async function polish(page,width,touch) {
     const css=await range.evaluate(n=>({touch:getComputedStyle(n).touchAction,thumb:getComputedStyle(n,'::-webkit-slider-thumb').width}));assert.equal(css.touch,'none');
     const scroll=await page.evaluate(()=>document.querySelector('.app-container').scrollTop);
     const beforeFoot=await page.locator('.panel-foot').boundingBox();
+    assert.equal(beforeFoot.height,44);
+    assert.equal(await page.locator('#fader-note').textContent(),'');
+    assert.equal(await page.locator('#fader-note').evaluate(n=>getComputedStyle(n,'::before').content),'none','no orphaned dot before interaction');
     await drag(page,r.x+r.width/2,r.y+r.height-12,r.x+r.width/2,r.y+30,async()=>{
-      assert.equal(await page.locator('#fader-note').textContent(),'');const foot=await page.locator('.panel-foot').boundingBox();assert.equal(foot.height,beforeFoot.height);assert.equal(foot.y,beforeFoot.y);
-    });assert.equal(await page.locator('#fader-note').textContent(),'');
+      const note=await page.locator('#fader-note').textContent();assert.ok(!note||/^CH 001 · \d{1,3}$/.test(note));
+      const foot=await page.locator('.panel-foot').boundingBox();assert.equal(foot.height,beforeFoot.height);assert.equal(foot.y,beforeFoot.y);
+    });
     assert.equal(await page.evaluate(()=>document.querySelector('.app-container').scrollTop),scroll,'fader also scrolled page');
     const value=Number(await range.inputValue());assert.ok(value>0);assert.equal(await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type==='channel.set').at(-1).value),value,'final value lost');
+    assert.equal(await page.locator('#fader-note').textContent(),'CH 001 · '+value);
     const before=await page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type==='channel.set').length);
     const grid=await page.locator('.fader-grid').boundingBox();await drag(page,grid.x+3,grid.y+100,grid.x+3,grid.y+10);
     assert.ok(await page.evaluate(()=>document.querySelector('.app-container').scrollTop)>scroll,'outside range must scroll');
@@ -220,10 +228,94 @@ async function polish(page,width,touch) {
   const footer=await page.evaluate(()=>{const f=document.querySelector('.app-footer'),r=f.getBoundingClientRect(),nav=document.querySelector('.section-nav').getBoundingClientRect();return {height:r.height,right:r.right,bottom:r.bottom,navTop:nav.top,direction:getComputedStyle(f).flexDirection,align:getComputedStyle(f).justifyContent};});
   assert.equal(footer.direction,'row');assert.equal(footer.align,'flex-start');assert.ok(footer.height<35);assert.ok(footer.right<=width);if(touch)assert.ok(footer.bottom<footer.navTop,'footer obscured by nav');
 }
+async function channelStatusGeometry(page) {
+  await page.locator('[data-section="editor"]').click();
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const before=await page.locator('.panel-foot').boundingBox();assert.equal(before.height,44);
+  for(const message of ['', 'CH 023 · 112', 'CH 512 transport failure; state may have changed.', 'Channel controls unavailable']) {
+    await page.locator('#fader-note').evaluate((n,text)=>n.textContent=text,message);
+    const metrics=await page.locator('#fader-note').evaluate(n=>({whiteSpace:getComputedStyle(n).whiteSpace,
+      content:getComputedStyle(n,'::before').content,height:n.getBoundingClientRect().height,
+      panel:n.parentElement.getBoundingClientRect().height,overflow:n.parentElement.scrollWidth>n.parentElement.clientWidth}));
+    assert.equal(metrics.panel,44);assert.equal(metrics.whiteSpace,'nowrap');assert.equal(metrics.overflow,false);
+    assert.ok(metrics.height<20);assert.equal(metrics.content,message?'""':'none');
+  }
+}
+async function presetBlackoutStability(page,touch) {
+  await page.locator('[data-section="presets"]').click();
+  await page.evaluate(()=>{
+    window.__blackoutNode=document.querySelector('#blackout');
+    window.__headerSockets[0].holdPresets=true;
+  });
+  const presentation=()=>page.locator('#blackout').evaluate(n=>{
+    const s=getComputedStyle(n),r=n.getBoundingClientRect();
+    if(n!==window.__blackoutNode)throw Error('blackout DOM replaced');
+    return {text:n.textContent,classes:n.className,active:n.dataset.active,pressed:n.getAttribute('aria-pressed'),
+      busy:n.getAttribute('aria-busy'),label:n.getAttribute('aria-label'),disabled:n.disabled,
+      background:s.backgroundColor,border:s.borderColor,color:s.color,opacity:s.opacity,
+      x:r.x,y:r.y+document.querySelector('.app-container').scrollTop+scrollY,width:r.width,height:r.height};
+  });
+  const settled=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const operations=()=>page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>r.type!=='state.request').length);
+  for(const active of [false,true]) {
+    await page.evaluate(active=>window.__headerSockets[0].remoteBlackout(active),active);await settled();
+    const baseline=await presentation();assert.equal(baseline.text,'Blackout '+(active?'ON':'OFF'));
+    assert.equal(baseline.disabled,false);assert.equal(baseline.busy,'false');
+    for(const [slot,same,doubleTap]of [[2,false,false],[2,true,false],[3,false,true],[2,false,false]]) {
+      const tile=page.locator('[data-preset="P'+slot+'"]');await tile.click();
+      if(doubleTap){if(touch){await tile.tap();await tile.tap();}else await tile.dblclick();}
+      else await page.locator('#preset-load').click();
+      await page.waitForFunction(()=>!!window.__headerSockets[0].pendingPreset);await settled();
+      assert.deepEqual(await presentation(),baseline,'preset pending must not restyle/disable blackout');
+      const count=await operations();await page.locator('#blackout').dispatchEvent('click');
+      await page.locator('#preset-load').dispatchEvent('click');assert.equal(await operations(),count,'pending commands are not duplicated');
+      if(doubleTap) {
+        await page.evaluate(active=>window.__headerSockets[0].remoteBlackout(!active),active);await settled();
+        const changed=await presentation();assert.equal(changed.text,'Blackout '+(active?'OFF':'ON'));assert.notEqual(changed.background,baseline.background);
+        await page.evaluate(active=>window.__headerSockets[0].remoteBlackout(active),active);await settled();
+        assert.deepEqual(await presentation(),baseline,'genuine transitions during pending preset are not hidden');
+      }
+      await page.evaluate(({slot,same})=>window.__headerSockets[0].publishPreset(slot,same),{slot,same});await settled();
+      assert.deepEqual(await presentation(),baseline,'publication before ack must stay stable');
+      assert.equal(await page.locator('[data-preset="P'+slot+'"] .slot-state').textContent(),'Occupied · Loaded · Pending');
+      await page.evaluate(same=>window.__headerSockets[0].finishPreset(same?'no_change':'applied'),same);await settled();
+      assert.deepEqual(await presentation(),baseline,'preset ack must stay stable');
+      assert.equal(await page.locator('[data-preset="P'+slot+'"] .slot-state').textContent(),'Occupied · Loaded');
+    }
+    // Both physical and other-browser origins are unsolicited bulk events here.
+    for(const slot of [3,4]) {
+      const count=await operations();await page.evaluate(slot=>window.__headerSockets[0].publishPreset(slot),slot);await settled();
+      assert.deepEqual(await presentation(),baseline,'foreign preset broadcast must stay stable');
+      assert.equal(await operations(),count,'remote publication is never echoed');
+    }
+    await page.locator('[data-preset="P2"]').click();await page.locator('#preset-load').click();
+    await page.waitForFunction(()=>!!window.__headerSockets[0].pendingPreset);
+    await page.evaluate(()=>window.__headerSockets[0].finishPreset('rejected'));await settled();
+    assert.deepEqual(await presentation(),baseline);assert.match(await page.locator('#preset-feedback').textContent(),/failed: rejected/);
+  }
+  // An actual blackout transition still changes its authoritative styling.
+  const on=await presentation();await page.evaluate(()=>window.__headerSockets[0].remoteBlackout(false));await settled();
+  const off=await presentation();assert.notEqual(off.background,on.background);assert.equal(off.text,'Blackout OFF');
+  await page.locator('[data-section="editor"]').click();await settled();
+  assert.equal(await page.locator('.fader-value').first().textContent(),'4','bulk values reached the actual Editor');
+  assert.match(await page.locator('#blackout-summary-label').textContent(),/Blackout OFF/);
+  await page.locator('[data-section="presets"]').click();await page.locator('[data-preset="P2"]').click();await page.locator('#preset-load').click();
+  await page.waitForFunction(()=>!!window.__headerSockets[0].pendingPreset);
+  await page.evaluate(()=>{const s=window.__headerSockets[0];s.readyState=3;s.onclose?.({code:1006,wasClean:false});});
+  await page.waitForFunction(()=>document.querySelector('#blackout').textContent==='Blackout unavailable');
+  assert.equal((await presentation()).disabled,true,'connection loss must not look available');
+  await page.waitForFunction(()=>window.__headerSockets.length===2&&document.querySelector('#blackout').textContent==='Blackout OFF');await settled();
+  assert.deepEqual(await presentation(),off,'fresh snapshot restores the authoritative presentation');
+  assert.deepEqual(await page.evaluate(()=>window.__headerSockets[1].sent),[],'uncertain preset is never replayed');
+}
 (async()=>{
  const browser=await chromium.launch({headless:true,...(process.env.DMX_CHROME_PATH?{executablePath:process.env.DMX_CHROME_PATH}:{}),args:['--no-sandbox']});
  const measurements=[];
  try {
+  if(args.includes('--preset-only')) {
+    const {page,context}=await prepare(browser,375);await presetBlackoutStability(page,true);await context.close();
+    console.log('PASS focused preset/blackout pending, bulk/ack/no-change, foreign loads, rejection and reconnect presentation');return;
+  }
   for(const width of [320,375,390,430]) {
    const {page,context}=await prepare(browser,width);const initial=await geometry(page);mobile(initial);assert.equal(initial.short,'none');assert.equal(initial.fullText,'Connected / Live');assert.equal(await page.getByRole('status',{name:'Connected / Live',exact:true}).count(),1);
    if(width===320||width===390)await page.screenshot({path:path.join(output,'phone-'+width+'-live.png')});
@@ -263,9 +355,10 @@ async function polish(page,width,touch) {
    measurements.push({width,header:after.header,viewGap:after.viewGap,slider:sliderMeasurement,desktopBaselineCompared:!!before});await context.close();
   }
   for(const width of [320,375,390,430,600,768,1280]) {
-    const {page,context}=await prepare(browser,width);const stable=await blackoutGeometry(page,width<480);measurements.find(m=>m.width===width).blackoutStates=stable;await context.close();
+    const preset=await prepare(browser,width);await presetBlackoutStability(preset.page,width<480);await preset.context.close();
+    const {page,context}=await prepare(browser,width);const stable=await blackoutGeometry(page,width<480);measurements.find(m=>m.width===width).blackoutStates=stable;await channelStatusGeometry(page);await context.close();
   }
   fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(measurements,null,2)+'\n');
-  console.log('PASS headless Chromium: 320/375/390/430 scoped computed gesture chains, authoritative fixed blackout pending/offline geometry; approved mobile headers / gaps; 44px native thumbs / 54px targets, fixed-scale double-tap/pinch rejection, silent drag, preset load/scroll and lower blackout row; 600/768/1280 desktop header preserved');
+  console.log('PASS headless Chromium: seven widths; preset pending/bulk/ack/reload/foreign/rejected/reconnect blackout presentation and command guards; real ON/OFF and pending/offline states; gestures, faders, compact status, desktop/mobile headers and lower blackout row');
  } finally {await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

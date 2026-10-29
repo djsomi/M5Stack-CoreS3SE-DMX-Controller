@@ -414,10 +414,24 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   resumed.end();f.next();const recovered=f.sockets.at(-1);recovered.open();recovered.message(hello());recovered.message(snapshot({blackout:true}));flush();
   assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(recovered.sent.length,0,'no mutation replay');
 
+  const blackoutFeedback=nodes['blackout-summary-detail'].textContent;
+  navigate('editor');nodes['fader-grid'].children[0].children[2].children[0].listeners.click();flush();
+  const changed=JSON.parse(recovered.sent.at(-1));assert.equal(changed.type,'channel.set');
+  assert.equal(nodes['fader-note'].textContent,'','pending preview is not confirmed status');
+  recovered.message(channel({seq:'12',revision:'9007199254740994',channel:1,value:changed.value,blackout:true}));flush();
+  assert.equal(nodes['fader-note'].textContent,'','publication alone does not acknowledge the local command');
+  recovered.message({...envelope('command.ack','13','9007199254740994',changed.id),status:'applied',domain:0});flush();
+  assert.equal(nodes['fader-note'].textContent,'CH 001 · '+changed.value);
+  recovered.message(channel({seq:'14',revision:'9007199254740995',channel:1,value:112,blackout:true}));flush();
+  assert.equal(nodes['fader-note'].textContent,'CH 001 · 112','compact strip follows other clients through the real bootstrap');
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(nodes['blackout-summary-detail'].textContent,blackoutFeedback);
+  navigate('status');
+
   // A missing matching snapshot still invalidates LIVE at the unchanged deadline.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   assert.equal(f.next(),10000);flush();assert.equal(nodes['connection-label'].textContent,'Reconnecting');
   assert.equal(connection.dataset.live,'false');assert.equal(nodes['status-sync'].textContent,'Not synchronized');
+  assert.equal(nodes['fader-note'].textContent,'Channel controls unavailable');
   events.pagehide();resumed.end();assert.equal(frames.size,0);assert.equal(f.jobs.size,0);
   console.log('MEASURE mocked 10000 ordered updates: '+elapsed+' ms Node VM; one pending RAF, zero card rebuilds after initial bank');
 });
@@ -475,6 +489,21 @@ test('1000 rapid inputs are coalesced; final release wins within hard rolling bu
   assert.equal(f.control.pending(),0);assert.ok(f.events.length>=16 && f.events.length<=35);
   for(const event of f.events)assert.ok(f.events.filter(e=>e.at>=event.at && e.at<event.at+1000).length<=18);
   assert.equal(f.events.at(-1).value,255);assert.equal(f.jobs.size,1,'only established idle health timer remains');
+  assert.equal(f.control.note(),'CH 001 · 255');
+});
+
+test('compact status follows matching ack and current authority without preview or extra commands',()=>{
+  const f=activeFixture();assert.equal(f.control.note(),'');
+  f.control.setFinal(23,112);assert.equal(f.control.note(),'','no channel status invented before ack');
+  const command=f.events[0];f.authority(23,111);assert.equal(f.control.note(),'');
+  f.reply(command,'applied',false);assert.equal(f.control.note(),'CH 023 · 111','read authority, not requested 112');
+  f.authority(23,112);assert.equal(f.control.note(),'CH 023 · 112');
+  f.authority(23,7);assert.equal(f.control.note(),'CH 023 · 7','other clients update the same channel');
+  f.authority(24,99);assert.equal(f.control.note(),'CH 023 · 7','unrelated update does not change context');
+  assert.equal(f.events.length,1,'status rendering never sends a command');
+  f.socket.end();assert.equal(f.control.note(),'','stale values must not appear authoritative');
+  f.next();f.ready();assert.equal(f.control.note(),'CH 023 · 22','fresh snapshot is authoritative');
+  assert.equal(f.events.length,1,'no replay on recovery');
 });
 
 test('release bypasses ordinary pacing when credit exists, waits behind in-flight without dropping final',()=>{
@@ -490,9 +519,11 @@ test('preview resists remote values during drag, then reconciles to authoritativ
   const f=activeFixture();f.control.edit(1,80);f.authority(1,33);
   assert.equal(f.read.channel(1),33);assert.equal(f.control.preview(1),80);assert.equal(f.control.note(),'','drag helpers are not visible');
   f.reply(f.events[0]);f.authority(1,34);assert.equal(f.control.preview(1),80);
+  assert.equal(f.control.note(),'CH 001 · 34','drag preview 80 is not authoritative status');
   f.control.release(1);assert.equal(f.events.at(-1).value,80);
   f.reply(f.events.at(-1));assert.equal(f.control.preview(1),null);assert.equal(f.read.channel(1),80);
   f.authority(1,90);assert.equal(f.read.channel(1),90);assert.equal(f.events.length,2,'incoming updates never echo');
+  assert.equal(f.control.note(),'CH 001 · 90');
 });
 
 test('explicit rejection and no_change clear preview without inventing authoritative state',()=>{
@@ -503,6 +534,7 @@ test('explicit rejection and no_change clear preview without inventing authorita
   // Release is explicit and remains pending behind first ack; acknowledge that final intent.
   if(f.events.length>2)f.reply(f.events[2],'no_change',false);
   assert.equal(f.control.preview(1),null);assert.equal(f.read.channel(1),0);
+  assert.equal(f.control.note(),'CH 001 · 0');
 });
 
 test('transport error may follow domain mutation; use published state without rollback or retry',()=>{
@@ -628,6 +660,7 @@ test('fine +/- controls clamp, disable limits, accumulate pending taps and prese
   assert.equal(f.events.length,1);assert.equal(f.events[0].value,101);
   f.reply(f.events[0]);assert.equal(f.events[1].value,102);f.reply(f.events[1]);f.view.render();
   assert.equal(c.value.textContent,'102');assert.equal(f.control.preview(1),null);
+  assert.equal(f.control.note(),'CH 001 · 102');
   c.minus.listeners.click();assert.equal(f.events.at(-1).value,101);f.reply(f.events.at(-1));
   f.authority(1,255);f.view.render();assert.equal(c.plus.disabled,true);const sent=f.events.length;
   c.plus.listeners.click();assert.equal(f.events.length,sent);assert.equal(f.read.channel(1),255);
@@ -655,6 +688,7 @@ test('numeric draft is explicit, untouched by authority, keyboard-friendly and s
   assert.equal(c.form.hidden,true);assert.equal(c.rail.hidden,false);assert.equal(c.value.textContent,'203');
   assert.match(c.value.attrs['aria-label'],/Unconfirmed preview/);assert.equal(c.value.focusOptions.preventScroll,true);
   f.reply(f.events[0]);f.view.render();assert.equal(c.value.textContent,'203');assert.match(c.value.attrs['aria-label'],/Controller value/);
+  assert.equal(f.control.note(),'CH 001 · 203');
 });
 
 test('numeric input rejects empty, malformed, negative, fractional and out-of-range drafts',()=>{
@@ -799,6 +833,24 @@ test('occupied load has no dialog, publishes all512 values, keeps P8 identity an
   f.select(8);f.click('preset-load');assert.equal(f.nodes['preset-confirmation'].hidden,true);assert.equal(f.events[0].slot,8);
   f.result('applied',{values:Array(512).fill(37)});for(let i=1;i<=512;++i)assert.equal(f.read.channel(i),37);
   assert.equal(f.card().value.textContent,'37');assert.match(f.nodes['preset-feedback'].textContent,/P8 load confirmed/);
+});
+
+test('preset pending preserves live blackout state while command admission remains serialized',()=>{
+  for(const active of [false,true]) {
+    const f=operationsFixture();f.publish({blackout:active});
+    assert.equal(f.operations.run('preset.load',2),true);
+    assert.equal(f.read.current().ready,true);assert.equal(f.read.current().phase,'live');
+    assert.equal(f.read.current().blackout,active);assert.equal(f.operations.canBlackout(),false);
+    assert.equal(f.operations.run('blackout.set',!active),false);
+    assert.equal(f.operations.run('preset.load',2),false);assert.equal(f.events.length,1);
+    f.publish({values:Array(512).fill(37),loaded:2,modified:false});
+    assert.equal(f.read.current().blackout,active);assert.equal(f.operations.canBlackout(),false);
+    f.result('applied');assert.equal(f.operations.canBlackout(),true);
+    assert.equal(f.operations.run('preset.load',2),true);
+    f.publish({},true);f.result('no_change');
+    assert.equal(f.read.current().blackout,active);assert.equal(f.read.channel(512),37);
+    assert.equal(f.read.current().loaded,2);assert.equal(f.operations.canBlackout(),true);
+  }
 });
 
 test('blackout is explicit, authoritative, one pending operation and burst-suppressed without queued toggles',()=>{

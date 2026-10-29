@@ -61,7 +61,11 @@ class PipelineTests(unittest.TestCase):
 
     def test_stale_module_bundle_and_read_only_verification(self):
         path = self.root / "web/src/js/state.js"
-        path.write_bytes(path.read_bytes() + b"\n// changed source\n")
+        # Change source without adding prose to a nearly full compressed asset.
+        # This fixture tests stale detection; size-limit rejection has its own test.
+        original = path.read_bytes()
+        self.assertEqual(original.count(b"  function create()"), 1)
+        path.write_bytes(original.replace(b"  function create()", b" function create()", 1))
         before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
         with self.assertRaisesRegex(ValueError, "stale UI bundle"): assets.verify(self.root)
         self.assertEqual(before, {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob("*") if p.is_file()})

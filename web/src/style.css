@@ -96,9 +96,9 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .value-entry .dmx-draft-input { width: 100%; max-width: 76px; min-width: 0; min-height: 44px; font-size: 18px; text-align: center; border: 1px solid #5f81b5; border-radius: 7px; background: #10151e; padding: 4px 2px; }
 .value-entry button { width: 100%; max-width: 76px; min-height: 44px; padding: 4px 2px; font-size: 12px; }
 .value-error { max-width: 100%; overflow-wrap: anywhere; min-height: 14px; color: var(--red); font-size: 10px; text-align: center; }
-.panel-foot { border-top: 1px solid #252e3b; display: flex; align-items: center; gap: 8px; padding: 13px 16px; }
-.panel-foot p { margin: 0; color: #96a6bc; font-size: 11px; line-height: 1.5; }
-.preview-indicator { width: 5px; height: 5px; background: #6e85a9; border-radius: 50%; flex-shrink: 0; }
+.panel-foot { border-top: 1px solid #252e3b; display: flex; align-items: center; height: 44px; padding: 13px 16px; }
+.panel-foot p { margin: 0; color: #96a6bc; font-size: 11px; line-height: 1.5; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-foot p:not(:empty)::before { content: ""; display: inline-block; width: 5px; height: 5px; background: #6e85a9; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
 .blackout-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px 4px; color: #a3afc0; font-size: 11px; }
 .blackout-summary p { margin: 0; }
 .blackout-summary > span:last-child { margin-left: auto; color: #8593a8; }

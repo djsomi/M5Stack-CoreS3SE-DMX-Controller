@@ -30,7 +30,7 @@
           <div class="bank-toolbar"><div class="bank-title"><span class="eyebrow">CHANNEL BANK</span><h2 id="bank-heading">Channels 001–004</h2></div><div class="bank-buttons"><button id="bank-previous" class="icon-button" aria-label="Previous channel bank" disabled>←</button><button id="bank-next" class="icon-button" aria-label="Next channel bank">→</button></div><form id="jump-form" class="jump-form"><label for="channel-jump">Go to CH</label><input id="channel-jump" type="number" inputmode="numeric" min="1" max="512" step="1" value="1" required aria-describedby="jump-error"><button type="submit" class="subtle-button">Go</button></form></div>
           <p id="jump-error" class="form-error" aria-live="polite"></p>
           <div id="fader-grid" class="fader-grid" role="group" aria-label="Controller channel faders" aria-describedby="fader-note"></div>
-          <div class="panel-foot"><span class="preview-indicator" aria-hidden="true"></span><p id="fader-note">Values unavailable until synchronization · Channel controls disabled.</p></div>
+          <div class="panel-foot"><p id="fader-note">Values unavailable until synchronization · Channel controls disabled.</p></div>
         </div>
         <div class="blackout-summary"><span class="outline-dot" aria-hidden="true"></span><p id="blackout-summary-label" role="status" aria-atomic="true">Blackout state unavailable</p><span id="blackout-summary-detail">Awaiting live data</span></div>
       </section>
