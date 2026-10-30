@@ -61,7 +61,7 @@ assert 'WIFI_STORAGE_RAM' in net and 'WIFI_MODE_AP' in net and 'WIFI_AUTH_WPA2_P
 assert 'WIFI_MODE_STA' not in net and 'WIFI_MODE_APSTA' not in net
 assert 'storage.begin("dmxwifi",false)' in net and 'storage.putBytes("ap1"' in net
 assert net.index('storage.putBytes("ap1"')>net.index('void prepare()')
-handler=net[net.index('esp_err_t serve('):net.index('void worker(')]
+handler=net[net.index('esp_err_t serve('):net.index('// One authorized job')]
 assert all(s not in handler for s in ['credentials','password','Preferences','storage.','M5.'])
 assert 'httpd_sess_set_recv_override' in net and 'httpd_sess_set_send_override' in net
 assert 'httpd_queue_work(server,sweep' in net and 'httpd_sess_trigger_close' in net

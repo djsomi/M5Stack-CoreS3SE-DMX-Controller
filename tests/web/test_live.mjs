@@ -356,7 +356,16 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
     addEventListener(type,handler){events[type]=handler;}};
   const appCode=readFileSync(new URL('../../web/src/js/app.js',import.meta.url),'utf8');
   const app=new vm.Script('('+appCode+')').runInNewContext({window,document})(modules);
-  const flush=()=>{assert.ok(frames.size<=1,'only one scheduled render');for(const [id,callback]of [...frames]){frames.delete(id);callback();}};
+  const flush=()=>{
+    // Current UI opts into sanitized Wi-Fi notices. Reply only to that read;
+    // existing mutation/health assertions below remain independent and strict.
+    for(const socket of f.sockets)for(const raw of socket.sent){const request=JSON.parse(raw);
+      if(request.type!=='wifi.get'||socket.wifiReads?.has(request.id))continue;
+      (socket.wifiReads??=new Set()).add(request.id);
+      socket.message({...envelope('wifi.snapshot','12','1',request.id),base:'1',ssid:'Synthetic AP',proposed:'',origin:'factory',phase:'idle',reason:'none',request:0,remaining_ms:0,password_change:false,available:true});
+    }
+    assert.ok(frames.size<=1,'only one scheduled render');for(const [id,callback]of [...frames]){frames.delete(id);callback();}
+  };
   const navigate=section=>{links[names.indexOf(section)].listeners.click({button:0,detail:1,preventDefault(){}});flush();};
   app.start();app.start();assert.equal(f.sockets.length,1);assert.equal(frames.size,0);
   assert.equal(nodes['blackout-summary'].className,'blackout-summary','unknown startup is neutral');
@@ -385,13 +394,13 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   document.hidden=false;events.visibilitychange();assert.equal(f.sockets.length,2);fresh.end();assert.equal(f.sockets.length,3);
   const resumed=f.sockets.at(-1);resumed.open();resumed.message(hello());resumed.message(snapshot());flush();
   assert.equal(nodes['connection-label'].textContent,'Connected / Live');
-  assert.ok(f.sockets.every(s=>s.sent.length===0),'normal operation/resume sends no JSON requests or mutations');
+  assert.ok(f.sockets.every(s=>s.sent.every(raw=>JSON.parse(raw).type==='wifi.get')),'normal operation/resume adds only the bounded Wi-Fi subscription read, never mutations');
   // Routine probes are silent in the main shell; detailed pending state stays in Status.
   assert.equal(f.next(),15000);flush();assert.equal(nodes['connection-label'].textContent,'Connected / Live');
   navigate('status');assert.equal(nodes['status-sync'].textContent,'Live / synchronized');assert.equal(nodes['status-connection'].textContent,'Connected / Live');
   assert.equal(nodes['connection-label'].textContent,'Connected / Live');
-  assert.equal(JSON.parse(resumed.sent[0]).type,'state.request');
-  f.advance(9000);resumed.message(snapshot({id:1,seq:'12'}));flush();
+  const probe=JSON.parse(resumed.sent.find(raw=>JSON.parse(raw).type==='state.request'));assert.equal(probe.type,'state.request');
+  f.advance(9000);resumed.message(snapshot({id:probe.id,seq:'12'}));flush();
   assert.equal(nodes['connection-label'].textContent,'Connected / Live');assert.equal(nodes['status-sync'].textContent,'Live / synchronized');
   assert.equal(nodes.blackout.disabled,false);nodes.blackout.listeners.click();flush();
   const blackoutRequest=JSON.parse(resumed.sent.at(-1));assert.equal(blackoutRequest.type,'blackout.set');assert.equal(blackoutRequest.active,true);
@@ -414,7 +423,7 @@ test('actual bootstrap: one socket, batched rendering, inactive views, truthful 
   // A command deadline invalidates freshness rather than falsely showing requested OFF.
   f.elapse(5000);flush();assert.equal(nodes.blackout.textContent,'Blackout unavailable');assert.equal(nodes['blackout-summary'].className,'blackout-summary','stale state is neutral');assert.equal(nodes.blackout.disabled,true);
   resumed.end();f.next();const recovered=f.sockets.at(-1);recovered.open();recovered.message(hello());recovered.message(snapshot({blackout:true}));flush();
-  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.equal(recovered.sent.length,0,'no mutation replay');
+  assert.equal(nodes.blackout.textContent,'Blackout ON');assert.ok(recovered.sent.every(raw=>JSON.parse(raw).type==='wifi.get'),'read-only resubscription, no mutation replay');
 
   const blackoutFeedback=nodes['blackout-summary-detail'].textContent;
   navigate('editor');nodes['fader-grid'].children[0].children[2].children[0].listeners.click();flush();

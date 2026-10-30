@@ -1,8 +1,10 @@
 """Verify original Power Off and corrected owner/render lifecycle against accepted source."""
 from pathlib import Path
-import subprocess
+import subprocess,sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"network"))
+from wifi_guard_support import prior as before_wifi
 root=Path(__file__).resolve().parents[2]
-def read(n):return (root/n).read_text(encoding='utf-8')
+def read(n):return before_wifi(n,(root/n).read_text(encoding='utf-8'))
 def baseline(n):return subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show','487fce1:'+n],cwd=root).decode('utf-8')
 def function(text,signature):
     a=text.index(signature);b=text.index('{',a);depth=0

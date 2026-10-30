@@ -11,11 +11,11 @@ const out='dist/maintenance-correction-20261029/browser';fs.mkdirSync(out,{recur
   assert.equal(await page.locator('#maintenance-poweroff').isEnabled(),true,'Power Off has no USB/battery/profile gate');
   assert.doesNotMatch(await page.locator('.device-maintenance').textContent(),/APPROVE|Battery Bottom|USB|battery-only/i);
   const geometry=()=>page.evaluate(()=>{const box=s=>{const r=document.querySelector(s).getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};};
-   return{settings:box('.device-settings'),maintenance:box('.device-maintenance'),preferences:box('.settings-device-grid + .settings-panel'),grid:box('.settings-device-grid'),nav:box('.section-nav'),buttons:box('.maintenance-button-area'),message:box('#maintenance-confirm-text'),scroll:document.documentElement.scrollWidth};});
+   return{settings:box('.device-settings'),maintenance:box('.device-maintenance'),preferences:box('.browser-preferences'),grid:box('.settings-device-grid'),nav:box('.section-nav'),buttons:box('.maintenance-button-area'),message:box('#maintenance-confirm-text'),scroll:document.documentElement.scrollWidth};});
   const initial=await geometry();assert.equal(initial.scroll,width);assert.ok(Math.abs(initial.settings.width-initial.maintenance.width)<.1);
   if(width>=680){assert.ok(Math.abs(initial.settings.y-initial.maintenance.y)<.1);assert.ok(Math.abs(initial.settings.width-(initial.grid.width-16)/2)<.1);}
   else{assert.equal(initial.settings.width,initial.grid.width);assert.ok(initial.maintenance.y>=initial.settings.bottom+15.9);}
-  assert.ok(initial.preferences.y>=initial.grid.bottom+15.9);assert.ok(initial.maintenance.height<260,'natural-height mobile card without empty approval/warning area');
+  assert.ok(initial.preferences.y>=initial.grid.bottom+15.9);if(width<680)assert.ok(initial.maintenance.height<260,'natural-height mobile card');else assert.equal(initial.maintenance.bottom,initial.settings.bottom,'desktop cards stretch equally');
   assert.ok(initial.message.y>=initial.buttons.bottom+11.9,'text and buttons have breathing room');
   const mutations=()=>page.evaluate(()=>window.__headerSockets[0].sent.filter(r=>r.type==='maintenance.request'||r.type==='maintenance.cancel'));
   const stable=async()=>{const now=await geometry();assert.equal(now.maintenance.height,initial.maintenance.height);assert.equal(now.buttons.width,initial.buttons.width);assert.equal(now.buttons.height,initial.buttons.height);assert.equal(now.buttons.y-now.maintenance.y,initial.buttons.y-initial.maintenance.y);assert.equal(now.nav.height,initial.nav.height);if(width<680)assert.equal(now.nav.y,initial.nav.y);};

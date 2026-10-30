@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "wifi_configuration.h"
 #include "wifi_startup_trace.h"
 namespace network_service {
 enum class Phase : uint8_t { disabled, prepared, starting, ready, failed };
@@ -18,6 +19,8 @@ struct Status {
 };
 // Owner/setup only, before M5/ADC/Wi-Fi/DMX initialization. No credentials logged.
 void prepare();
+WifiConfiguration& configuration();
+void setConfigurationBusy(bool busy);
 // Owner/setup only. UI buffers must already be reserved. Worker owns all radio/HTTP.
 void launch(bool canvas_reserved);
 void ownerTick(int64_t now, uint32_t tx_errors, bool tx_stopped);

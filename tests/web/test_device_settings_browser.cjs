@@ -177,7 +177,7 @@ const out='dist/responsive-ui-20261029/settings-browser';fs.mkdirSync(out,{recur
    assert.equal(await page.locator('#device-brightness').getAttribute('aria-valuetext'),'Unavailable');
    assert.notEqual(await page.locator('.connection').getAttribute('data-live'),'true');
    await page.waitForFunction(()=>window.__headerSockets.filter(s=>s!==window.__settingsPeer).length===2&&!document.querySelector('#device-brightness').disabled);
-   assert.equal(await page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request','maintenance.get'].includes(r.type)).length),0,'reconnect reads without replaying mutations');
+   assert.equal(await page.evaluate(()=>window.__headerSockets.at(-1).sent.filter(r=>!['state.request','settings.request','maintenance.get','wifi.get'].includes(r.type)).length),0,'reconnect reads without replaying mutations');
    await page.evaluate(()=>window.__headerSockets.at(-1).remoteSetting('brightness',3));
    await page.waitForFunction(()=>document.querySelector('#device-brightness-current').textContent==='3');await quiet();
    assert.equal(await page.evaluate(()=>window.__headerSockets.filter(s=>s!==window.__settingsPeer&&s.readyState===1).length),1);

@@ -491,6 +491,49 @@ class view_sender_t : public view_t {
         controllerPowerOff();
     }
 
+
+    bool wifiUiActive() const {return wifi_ui_open;}
+    bool serviceWifiUi(WifiConfiguration& config) {
+        const auto tp=M5.Touch.getDetail();auto state=config.snapshot();
+        if(state.phase==WifiConfiguration::Phase::idle)return restoreWifiPage(tp.state);
+        if(!wifi_ui_open) {
+            M5.Display.waitDisplay();M5.Display.clearClipRect();
+            wifi_previous_page=active_fullscreen_page;wifi_ui_open=true;wifi_restored=false;wifi_frame_ready=false;wifi_released=!tp.state;
+            main_value_slider_dragging=precision_slider_dragging=false;precision_repeat_dir=0;
+            scroll_y_add=0;settings_scroll_add=0;preset_double_tap.reset();settings_restart_tap_armed=settings_poweroff_tap_armed=false;
+            setActiveFullscreenPage(fullscreen_page_wifi);
+        }
+        if(!tp.state)wifi_released=true;
+        if(wifi_released&&tp.wasPressed()) {
+            if(state.phase==WifiConfiguration::Phase::approval) {
+                if(pointInRect(tp.x,tp.y,170,174,130,50)){config.cancelPhysical();return restoreWifiPage(tp.state);}
+                if(pointInRect(tp.x,tp.y,20,174,130,50)){config.approve(millis());state=config.snapshot();if(state.phase==WifiConfiguration::Phase::idle)return restoreWifiPage(tp.state);}
+            } else if(state.phase==WifiConfiguration::Phase::failed&&pointInRect(tp.x,tp.y,20,174,280,50)){config.dismiss();return restoreWifiPage(tp.state);}
+        }
+        updateBatteryMonitor();
+        if(wifi_frame_ready&&wifi_revision==state.revision)return true;
+        M5.Display.waitDisplay();M5.Display.clearClipRect();auto* frame=getFullscreenCanvas(fullscreen_page_wifi,"WIFI CONFIG");
+        if(!frame){config.cancelPhysical();return true;}
+        auto& c=*frame;c.clearClipRect();c.fillScreen(TFT_BLACK);c.setTextSize(1);c.setTextWrap(false);c.setTextDatum(textdatum_t::middle_center);
+        c.setTextColor(TFT_WHITE,TFT_BLACK);c.setFont(&fonts::Font4);c.drawString("WI-FI CONFIGURATION",160,25);c.setFont(&fonts::Font0);
+        if(state.phase==WifiConfiguration::Phase::approval) {
+            char name[36];snprintf(name,sizeof(name),"\"%s\"",state.proposed);
+            c.drawString("Proposed SSID",160,60);c.drawString(name,160,80);
+            c.drawString(state.password_change?"Password will change":"Existing password will be kept",160,106);
+            char line[48];snprintf(line,sizeof(line),"Approve on device within %lu s",(unsigned long)(state.remaining_ms/1000));c.drawString(line,160,132);
+            c.drawString("Connected browsers will disconnect",160,150);
+            drawPrecisionButton(&c,20,174,130,50,"OK");drawPrecisionButton(&c,170,174,130,50,"CANCEL");
+        } else if(state.phase==WifiConfiguration::Phase::failed) {
+            c.setTextColor(TFT_RED,TFT_BLACK);c.drawString("Wi-Fi change failed",160,80);
+            c.drawString(state.reason==WifiConfiguration::Reason::rollback?"Recovery failed - use local Wi-Fi reset":"Previous configuration restored",160,110);
+            drawPrecisionButton(&c,20,174,280,50,"CLOSE");
+        } else {
+            c.drawString("Applying approved Wi-Fi configuration",160,85);
+            c.drawString("DMX remains active",160,115);c.drawString("Reconnect using the new credentials",160,145);
+        }
+        pushFullscreenCanvas(fullscreen_page_wifi,"WIFI CONFIG");wifi_frame_ready=true;wifi_revision=state.revision;return true;
+    }
+
     bool maintenanceUiActive() const {return maintenance_ui_open;}
 
     // Shared-canvas handoff: finish the previous LCD transfer before reusing pixels.
@@ -578,6 +621,31 @@ class view_sender_t : public view_t {
         if (!touch_down) maintenance_ui_open=false;
         return true;
     }
+    bool restoreWifiPage(bool touch_down) {
+        if (!wifi_ui_open) return false;
+        if (!wifi_restored) {
+            if (M5.Speaker.isPlaying()) return true; // Retain exclusive ownership until a complete redraw can finish.
+            M5.Display.waitDisplay();M5.Display.clearClipRect();
+            setActiveFullscreenPage(static_cast<fullscreen_page_t>(wifi_previous_page));
+            if (settings_screen) drawSettingsScreen();
+            else if (precision_editor_screen) drawPrecisionEditor();
+            else if (preset_screen) {if(preset_options_screen)drawPresetOptionsScreen();else drawPresetScreen();}
+            else {
+                // Main is an incremental renderer: explicitly clear every old popup pixel.
+                M5.Display.fillScreen(TFT_BLACK);M5.Display.setTextSize(1);M5.Display.setTextWrap(false);
+                M5.Display.setTextDatum(textdatum_t::middle_center);M5.Display.setTextColor(TFT_WHITE,TFT_BLACK);
+                updateDisplay(true);
+                if(ui_mode==ui_mode_t::mode_value_setting)drawUIValueSet(target_value,true);
+                else drawPresetOpenButton(); // Battery, Settings, Blackout, Preset and heartbeat.
+            }
+            M5.Display.waitDisplay();wifi_restored=true;controller_redraw_pending=false;
+        }
+        // A CANCEL press and its release never operate the restored page beneath it.
+        if (!touch_down) wifi_ui_open=false;
+        return true;
+    }
+    bool wifi_ui_open=false,wifi_released=false,wifi_restored=false,wifi_frame_ready=false;
+    int wifi_previous_page=0;uint64_t wifi_revision=0;
     bool maintenance_ui_open=false,maintenance_released=false,maintenance_restored=false,maintenance_frame_ready=false;
     int maintenance_previous_page=0,maintenance_last_seconds=-1;
     DeviceMaintenance::Phase maintenance_phase=DeviceMaintenance::Phase::idle;
@@ -646,7 +714,8 @@ class view_sender_t : public view_t {
         fullscreen_page_precision,
         fullscreen_page_keypad,
         fullscreen_page_preset,
-        fullscreen_page_maintenance
+        fullscreen_page_maintenance,
+        fullscreen_page_wifi
     };
 
     fullscreen_page_t active_fullscreen_page = fullscreen_page_none;
@@ -821,7 +890,8 @@ class view_sender_t : public view_t {
 
     // Settings are drawn in a vertically scrollable content area.
     // More settings can simply be added lower down later.
-    static constexpr int settings_content_h = 540;
+    static constexpr int settings_content_h = 462;
+    static constexpr int settings_wifi_reset_y = 394;
     static constexpr int settings_view_h = 240;
     static constexpr int settings_scroll_max =
         settings_content_h - settings_view_h;
@@ -2102,31 +2172,35 @@ bool loadPreset(uint8_t slot) {
         c.setFont(&fonts::Font0);
         c.setTextDatum(textdatum_t::middle_center);
         c.setTextColor(TFT_WHITE, TFT_BLACK);
-        char network_line[64];
+        char network_line[96];
         auto networkText = [&](const char* text, int y) {
             const int screen_y = sy(y);
-            if (screen_y > -10 && screen_y < 250) c.drawString(text, settings_content_center_x, screen_y);
+            if (screen_y <= -10 || screen_y >= 250) return;
+            char fitted[96];
+            snprintf(fitted, sizeof(fitted), "%s", text);
+            size_t length = strlen(fitted);
+            if (c.textWidth(fitted) > 240) {
+                while (length && c.textWidth(fitted) > 222) fitted[--length] = '\0';
+                snprintf(fitted + length, sizeof(fitted) - length, "...");
+            }
+            c.drawString(fitted, settings_content_center_x, screen_y);
         };
         settings_network_revision = network.ui_revision;
         if (network.phase == network_service::Phase::ready)
-            snprintf(network_line, sizeof(network_line), "WiFi %s - Clients %lu/%lu", network_service::phaseName(network.phase), (unsigned long)network.clients, (unsigned long)network.max_clients);
+            snprintf(network_line, sizeof(network_line), "WIFI Ready - Clients %lu/%lu", (unsigned long)network.clients, (unsigned long)network.max_clients);
         else
-            snprintf(network_line, sizeof(network_line), "WiFi %s (%d)", network_service::phaseName(network.phase), network.error);
+            snprintf(network_line, sizeof(network_line), "WIFI %s (%d)", network_service::phaseName(network.phase), network.error);
         networkText(network_line, 316);
-        networkText(network_service::ssid(), 334);
-        snprintf(network_line, sizeof(network_line), "KEY %s", network_service::password());
+        snprintf(network_line, sizeof(network_line), "SSID: %s", network_service::ssid());
+        networkText(network_line, 334);
+        snprintf(network_line, sizeof(network_line), "PASSWORD: %s", network_service::password());
         networkText(network_line, 352);
-        snprintf(network_line, sizeof(network_line), "http://%s/", network.ip[0] ? network.ip : "not-ready");
+        snprintf(network_line, sizeof(network_line), "IP: %s", network.ip[0] ? network.ip : "not-ready");
         networkText(network_line, 370);
-        networkText(!strcmp(network_service::credentialMode(), "LEGACY") ? "LEGACY KEY: RESET WIFI TO CHANGE" : "DEFAULT KEY IS PREDICTABLE", 388);
-        snprintf(network_line, sizeof(network_line), "INT %lu DMA %lu", (unsigned long)network.current.internal, (unsigned long)network.current.dma);
-        networkText(network_line, 406);
-        networkText("/status FOR MEMORY HISTORY", 424);
-        const int reset_y = sy(450);
+        const int reset_y = sy(settings_wifi_reset_y);
         c.drawRoundRect(24, reset_y, 216, 28, 5, wifi_reset_active ? TFT_GREEN : TFT_WHITE);
-        networkText(wifi_reset_active && !wifi_reset_canceled && !wifi_reset_completed ? "KEEP HOLDING..." : "HOLD RESET WIFI 2s", 464);
-        networkText(network.reset_pending ? "RESET SAVED: RESTART TO APPLY" : (wifi_reset_failed ? "RESET FAILED - TRY AGAIN" : "WIFI RESET APPLIES NEXT BOOT"), 492);
-        networkText("WIFI ONLY - PRESETS ARE KEPT", 510);
+        networkText(wifi_reset_active && !wifi_reset_canceled && !wifi_reset_completed ? "KEEP HOLDING..." : "HOLD RESET WIFI 2s", settings_wifi_reset_y + 14);
+        networkText(network.reset_pending ? "RESET SAVED: RESTART TO APPLY" : (wifi_reset_failed ? "RESET FAILED - TRY AGAIN" : "WIFI RESET APPLY NEXT BOOT"), settings_wifi_reset_y + 42);
         // Stage 5 local network information end.
 
         // Battery is a fixed status element and must remain completely
@@ -2311,11 +2385,11 @@ bool loadPreset(uint8_t slot) {
         if (revision == settings_network_revision) return;
         settings_network_revision = revision;
         const int status_y = 316 - settings_scroll_y;
-        if (status_y >= 0 && status_y < 240) settings_redraw_pending = true;
+        if (status_y < settings_view_h && settings_wifi_reset_y + 52 - settings_scroll_y >= 0) settings_redraw_pending = true;
     }
 
     bool handleWifiResetTouch(const decltype(M5.Touch.getDetail())& tp, int content_y) {
-        const bool inside = tp.x >= 24 && tp.x < 240 && content_y >= 450 && content_y < 478;
+        const bool inside = tp.x >= 24 && tp.x < 240 && content_y >= settings_wifi_reset_y && content_y < settings_wifi_reset_y + 28;
         if (tp.wasPressed() && inside) {
             wifi_reset_active = true; wifi_reset_canceled = wifi_reset_completed = wifi_reset_failed = false;
             wifi_reset_started_ms = millis();

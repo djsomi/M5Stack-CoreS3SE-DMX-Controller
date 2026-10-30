@@ -4,7 +4,7 @@
 
 namespace websocket_bridge {
 namespace { struct Guard { Lock& lock;explicit Guard(Lock& l):lock(l){lock.enter();}~Guard(){lock.leave();} }; }
-Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l,DeviceSettings* settings,DeviceMaintenance* maintenance):controller_(c),dispatcher_(d),lock_(l),settings_(settings),maintenance_(maintenance) {
+Bridge::Bridge(DmxController& c,CommandDispatcher& d,Lock& l,DeviceSettings* settings,DeviceMaintenance* maintenance,WifiConfiguration* wifi):controller_(c),dispatcher_(d),lock_(l),settings_(settings),wifi_(wifi),maintenance_(maintenance) {
     dispatcher_.setCompletion(completed,this); // Leaves UI observer, admission and publisher intact.
 }
 Bridge::Client* Bridge::client(Token t) {
@@ -32,7 +32,7 @@ Token Bridge::open(uint64_t now) {
     if(count_==inbox_capacity||generation_==UINT32_MAX)return {};
     for(unsigned i=0;i<max_clients;++i)if(!clients_[i].active) {
         auto& c=clients_[i];
-        c.generation=++generation_;c.active=true;c.ready=false;c.settings=false;c.maintenance=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
+        c.generation=++generation_;c.active=true;c.ready=false;c.settings=false;c.maintenance=c.wifi=false;c.head=c.count=c.last_id=c.outstanding=c.rate=0;c.window=now;
         c.stop=Stop::none;c.last_enqueued_revision=0;++metrics_.opened;
         Token t;t.slot=uint8_t(i);t.generation=c.generation;
         Request r;r.token=t;r.snapshot=r.initial=true;
@@ -43,6 +43,7 @@ Token Bridge::open(uint64_t now) {
 }
 void Bridge::close(Token t) {Guard guard(lock_);if(auto* c=client(t))drop(*c,Stop::requested);}
 bool Bridge::alive(Token t) {Guard guard(lock_);return client(t)!=nullptr;}
+bool Bridge::hasGeneration(uint32_t generation) {Guard guard(lock_);for(const auto& c:clients_)if(c.active&&c.generation==generation)return true;return false;}
 Metrics Bridge::metrics() {
     Guard guard(lock_);auto m=metrics_;m.inbox=count_;
     for(const auto& c:clients_)if(c.active){m.outbox+=c.count;m.outstanding+=c.outstanding;}
@@ -107,6 +108,10 @@ void Bridge::reply(const Request& r,CommandStatus status,uint8_t domain) {
     if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}
 }
 void Bridge::ownerPoll(bool sender) {
+    if(wifi_) {
+        wifi_->poll(lock_.nowMs());
+        if(wifi_->snapshot().revision!=wifi_revision_){auto e=wifiState(Kind::wifi_update);wifi_revision_=e.revision;broadcastWifi(e);wifi_->published();}
+    }
     if(settings_) {
         const auto owner=settings_->previewOwner();bool connected=!owner;
         {Guard guard(lock_);for(const auto& c:clients_)if(c.active&&c.generation==owner)connected=true;}
@@ -121,7 +126,7 @@ void Bridge::ownerPoll(bool sender) {
     if(sender_!=sender){sender_=sender;auto e=state(Kind::mode);broadcast(e);}
     if(in_flight_)return;
     Request r;
-    {Guard guard(lock_);if(!count_)return;r=inbox_[head_];head_=(head_+1)%inbox_capacity;--count_;if(!client(r.token))return;}
+    {Guard guard(lock_);if(!count_)return;r=inbox_[head_];inbox_[head_]=Request{};head_=(head_+1)%inbox_capacity;--count_;if(!client(r.token))return;}
     if(r.snapshot) {
         // Capture before marking ready. All mutations and this boundary run on
         // the same owner task; concurrent HTTP work only copies the queues.
@@ -143,6 +148,20 @@ void Bridge::ownerPoll(bool sender) {
         }
         return;
     }
+    if(r.wifi) {
+        bool subscribed=false;
+        {Guard guard(lock_);if(auto* c=client(r.token)){subscribed=c->wifi;if(r.wifi==1)c->wifi=true;}}
+        auto result=WifiConfiguration::Result::unavailable;
+        if(wifi_&&r.wifi!=1) {
+            if(!subscribed)result=WifiConfiguration::Result::unauthorized;
+            else if(maintenance_&&maintenance_->active())result=WifiConfiguration::Result::busy;
+            else if(r.wifi==2)result=wifi_->propose(r.wifi_ssid,r.wifi_password,r.wifi_base,r.token.generation,r.id,lock_.nowMs());
+            else result=wifi_->cancel(r.token.generation,r.maintenance_request);
+        }
+        if(wifi_&&wifi_->snapshot().revision!=wifi_revision_){auto changed=wifiState(Kind::wifi_update);wifi_revision_=changed.revision;broadcastWifi(changed);}
+        auto e=wifiState(r.wifi==1?Kind::wifi_snapshot:Kind::wifi_result,r.id);e.wifi_result=result;
+        Guard guard(lock_);if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}return;
+    }
     if(r.maintenance) {
         bool subscribed=false;
         {Guard guard(lock_);if(auto* c=client(r.token)){subscribed=c->maintenance;if(r.maintenance==1)c->maintenance=true;}}
@@ -150,7 +169,16 @@ void Bridge::ownerPoll(bool sender) {
         if(maintenance_&&r.maintenance!=1) {
             if(!subscribed)result=DeviceMaintenance::Result::unauthorized;
             else if(!sender_)result=DeviceMaintenance::Result::unsupported;
-            else if(r.maintenance==2)result=maintenance_->request(r.maintenance_action,r.token.generation,r.id,lock_.nowMs());
+            else if(wifi_&&wifi_->active())result=DeviceMaintenance::Result::busy;
+            else if(r.maintenance==2) {
+                result=maintenance_->request(r.maintenance_action,r.token.generation,r.id,lock_.nowMs());
+                if(result==DeviceMaintenance::Result::accepted&&settings_) {
+                    settings_->cancelPreviewForMaintenance();
+                    if(settings_->snapshot().revision!=settings_revision_) {
+                        auto changed=settingsState(Kind::settings_update);settings_revision_=changed.revision;broadcastSettings(changed);
+                    }
+                }
+            }
             else result=maintenance_->cancel(r.token.generation,r.maintenance_request,lock_.nowMs());
         }
         if(maintenance_&&maintenance_->snapshot().revision!=maintenance_revision_) {
@@ -209,6 +237,10 @@ void Bridge::completed(void* context,const ControllerCommand& command,const Comm
         self.in_flight_=false;self.reply(self.flight_,result.status,uint8_t(result.domain));
     }
 }
+Event Bridge::wifiState(Kind kind,uint32_t id) {
+    Event e;e.kind=kind;e.id=id;e.sequence=++sequence_;if(wifi_)e.wifi=wifi_->snapshot();e.revision=e.wifi.revision;return e;
+}
+void Bridge::broadcastWifi(Event& e) {Guard guard(lock_);for(auto& c:clients_)if(c.active&&c.ready&&c.wifi)push(c,e);}
 Event Bridge::maintenanceState(Kind kind,uint32_t id) {
     Event e;e.kind=kind;e.id=id;e.sequence=++sequence_;
     if(maintenance_)e.maintenance=maintenance_->snapshot();

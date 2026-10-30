@@ -2,13 +2,13 @@
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, last = null;
+    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, wifi = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
       write = null;
       operation = null;
-      setting = null; maintenance = null;
+      setting = null; maintenance = null; wifi = null;
     }
     return {
       begin() { cancel(); next = 0; },
@@ -73,13 +73,33 @@
         if (!maintenance || maintenance.id !== message.id) return null;
         const result = maintenance; maintenance = null; return result;
       },
+      wifi(kind, ssid, password, base, request) {
+        if (wifi || next === 4294967295 || !["get", "propose", "cancel"].includes(kind)) return null;
+        if (kind !== "get" && (pending || write || operation || setting || maintenance)) return null;
+        if (kind === "propose" && (typeof ssid !== "string" || !/^[\x20-\x7e]{1,32}$/.test(ssid) ||
+            typeof password !== "string" || !/^(?:[\x20-\x7e]{8,63})?$/.test(password) ||
+            typeof base !== "string" || !/^[1-9]\d{0,19}$/.test(base) || BigInt(base) > 18446744073709551615n)) return null;
+        if (kind === "cancel" && (!Number.isInteger(request) || request < 1 || request > 4294967295)) return null;
+        const encode = value => {
+          const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; let text = "";
+          for (let i = 0; i < value.length; i += 3) {
+            const n = (value.charCodeAt(i) << 16) | ((value.charCodeAt(i + 1) || 0) << 8) | (value.charCodeAt(i + 2) || 0);
+            text += alphabet[n >>> 18] + alphabet[(n >>> 12) & 63] + (i + 1 < value.length ? alphabet[(n >>> 6) & 63] : "=") + (i + 2 < value.length ? alphabet[n & 63] : "=");
+          } return text;
+        };
+        const id = ++next, data = JSON.stringify({v: 1, id, type: "wifi." + kind,
+          ...(kind === "propose" ? {base, ssid: encode(ssid), password: encode(password)} : kind === "cancel" ? {request} : {})});
+        if (data.length > 256) return null;
+        wifi = Object.freeze({id, kind}); return {id, data};
+      },
+      completeWifi(message) { if (!wifi || wifi.id !== message.id) return null; const result = wifi; wifi = null; return result; },
       complete(message) {
         if (!pending || pending.id !== message.id) return false;
         last = Object.freeze({id: pending.id, kind: message.type, status: message.status || "snapshot"});
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, wifi, last})
     };
   }
   return {create};

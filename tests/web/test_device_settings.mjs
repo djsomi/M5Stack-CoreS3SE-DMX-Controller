@@ -82,7 +82,7 @@ function sliderFixture(){
   const f=fixture(),nodes=new Map();
   const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',textContent:'',disabled:false,listeners:{},setAttribute(k,v){this[k]=v;},addEventListener(k,fn){this.listeners[k]=fn;},setPointerCapture(){}});return nodes.get(id);};
   let view;const notify=()=>view?.render();
-  view=modules.settings.mount({getElementById:id=>id.startsWith('maintenance-')?null:node(id)},{read:()=>({showPercent:false}),update(){}},()=>{},f.client,f.store.read,notify,f.runtime);
+  view=modules.settings.mount({getElementById:id=>(id.startsWith('maintenance-')||id.startsWith('wifi-'))?null:node(id)},{read:()=>({showPercent:false}),update(){}},()=>{},f.client,f.store.read,notify,f.runtime);
   view.setActive(true);const r=f.socket.sent.at(-1);f.socket.message(f.settings('settings.snapshot',{id:r.id}));view.render();
   const emit=(key,type,extra={})=>{node('device-'+key).listeners[type]?.({pointerId:1,...extra});view.render();};
   const move=(key,value)=>{node('device-'+key).value=String(value);emit(key,'input');};

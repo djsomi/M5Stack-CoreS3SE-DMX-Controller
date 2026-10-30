@@ -1,12 +1,13 @@
 """Stage5C wiring/ownership checks; no hardware, passwords or NVS access."""
 from pathlib import Path
+from wifi_guard_support import prior as before_wifi
 import argparse,re
 root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--dhcp-header',type=Path)
 p.add_argument('--station-header',type=Path)
 a=p.parse_args()
-net=(root/'src/network_service.cpp').read_text(encoding='utf-8')
+net=before_wifi('src/network_service.cpp',(root/'src/network_service.cpp').read_text(encoding='utf-8'))
 view=(root/'src/view_sender.h').read_text(encoding='utf-8')
 config=(root/'include/softap_config.h').read_text()
 assert '#define DMX_WIFI_MAX_STATIONS 4' in config
@@ -36,10 +37,10 @@ assert set(re.findall(r'storage.begin\("([^"]+)"',net))=={'dmxwifi'}
 reset=net.split('bool requestFactoryReset()',1)[1].split('const char* phaseName',1)[0]
 assert 'xTaskGetCurrentTaskHandle()!=application_owner' in reset
 assert 'storage.putUChar("factory",1)' in reset and 'putBytes' not in reset
-assert 'WiFi %s - Clients %lu/%lu' in view
-assert 'network_service::uiRevision()' in view and 'status_y >= 0 && status_y < 240' in view
+assert 'WIFI Ready - Clients %lu/%lu' in view
+assert 'network_service::uiRevision()' in view and 'status_y < settings_view_h && settings_wifi_reset_y + 52 - settings_scroll_y >= 0' in view
 assert 'network_service::requestFactoryReset()' in view and '>= 2000' in view
-assert 'RESTART TO APPLY' in view and 'WIFI ONLY - PRESETS ARE KEPT' in view
+assert 'RESTART TO APPLY' in view and 'WIFI RESET APPLY NEXT BOOT' in view and 'WIFI ONLY - PRESETS ARE KEPT' not in view
 assert 'wifi_reset_completed = true;' in view and 'wifi_reset_canceled = true;' in view
 if a.dhcp_header:
     target=a.dhcp_header.resolve();assert (root/'dist').resolve() in target.parents

@@ -9,6 +9,7 @@
 #include "websocket_pump.h"
 #include "websocket_diagnostics.h"
 #include <Preferences.h>
+#include "wifi_credential_store.h"
 #include <esp_event.h>
 #include <esp_wifi.h>
 #include <esp_wifi_default.h>
@@ -33,7 +34,7 @@ static_assert(max_sessions+3<=CONFIG_LWIP_MAX_SOCKETS,"HTTP listen/control socke
 static_assert(max_stations<=CONFIG_LWIP_DHCPS_MAX_STATION_NUM,"AP limit exceeds DHCP lease capacity");
 // Provisional fail-closed guardrails, NOT measured safe Wi-Fi budgets.
 constexpr size_t minimum_internal = 32768, minimum_dma = 16384;
-softap_policy::Credentials credentials{};
+softap_policy::Credentials credentials{},ui_credentials{};
 uint8_t ap_mac[6]{};
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 Status shared{};
@@ -241,7 +242,7 @@ void recordClosure(Session& s,WsReason reason,WsSource source,int rc=0) {
     portENTER_CRITICAL(&mux);
     ws_diag.last=c;
     if(reason==WsReason::native_unattributed)++ws_diag.unattributed_closes;
-    if(reason!=WsReason::peer_close&&!ws_diag.first_present){ws_diag.first=c;ws_diag.first_present=true;}
+    if(reason!=WsReason::peer_close&&reason!=WsReason::wifi_reconfigure&&!ws_diag.first_present){ws_diag.first=c;ws_diag.first_present=true;}
     portEXIT_CRITICAL(&mux);
 }
 int ioFailure(Session& s,WsReason reason,int error) {
@@ -438,6 +439,7 @@ esp_err_t websocket(httpd_req_t* r) {
     if(received!=ESP_OK)return handlerFailure(*s,s->io_reason!=WsReason::none?s->io_reason:WsReason::receive_failed,received);
     if(!websocket_bridge::validFrame(unsigned(frame.type),frame.final,frame.len))return handlerFailure(*s,WsReason::frame_invalid);
     uint8_t payload[websocket_bridge::max_message];
+    struct ClearPayload {uint8_t* p;~ClearPayload(){WifiConfiguration::erase(p,websocket_bridge::max_message);}} clear_payload{payload};
     frame.payload=payload;
     if(frame.len){const auto payload_rc=httpd_ws_recv_frame(r,&frame,sizeof(payload));
         if(payload_rc!=ESP_OK)return handlerFailure(*s,s->io_reason!=WsReason::none?s->io_reason:WsReason::receive_failed,payload_rc);}
@@ -567,6 +569,131 @@ esp_err_t serve(httpd_req_t* r) {
     return finish(r,httpd_resp_send(r,reinterpret_cast<const char*>(asset->data),asset->size));
 }
 
+
+// One authorized job; only the application authority can submit it after physical OK.
+bool configuration_busy=false; // Application task only; screen/maintenance handoff.
+struct WifiJob {
+    softap_policy::Credentials candidate{};
+    uint32_t epoch=0;
+    bool busy=false,queued=false,notice=false,retire_requested=false,retired=false,probe=false;
+    WifiConfiguration::Work result=WifiConfiguration::Work::pending;
+} wifi_job;
+class ConfigurationBackend final : public WifiConfiguration::Backend {
+ public:
+    bool available() override {portENTER_CRITICAL(&mux);const bool ok=shared.phase==Phase::ready&&!shared.reset_pending&&!wifi_job.busy&&!configuration_busy;portEXIT_CRITICAL(&mux);return ok;}
+    bool connected(uint32_t generation) override {return websocket_service::hasGeneration(generation);}
+    void current(softap_policy::Credentials& c) override {portENTER_CRITICAL(&mux);c=credentials;portEXIT_CRITICAL(&mux);}
+    bool begin(const softap_policy::Credentials& c) override {
+        portENTER_CRITICAL(&mux);
+        const bool ok=!configuration_busy&&!wifi_job.busy&&shared.phase==Phase::ready&&!shared.reset_pending;
+        if(ok){wifi_job.candidate=c;++wifi_job.epoch;wifi_job.busy=wifi_job.queued=true;wifi_job.notice=wifi_job.retired=wifi_job.retire_requested=wifi_job.probe=false;wifi_job.result=WifiConfiguration::Work::pending;}
+        portEXIT_CRITICAL(&mux);return ok;
+    }
+    WifiConfiguration::Work progress() override {portENTER_CRITICAL(&mux);const auto value=wifi_job.result;portEXIT_CRITICAL(&mux);return value;}
+    void published() override {portENTER_CRITICAL(&mux);if(wifi_job.busy)wifi_job.notice=true;portEXIT_CRITICAL(&mux);}
+} configuration_backend;
+WifiConfiguration configuration_authority(configuration_backend);
+
+void wifiRetire(void* context) {
+    const auto epoch=uint32_t(reinterpret_cast<uintptr_t>(context));
+    portENTER_CRITICAL(&mux);const bool current=wifi_job.busy&&wifi_job.epoch==epoch&&wifi_job.retire_requested;portEXIT_CRITICAL(&mux);
+    if(!current){portENTER_CRITICAL(&mux);++ws_diag.work_started;++ws_diag.work_completed;portEXIT_CRITICAL(&mux);return;}
+    // Existing bounded HTTP-task pump attempts sanitized notices before retirement.
+    sweep(nullptr);
+    // A native send can outlive the worker's receipt deadline. Recheck after
+    // that blocking boundary so expired work cannot close a newer job's sessions.
+    portENTER_CRITICAL(&mux);const bool still_current=wifi_job.busy&&wifi_job.epoch==epoch&&wifi_job.retire_requested;portEXIT_CRITICAL(&mux);
+    if(!still_current)return;
+    for(auto& session:sessions)if(session.fd>=0&&!session.closing)closeSession(session,WsReason::wifi_reconfigure,WsSource::worker);
+    portENTER_CRITICAL(&mux);if(wifi_job.epoch==epoch)wifi_job.retired=true;portEXIT_CRITICAL(&mux);
+}
+void wifiProbe(void* context) {
+    const auto epoch=uint32_t(reinterpret_cast<uintptr_t>(context));
+    portENTER_CRITICAL(&mux);if(wifi_job.busy&&wifi_job.epoch==epoch)wifi_job.probe=true;portEXIT_CRITICAL(&mux);
+}
+bool wifiWait(bool retirement,uint32_t epoch) {
+    const int64_t deadline=esp_timer_get_time()+4000000;
+    while(esp_timer_get_time()<deadline) {
+        portENTER_CRITICAL(&mux);const bool same=wifi_job.busy&&wifi_job.epoch==epoch;
+        const bool done=retirement?wifi_job.retired:wifi_job.probe;portEXIT_CRITICAL(&mux);
+        if(!same)return false;if(done)return true;vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return false;
+}
+bool wifiApplyAP(esp_netif_t* netif,const softap_policy::Credentials& c) {
+    wifi_config_t ap{},actual{};
+    memcpy(ap.ap.ssid,c.ssid,strlen(c.ssid));ap.ap.ssid_len=strlen(c.ssid);
+    memcpy(ap.ap.password,c.pass,strlen(c.pass));ap.ap.channel=6;ap.ap.max_connection=max_stations;
+    ap.ap.authmode=WIFI_AUTH_WPA2_PSK;ap.ap.pairwise_cipher=WIFI_CIPHER_TYPE_CCMP;
+    const auto apply=[&]() {
+        const auto stopped=esp_wifi_stop();if(stopped!=ESP_OK&&stopped!=ESP_ERR_WIFI_NOT_STARTED)return false;
+        int64_t deadline=esp_timer_get_time()+2500000;
+        while(esp_netif_is_netif_up(netif)&&esp_timer_get_time()<deadline)vTaskDelay(pdMS_TO_TICKS(10));
+        if(esp_netif_is_netif_up(netif))return false;
+        const auto dhcp_stop=esp_netif_dhcps_stop(netif);
+        if(dhcp_stop!=ESP_OK&&dhcp_stop!=ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)return false;
+        uint8_t router=0;
+        if(esp_netif_dhcps_option(netif,ESP_NETIF_OP_SET,ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,&router,sizeof(router))!=ESP_OK)return false;
+        if(esp_wifi_set_config(WIFI_IF_AP,&ap)!=ESP_OK||esp_wifi_start()!=ESP_OK)return false;
+        deadline=esp_timer_get_time()+2500000;
+        while(!esp_netif_is_netif_up(netif)&&esp_timer_get_time()<deadline)vTaskDelay(pdMS_TO_TICKS(10));
+        if(!esp_netif_is_netif_up(netif))return false;
+        esp_netif_dhcp_status_t dhcp;
+        if(esp_netif_dhcps_get_status(netif,&dhcp)!=ESP_OK)return false;
+        if(dhcp!=ESP_NETIF_DHCP_STARTED&&esp_netif_dhcps_start(netif)!=ESP_OK)return false;
+        if(esp_netif_dhcps_get_status(netif,&dhcp)!=ESP_OK||dhcp!=ESP_NETIF_DHCP_STARTED)return false;
+        router=1;esp_netif_ip_info_t ip{};
+        return esp_netif_dhcps_option(netif,ESP_NETIF_OP_GET,ESP_NETIF_ROUTER_SOLICITATION_ADDRESS,&router,sizeof(router))==ESP_OK&&router==0&&
+            esp_netif_get_ip_info(netif,&ip)==ESP_OK&&ip.ip.addr==ESP_IP4TOADDR(192,168,4,1)&&
+            ip.gw.addr==ESP_IP4TOADDR(192,168,4,1)&&ip.netmask.addr==ESP_IP4TOADDR(255,255,255,0)&&
+            esp_wifi_get_config(WIFI_IF_AP,&actual)==ESP_OK&&actual.ap.ssid_len==ap.ap.ssid_len&&
+            !memcmp(actual.ap.ssid,ap.ap.ssid,sizeof(ap.ap.ssid))&&!memcmp(actual.ap.password,ap.ap.password,sizeof(ap.ap.password))&&
+            actual.ap.authmode==WIFI_AUTH_WPA2_PSK&&actual.ap.pairwise_cipher==WIFI_CIPHER_TYPE_CCMP&&
+            actual.ap.channel==6&&actual.ap.max_connection==max_stations;
+    };
+    const bool ok=apply();WifiConfiguration::erase(&ap,sizeof(ap));WifiConfiguration::erase(&actual,sizeof(actual));return ok;
+}
+bool wifiChange(esp_netif_t* netif) {
+    softap_policy::Credentials candidate{},previous{};uint32_t epoch;
+    portENTER_CRITICAL(&mux);
+    if(!wifi_job.queued){portEXIT_CRITICAL(&mux);return true;}
+    candidate=wifi_job.candidate;previous=credentials;epoch=wifi_job.epoch;wifi_job.queued=false;
+    WifiConfiguration::erase(&wifi_job.candidate,sizeof(wifi_job.candidate));portEXIT_CRITICAL(&mux);
+    class Radio final : public wifi_credentials::Radio {
+        esp_netif_t* netif_;uint32_t epoch_;
+     public:
+        Radio(esp_netif_t* netif,uint32_t epoch):netif_(netif),epoch_(epoch){}
+        bool notifyAndRetire() override {
+            const int64_t deadline=esp_timer_get_time()+1000000;
+            bool published=false;
+            while(esp_timer_get_time()<deadline) {
+                portENTER_CRITICAL(&mux);published=wifi_job.notice;portEXIT_CRITICAL(&mux);
+                if(published)break;vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            if(!published)return false;
+            portENTER_CRITICAL(&mux);wifi_job.retire_requested=true;portEXIT_CRITICAL(&mux);
+            const auto rc=httpd_queue_work(server,wifiRetire,reinterpret_cast<void*>(uintptr_t(epoch_)));
+            portENTER_CRITICAL(&mux);ws_diag.last_work_rc=rc;
+            if(rc==ESP_OK)++ws_diag.work_queued;else ++ws_diag.work_failed;
+            portEXIT_CRITICAL(&mux);
+            return rc==ESP_OK&&wifiWait(true,epoch_);
+        }
+        bool apply(const softap_policy::Credentials& c) override {phase(Phase::starting);return wifiApplyAP(netif_,c);}
+        bool ready() override {
+            portENTER_CRITICAL(&mux);wifi_job.probe=false;portEXIT_CRITICAL(&mux);
+            return httpd_queue_work(server,wifiProbe,reinterpret_cast<void*>(uintptr_t(epoch_)))==ESP_OK&&wifiWait(false,epoch_);
+        }
+        void committed(const softap_policy::Credentials& c) override {portENTER_CRITICAL(&mux);credentials=c;++shared.ui_revision;portEXIT_CRITICAL(&mux);}
+    } radio(netif,epoch);
+    WifiCredentialStore store;
+    const auto result=wifi_credentials::execute(store,radio,candidate,ap_mac);
+    const bool healthy=result!=WifiConfiguration::Work::rollback_error;
+    WifiConfiguration::erase(&candidate,sizeof(candidate));WifiConfiguration::erase(&previous,sizeof(previous));
+    portENTER_CRITICAL(&mux);wifi_job.retire_requested=false;wifi_job.busy=false;wifi_job.result=result;portEXIT_CRITICAL(&mux);
+    if(healthy)phase(Phase::ready);
+    return healthy;
+}
+
 void worker(void*) {
     esp_netif_t* netif=nullptr;bool initialized=false,started=false;
     esp_event_handler_instance_t station_handler=nullptr;
@@ -657,6 +784,7 @@ void worker(void*) {
         uint32_t previous_requests=0;unsigned previous_clients=0;int64_t maintenance=0;
         for(;;) {
             vTaskDelay(pdMS_TO_TICKS(20)); // Bounded HTTP-task pump; never queues work from the Controller task.
+            if(!wifiChange(netif)){error=ESP_FAIL;break;}
             bool queue_sweep=false;
             portENTER_CRITICAL(&mux);
             if(!sweep_pending) {sweep_pending=true;sweep_queued_at=esp_timer_get_time();queue_sweep=true;}
@@ -713,6 +841,8 @@ void prepare() {
         valid=storage.getType("factory")==PT_U8 && storage.getUChar("factory",0)==1;
         reset=valid;
     }
+    // Recover only Wi-Fi transaction data. Explicit physical factory intent wins.
+    {WifiCredentialStore journal;valid=valid&&(reset?wifi_credentials::eraseVerified(journal,"ap_try"):wifi_credentials::recover(journal,ap_mac));}
     const bool exists=storage.isKey("ap1");
     const size_t length=exists?storage.getBytesLength("ap1"):0;
     uint8_t blob[sizeof(softap_policy::Credentials)]{};
@@ -730,6 +860,7 @@ void prepare() {
     }
     storage.end();
     if(!valid) {memset(&credentials,0,sizeof(credentials));phase(Phase::failed,ESP_FAIL);return;}
+    ui_credentials=credentials;
     phase(Phase::prepared);
 }
 void launch(bool canvas_reserved) {
@@ -753,18 +884,23 @@ void ownerTick(int64_t now,uint32_t errors,bool stopped) {
     portENTER_CRITICAL(&mux);
     shared.max_loop_gap_us=std::max(shared.max_loop_gap_us,gap);shared.tx_errors=errors;shared.tx_stopped=stopped;
     portEXIT_CRITICAL(&mux);
+    portENTER_CRITICAL(&mux);ui_credentials=credentials;portEXIT_CRITICAL(&mux);
     wifi_startup_trace::service();
 }
+void setConfigurationBusy(bool busy) {configuration_busy=busy;}
+WifiConfiguration& configuration() {return configuration_authority;}
 Status status() {portENTER_CRITICAL(&mux);const auto s=shared;portEXIT_CRITICAL(&mux);return s;}
-const char* ssid() {return credentials.ssid;}
-const char* password() {return credentials.pass;}
+const char* ssid() {return ui_credentials.ssid;}
+const char* password() {return ui_credentials.pass;}
 const char* credentialMode() {
-    return credentials.origin==softap_policy::Origin::legacy?"LEGACY":
-        (credentials.origin==softap_policy::Origin::factory?"FACTORY":"CUSTOM");
+    return ui_credentials.origin==softap_policy::Origin::legacy?"LEGACY":
+        (ui_credentials.origin==softap_policy::Origin::factory?"FACTORY":"CUSTOM");
 }
 uint32_t uiRevision() {portENTER_CRITICAL(&mux);const auto r=shared.ui_revision;portEXIT_CRITICAL(&mux);return r;}
 bool requestFactoryReset() {
     if(xTaskGetCurrentTaskHandle()!=application_owner) return false;
+    if(configuration_authority.applying())return false;
+    configuration_authority.cancelPhysical();
     if(status().reset_pending) return true;
     Preferences storage;
     if(!storage.begin("dmxwifi",false)) return false;

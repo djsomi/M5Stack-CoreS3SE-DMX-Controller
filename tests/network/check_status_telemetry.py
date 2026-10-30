@@ -1,5 +1,6 @@
 """Exact /status changes and reviewed HTTP deadline guard; formatted header contract."""
 from pathlib import Path
+from wifi_guard_support import prior as before_wifi
 import ast
 import json
 import re
@@ -7,7 +8,7 @@ import subprocess
 
 root = Path(__file__).resolve().parents[2]
 original = subprocess.check_output(["git", "-c", "safe.directory=" + root.as_posix(), "show", "5b3cea7:src/network_service.cpp"], cwd=root).decode("utf-8")
-current = (root / "src/network_service.cpp").read_text(encoding="utf-8")
+current = before_wifi("src/network_service.cpp",(root / "src/network_service.cpp").read_text(encoding="utf-8"))
 old = '        int n=snprintf(json,sizeof(json),\n            "{\\"stage\\":5,'
 new = '        const auto& bundle=web_assets::bundle();\n        int n=snprintf(json,sizeof(json),\n            "{\\"build\\":\\"%s\\",\\"profile\\":\\"%s\\",\\"layout\\":\\"%s\\",\\"ms\\":%lu,\\"stage\\":5,'
 args = '            phaseName(s.phase),s.ip,(unsigned long)s.clients'

@@ -74,7 +74,7 @@ class InfrastructureTests(unittest.TestCase):
 
     def test_crlf_sources_and_generated_cpp(self):
         source = self.root / "web/src/style.css"
-        source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
+        source.write_bytes(source.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         manifest = assets.verify(self.root)
         cpp = self.root / "generated/web_assets.cpp"
         digest = assets.build_source_digest(self.root)

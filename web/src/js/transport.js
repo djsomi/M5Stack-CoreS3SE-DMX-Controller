@@ -14,6 +14,22 @@
     const settingsListeners = new Set();
     let maintenanceEnabled = false, maintenanceTimer = null, maintenanceValue = null, maintenanceError = "", maintenanceRequest = 0;
     const maintenanceListeners = new Set();
+    let wifiEnabled = false, wifiTimer = null, wifiValue = null, wifiError = "", wifiRequest = 0;
+    const wifiListeners = new Set();
+    function wifiNotify() { wifiListeners.forEach(listener => listener()); }
+    function cancelWifi() { if (wifiTimer !== null) runtime.clearTimeout(wifiTimer); wifiTimer = null; }
+    function sendWifi(kind = "get", ssid, password, base, request) {
+      if (!store.read.current().ready || waiting || socket?.readyState !== 1 || (kind !== "get" && maintenanceLocked())) return null;
+      const command = requests.wifi(kind, ssid, password, base, request); if (!command) return null;
+      const id = command.id, epoch = generation; wifiError = "";
+      try { socket.send(command.data); } catch (_) { retire("reconnecting", "Wi-Fi outcome unconfirmed"); return null; }
+      wifiTimer = runtime.setTimeout(() => {
+        wifiTimer = null; if (epoch !== generation) return;
+        requests.completeWifi({id}); wifiValue = null; wifiError = "Wi-Fi response timed out; inspect device."; wifiNotify();
+        if (kind !== "get") retire("reconnecting", wifiError);
+      }, 5000);
+      wifiNotify(); return id;
+    }
     const maintenanceLocked = () => !!requests.current().maintenance && requests.current().maintenance.kind !== "get" ||
       !!maintenanceValue && ["zeroing", "quiescing", "executing", "failed"].includes(maintenanceValue.phase);
     function maintenanceNotify() { maintenanceListeners.forEach(listener => listener()); }
@@ -81,7 +97,7 @@
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
-      clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); maintenanceRequest = 0; ++generation; requests.cancel();
+      clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); cancelWifi(); wifiRequest = 0; wifiValue = null; wifiNotify(); maintenanceRequest = 0; ++generation; requests.cancel();
       settingsValue = null; settingsNotify();
       if (maintenanceValue?.phase && maintenanceValue.phase !== "idle") maintenanceError = "Connection lost; maintenance outcome unconfirmed.";
       maintenanceValue = null; maintenanceNotify(); store.connection(phase, detail);
@@ -153,7 +169,7 @@
     function connect() {
       if (!started || suspended || socket) return;
       clear(); const epoch = ++generation;
-      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); settingsValue = null; settingsError = ""; maintenanceValue = null; store.begin();
+      hello = false; waiting = true; probing = false; resyncCount = 0; requests.begin(); settingsValue = null; settingsError = ""; maintenanceValue = null; wifiValue = null; store.begin();
       store.diagnostics({probePending: false}, false);
       let native;
       try { native = new runtime.WebSocket(runtime.url); }
@@ -173,6 +189,21 @@
         try { decoded = protocol.parse(event.data); }
         catch (error) { fault(/^protocol_[a-z_]+$/.test(error.message) ? error.message : "protocol_json", error.message === "protocol_version"); return; }
         const message = decoded.message;
+        if (message.type.startsWith("wifi.")) {
+          if (waiting || !hello || !wifiEnabled) return;
+          const pending = requests.current().wifi;
+          if (message.type !== "wifi.update" && (!pending || pending.id !== message.id)) return;
+          if (message.type !== "wifi.update" && message.type !== (pending.kind === "get" ? "wifi.snapshot" : "wifi.result")) { fault("protocol_wifi"); return; }
+          if (!wifiValue || decoded.revision >= BigInt(wifiValue.revision)) wifiValue = message;
+          if (message.type !== "wifi.update") {
+            requests.completeWifi(message); cancelWifi();
+            if (message.status === "accepted" && message.phase === "approval") wifiRequest = message.request;
+            wifiError = message.status && !["accepted", "cancelled", "no_change"].includes(message.status) ? "Wi-Fi request rejected: " + message.status + "." : "";
+          }
+          if (message.phase !== "approval") wifiRequest = 0;
+          if (message.phase === "failed") wifiError = "Wi-Fi change failed: " + message.reason + ". Inspect device.";
+          store.diagnostics({receivedAt: now()}, false); fresh(); wifiNotify(); return;
+        }
         if (message.type.startsWith("maintenance.")) {
           if (waiting || !hello || !maintenanceEnabled) return;
           const pending = requests.current().maintenance;
@@ -203,6 +234,9 @@
         }
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          if (requests.current().wifi?.id === message.id) {
+            requests.completeWifi(message); cancelWifi(); wifiValue = null; wifiError = "Wi-Fi configuration unavailable: " + message.status; wifiNotify(); return;
+          }
           if (requests.current().maintenance?.id === message.id) {
             requests.completeMaintenance(message); cancelMaintenance(); maintenanceValue = null;
             maintenanceError = "Maintenance unavailable: " + message.status; maintenanceNotify(); return;
@@ -249,6 +283,7 @@
           waiting = false; probing = false; attempt = 0; integrityFailures = 0; clear();
           store.diagnostics({attempt: 0, probePending: false}, false); fresh();
           if (maintenanceEnabled && !maintenanceValue && !requests.current().maintenance) sendMaintenance();
+          if (wifiEnabled && !wifiValue && !requests.current().wifi) sendWifi();
           if (settingsEnabled && !settingsValue && !settingsError && !requests.current().setting) sendSettings();
           return;
         }
@@ -264,7 +299,7 @@
       native.onclose = event => {
         if (!active()) return;
         closed(event);store.diagnostics({classification: "transport_close"}, false);
-        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); maintenanceRequest = 0; ++generation; requests.cancel(); probing = false;
+        socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); cancelWifi(); wifiRequest = 0; wifiValue = null; wifiNotify(); maintenanceRequest = 0; ++generation; requests.cancel(); probing = false;
         settingsValue = null; settingsNotify();
         if (maintenanceValue?.phase && maintenanceValue.phase !== "idle") maintenanceError = "Connection lost; maintenance outcome unconfirmed.";
         maintenanceValue = null; maintenanceNotify();
@@ -326,6 +361,12 @@
         }, 5000);
         return command.id;
       },
+      enableWifi() { wifiEnabled = true; if (!wifiValue && !requests.current().wifi) sendWifi(); },
+      onWifi(listener) { wifiListeners.add(listener); return () => wifiListeners.delete(listener); },
+      wifi: () => Object.freeze({value: wifiValue, pending: requests.current().wifi, error: wifiError,
+        owned: !!wifiValue && wifiValue.phase === "approval" && wifiValue.request === wifiRequest}),
+      proposeWifi(ssid, password) { return wifiValue?.available ? sendWifi("propose", ssid, password, wifiValue.base) : null; },
+      cancelWifi() { return wifiValue?.phase === "approval" && wifiValue.request === wifiRequest ? sendWifi("cancel", undefined, undefined, undefined, wifiRequest) : null; },
       pending: () => requests.current()
     };
   }

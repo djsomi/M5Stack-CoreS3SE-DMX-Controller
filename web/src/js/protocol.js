@@ -16,7 +16,21 @@
     if (!message || Array.isArray(message) || message.v !== 1 || !integer(message.id, 0, 4294967295)) fail();
     const revision = counter(message.revision), sequence = counter(message.seq);
     let extra;
-    if (["maintenance.snapshot", "maintenance.update", "maintenance.result"].includes(message.type)) {
+    if (["wifi.snapshot", "wifi.update", "wifi.result"].includes(message.type)) {
+      extra = ["base", "ssid", "proposed", "origin", "phase", "reason", "request", "remaining_ms", "password_change", "available"];
+      if (!revision || !sequence || !counter(message.base) || typeof message.ssid !== "string" || !/^[\x20-\x7e]{0,32}$/.test(message.ssid) ||
+          typeof message.proposed !== "string" || !/^[\x20-\x7e]{0,32}$/.test(message.proposed) ||
+          !["legacy", "factory", "custom"].includes(message.origin) || !["idle", "approval", "applying", "failed"].includes(message.phase) ||
+          !["none", "cancelled", "expired", "disconnected", "storage", "radio", "rollback", "unavailable"].includes(message.reason) ||
+          !integer(message.request, 0, 4294967295) || !integer(message.remaining_ms, 0, 60000) || message.remaining_ms % 1000 ||
+          typeof message.password_change !== "boolean" || typeof message.available !== "boolean" ||
+          (["approval", "applying"].includes(message.phase) ? !message.request || !message.proposed : message.request || message.proposed || message.password_change) ||
+          (message.phase === "approval" ? !message.remaining_ms : message.remaining_ms !== 0) ||
+          (message.type === "wifi.update" ? message.id !== 0 : !message.id)) fail("protocol_wifi");
+      if (message.type === "wifi.result") {
+        extra.push("status");if (!["accepted", "cancelled", "no_change", "invalid", "conflict", "busy", "unauthorized", "unavailable"].includes(message.status)) fail("protocol_wifi");
+      }
+    } else if (["maintenance.snapshot", "maintenance.update", "maintenance.result"].includes(message.type)) {
       extra = ["action", "phase", "request", "reason", "remaining_ms"];
       const reasons = ["none", "busy", "cancelled", "transport", "deadline", "returned"];
       if (!sequence || !revision || !["none", "restart", "power_off"].includes(message.action) ||

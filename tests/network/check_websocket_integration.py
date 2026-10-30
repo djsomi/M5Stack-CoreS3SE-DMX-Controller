@@ -1,12 +1,13 @@
 """Stage6A source/task guards + extract actual endpoint/I/O for native API mocks."""
 from pathlib import Path
 from preset_loaded_guard_support import prior
+from wifi_guard_support import prior as before_wifi
 import argparse,subprocess,re
 root=Path(__file__).resolve().parents[2]
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--adapter-header',type=Path)
 a=p.parse_args()
-def read(name):return (root/name).read_text(encoding='utf-8')
+def read(name):return before_wifi(name,(root/name).read_text(encoding='utf-8'))
 net=read('src/network_service.cpp');app=read('src/src.cpp')
 bridge=read('src/websocket_bridge.cpp');service=read('src/websocket_service.cpp')
 baseline='7f09d4c3314d0444a11786aea9ba86793842c9bb'

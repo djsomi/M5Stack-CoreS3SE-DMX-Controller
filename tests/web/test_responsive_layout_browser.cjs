@@ -36,10 +36,10 @@ async function settings(page,current){
  await page.locator('[data-section="settings"]').click();await page.waitForFunction(()=>!document.querySelector('#device-brightness').disabled);
  const data=await page.evaluate(()=>{
   const box=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
-  const card=document.querySelector('.device-settings'),pref=[...document.querySelectorAll('.settings-panel')].find(n=>!n.classList.contains('device-settings')&&!n.classList.contains('device-maintenance'));
+  const card=document.querySelector('.device-settings'),pref=[...document.querySelectorAll('.settings-panel')].find(n=>!n.classList.contains('device-settings')&&!n.classList.contains('device-maintenance')&&!n.classList.contains('wifi-configuration'));
   return {card:box(card),controls:box(card.querySelector('.device-settings-controls')),preferences:box(pref),workspace:box(document.querySelector('#workspace')),
    parentClass:card.parentElement.className,children:card.parentElement.children.length,
-   below:pref.parentElement===document.querySelector('#view-settings'),gridBottom:card.parentElement.getBoundingClientRect().bottom,
+   below:pref.parentElement.classList.contains('settings-local-grid')&&pref.parentElement.parentElement===document.querySelector('#view-settings')&&pref.parentElement.children.length===2,gridBottom:card.parentElement.getBoundingClientRect().bottom,
    slider:[...card.querySelectorAll('input[type=range]')].map(n=>({box:box(n),ticks:[...n.parentElement.querySelectorAll('.setting-stops span')].map(s=>{const r=s.getBoundingClientRect();return r.x+r.width/2;})})),
    scrollWidth:document.documentElement.scrollWidth,viewWidth:innerWidth,
    labelTouch:getComputedStyle(card.querySelector('label')).touchAction};

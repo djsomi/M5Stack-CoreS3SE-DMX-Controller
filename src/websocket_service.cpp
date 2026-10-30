@@ -14,11 +14,12 @@ struct CriticalLock final : websocket_bridge::Lock {
 alignas(websocket_bridge::Bridge) unsigned char storage[sizeof(websocket_bridge::Bridge)];
 websocket_bridge::Bridge* bridge=nullptr;
 }
-void initialize(DmxController& c,CommandDispatcher& d,DeviceSettings* s,DeviceMaintenance* m){bridge=new(storage) websocket_bridge::Bridge(c,d,lock,s,m);}
+void initialize(DmxController& c,CommandDispatcher& d,DeviceSettings* s,DeviceMaintenance* m,WifiConfiguration* w){bridge=new(storage) websocket_bridge::Bridge(c,d,lock,s,m,w);}
 void ownerPoll(bool sender){bridge->ownerPoll(sender);}
 websocket_bridge::Token open(uint64_t now){return bridge->open(now);}
 void close(websocket_bridge::Token t){bridge->close(t);}
 bool alive(websocket_bridge::Token t){return bridge->alive(t);}
+bool hasGeneration(uint32_t generation){return bridge&&bridge->hasGeneration(generation);}
 void receive(websocket_bridge::Token t,const char* p,size_t n,uint64_t now){bridge->receive(t,p,n,now);}
 bool take(websocket_bridge::Token t,websocket_bridge::Event& e){return bridge->take(t,e);}
 void sendFailed(websocket_bridge::Token t){bridge->sendFailed(t);}

@@ -49,6 +49,9 @@ class DeviceSettings {
     void commitPending() {for(unsigned i=0;i<3;++i)if(pending_&(1U<<i))commit(DeviceSetting(i));}
     uint32_t previewOwner() const {return preview_.owner;}
     bool busy() const {return preview_.owner||pending_;}
+    bool persistencePending() const {return pending_;}
+    // Owner-task maintenance admission cancels only ephemeral remote state; never writes NVS.
+    void cancelPreviewForMaintenance() {cancelPreview();}
     void servicePreview(uint32_t now,bool owner_alive=true) {
         if(preview_.owner&&(!owner_alive||uint32_t(now-preview_.touched)>=10000||
             uint32_t(now-preview_.started)>=30000))cancelPreview();

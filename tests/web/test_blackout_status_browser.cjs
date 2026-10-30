@@ -50,7 +50,7 @@ const luminance=rgb=>rgb.match(/[\d.]+/g).slice(0,3).map(n=>Number(n)/255).map(n
    }
    await page.evaluate(()=>{const s=window.__headerSockets[0];s.close();s.onclose?.({code:1006,wasClean:false});});await inspect(false,true);
    await page.waitForFunction(()=>window.__headerSockets.length===2&&document.querySelector('.connection').dataset.live==='true');await inspect(true);
-   assert.equal(await page.evaluate(()=>window.__headerSockets[1].sent.filter(r=>!['state.request','settings.request'].includes(r.type)).length),0,'reconnect never replays mutations');
+   assert.equal(await page.evaluate(()=>window.__headerSockets[1].sent.filter(r=>!['state.request','settings.request','wifi.get'].includes(r.type)).length),0,'reconnect never replays mutations');
    await page.evaluate(()=>window.__headerSockets[1].remoteBlackout(false));const restored=await inspect(false);assert.deepEqual(restored.colors,initial.colors);
    console.log('PASS blackout status '+width+'px: authoritative ON/OFF, pending/rejected, stale/reconnect, all text/dot colors, contrast and zero color-induced layout shift');
    await context.close();

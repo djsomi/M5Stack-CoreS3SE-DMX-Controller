@@ -6,12 +6,13 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"network"))
 from preset_loaded_guard_support import prior, check_new_header
 from device_settings_guard_support import restore, check_header
+from wifi_guard_support import check_new
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "294b8b8ea21d139555a7222f16b5eeff00d16091"
 PREFIXES = ("src", "include", "patches", "partitions", "scripts")
 ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp", "include/status_ssid.h",
-    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h", "include/device_maintenance.h", "include/maintenance_transport.h"}
+    "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h", "include/device_maintenance.h", "include/maintenance_transport.h", "include/wifi_configuration.h", "include/wifi_credential_transaction.h", "include/wifi_wire.h", "src/wifi_credential_store.h"}
 
 
 def check():
@@ -37,6 +38,7 @@ def check():
             assert original.count(old) == 1
             original = original.replace(old, new)
         assert restore(path.relative_to(ROOT).as_posix(),path.read_text(encoding="utf-8")).encode() == original, "Unexpected application factory change: " + path.name
+    check_new()
     check_new_header()
     check_header()
     entries = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),

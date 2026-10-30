@@ -71,7 +71,19 @@
           <p id="maintenance-feedback" role="status" aria-live="polite" hidden></p>
         </div>
         </div>
-        <div class="panel settings-panel"><h2>Browser Preferences</h2><label class="preference-row" for="show-percent"><span><strong>Secondary percentage</strong><span>Show a percentage beneath the DMX values.</span></span><input id="show-percent" type="checkbox"></label><p class="muted">Saved in this browser when local storage is available. This does not change the device.</p></div>
+        <div class="settings-local-grid">
+        <div class="panel settings-panel wifi-configuration" aria-labelledby="wifi-heading">
+          <h2 id="wifi-heading">Wi-Fi Configuration</h2>
+          <p class="muted">Current SSID: <strong id="wifi-current">Unavailable</strong></p>
+          <form id="wifi-form" autocomplete="off">
+            <label for="wifi-ssid">New SSID</label><input id="wifi-ssid" type="text" minlength="1" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" disabled required>
+            <label for="wifi-password">New password <span class="muted">Optional — blank keeps the existing password</span></label><div class="wifi-password-field"><input id="wifi-password" type="password" minlength="8" maxlength="63" autocomplete="new-password" autocapitalize="none" spellcheck="false" disabled><button id="wifi-visibility" type="button" aria-label="Show new password" aria-pressed="false" aria-controls="wifi-password" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-off" d="m3 3 18 18"/></svg></button></div>
+            <div class="wifi-actions"><button id="wifi-save" type="submit" disabled>Change Wi-Fi</button><button id="wifi-back" type="button" hidden>Back</button><button id="wifi-cancel" type="button" hidden>Cancel request</button></div>
+          </form>
+          <p id="wifi-progress" class="muted" role="status" hidden></p><p id="wifi-error" class="command-feedback" role="alert" hidden></p>
+        </div>
+        <div class="panel settings-panel browser-preferences"><h2>Browser Preferences</h2><label class="preference-row" for="show-percent"><span><strong>Secondary percentage</strong><span>Show a percentage beneath the DMX values.</span></span><input id="show-percent" type="checkbox"></label><p class="muted">Saved in this browser when local storage is available. This does not change the device.</p></div>
+        </div>
       </section>
       <section class="view" id="view-status" aria-labelledby="heading-status" hidden>
         <div class="view-heading"><div><p class="eyebrow">CONNECTION &amp; DEVICE</p><h1 id="heading-status" tabindex="-1">Status</h1></div><span class="quiet-badge">Read-only</span></div>

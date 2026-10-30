@@ -9,6 +9,7 @@ import './test_status.mjs';
 import './test_loader.mjs';
 import './test_device_settings.mjs';
 import './test_maintenance.mjs';
+import './test_wifi.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
 for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {

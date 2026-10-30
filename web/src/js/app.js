@@ -54,7 +54,11 @@
     }
     function schedule() { if (!document.hidden && frame === null) frame = window.requestAnimationFrame(render); }
     read.subscribe(schedule);
-    shell.mount(document, window, {connection: label(read.current().phase)}, schedule);
+    shell.mount(document, window, {connection: label(read.current().phase)}, () => {
+      // Invalidate view-owned intents before any later acknowledgment or render.
+      settingsView.setActive(!document.hidden && !document.getElementById("view-settings").hidden);
+      schedule();
+    });
     document.getElementById("blackout").addEventListener("click", () => {
       if (operations.canBlackout()) operations.run("blackout.set", !read.current().blackout);
     });

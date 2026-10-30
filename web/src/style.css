@@ -114,7 +114,7 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .preset-slot strong { font-size: 25px; font-weight: 500; }
 .slot-state { color: #a0aec2; font-size: 11px; }
 .preset-actions, .settings-panel, .status-panel { padding: 22px 18px; }
-.settings-device-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
+.settings-device-grid, .settings-local-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
 .device-settings-heading { margin: 0; }
 .device-settings-controls { width: 100%; }
 .device-setting { margin-top: 20px; }
@@ -187,7 +187,7 @@ details.status-panel { margin-top: 16px; }
   .preset-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (min-width: 680px) {
-  .settings-device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-device-grid, .settings-local-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
   .app-container { padding: 0 28px 24px; }
   .app-header { padding-top: 35px; padding-bottom: 28px; }
   .brand-name { font-size: 22px; }
@@ -225,7 +225,7 @@ details.status-panel { margin-top: 16px; }
 .status-panel dd { overflow-wrap: anywhere; min-width: 0; font-variant-numeric: tabular-nums; }
 .status-panel summary { cursor: pointer; font-weight: 600; }
 
-.device-maintenance { display: grid; gap: 12px; }
+.device-maintenance { display: grid; align-content: start; gap: 12px; }
 .maintenance-intro, #maintenance-confirm-text { margin: 0; color: #a4b1c5; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 #maintenance-confirm-text { min-height: 3.2em; }
 .maintenance-button-area { display: grid; min-width: 0; }
@@ -239,3 +239,22 @@ details.status-panel { margin-top: 16px; }
 #maintenance-confirm:not(:disabled):focus-visible { outline-color: #9dd8b7; }
 #maintenance-confirm:not(:disabled):active { background: #1e4936; border-color: #4a8e6d; }
 #maintenance-feedback { margin: 0; color: var(--red); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+
+.settings-local-grid { margin-bottom: 0; }
+.settings-local-grid > .panel { min-width: 0; }
+.settings-local-grid .wifi-configuration { margin-bottom: 0; }
+.wifi-configuration h2 { margin-bottom: 12px; }
+#wifi-form { display: grid; gap: 10px; max-width: 600px; }
+#wifi-form label { display: grid; gap: 3px; font-size: 13px; }
+#wifi-form input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; border: 1px solid #3a475b; border-radius: 6px; background: #111722; color: #eef2f8; font: inherit; font-size: 16px; }
+.wifi-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.wifi-actions button { min-height: 44px; }
+#wifi-current, #wifi-progress, #wifi-error { overflow-wrap: anywhere; }
+#wifi-progress, #wifi-error { margin: 12px 0 0; }
+
+.wifi-password-field { position: relative; min-width: 0; }
+#wifi-form .wifi-password-field input { padding-right: 52px; }
+#wifi-visibility { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 44px; min-height: 42px; padding: 10px; border: 0; background: transparent; color: #a4b1c5; }
+#wifi-visibility svg { display: block; width: 22px; height: 22px; }
+#wifi-visibility[aria-pressed=false] .eye-off { display: none; }
+#wifi-visibility:not(:disabled):hover { color: #eef2f8; }

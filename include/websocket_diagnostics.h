@@ -4,12 +4,12 @@
 namespace websocket_diagnostics {
 enum class Reason : uint8_t { none,peer_close,native_unattributed,io_failure,wire_invalid,
     frame_invalid,receive_failed,frame_rate,upgrade_rejected,bridge_queue_full,bridge_rate,
-    bridge_gone,socket_invalid,idle,send_failed,encode_failed,server_stop };
+    bridge_gone,socket_invalid,idle,send_failed,encode_failed,server_stop,wifi_reconfigure };
 enum class Source : uint8_t { none,handler,io,send,pump,native_callback,worker };
 inline const char* name(Reason r) {
     const char* names[]={"none","peer_close","native_unattributed","io_failure","wire_invalid",
         "frame_invalid","receive_failed","frame_rate","upgrade_rejected","bridge_queue_full","bridge_rate",
-        "bridge_gone","socket_invalid","idle","send_failed","encode_failed","server_stop"};
+        "bridge_gone","socket_invalid","idle","send_failed","encode_failed","server_stop","wifi_reconfigure"};
     return names[unsigned(r)];
 }
 inline const char* name(Source s) {

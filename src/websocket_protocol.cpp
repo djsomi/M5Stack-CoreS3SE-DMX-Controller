@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <limits.h>
+#include "wifi_wire.h"
 
 namespace websocket_bridge {
 namespace {
@@ -55,18 +56,21 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     error="invalid";
     if(!data||!length||length>max_message)return false;
     Parser p{data,data+length};
-    uint32_t nums[13]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{},action[16]{};
+    uint32_t nums[15]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{},action[16]{},wifi_ssid[45]{},wifi_password[85]{};
+    struct Clear {char* p;~Clear(){WifiConfiguration::erase(p,85);}} clear{wifi_password};
     if(!p.eat('{'))return false;
     do {
         char key[16];if(!p.string(key,sizeof(key))||!p.eat(':'))return false;
-        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base","action","request"};
-        unsigned k=0;while(k<13&&strcmp(key,keys[k]))++k;
-        if(k==13||(fields&(1U<<k)))return false;
+        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base","action","request","ssid","password"};
+        unsigned k=0;while(k<15&&strcmp(key,keys[k]))++k;
+        if(k==15||(fields&(1U<<k)))return false;
         fields|=1U<<k;
         if(k==2){if(!p.string(type,sizeof(type)))return false;}
         else if(k==8){if(!p.string(setting,sizeof(setting)))return false;}
         else if(k==11){if(!p.string(action,sizeof(action)))return false;}
         else if(k==10){if(!p.string(base,sizeof(base)))return false;}
+        else if(k==13){if(!p.string(wifi_ssid,sizeof(wifi_ssid)))return false;}
+        else if(k==14){if(!p.string(wifi_password,sizeof(wifi_password)))return false;}
         else if(k==5){if(!p.boolean(nums[k]))return false;}
         else if(!p.number(nums[k]))return false;
         p.space();if(p.p==p.end)return false;
@@ -78,7 +82,16 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     r.id=nums[1];
     if(nums[0]!=1){error="version";return false;}
     unsigned expected=7;
-    if(!strcmp(type,"maintenance.get"))r.maintenance=1;
+    if(!strcmp(type,"wifi.get"))r.wifi=1;
+    else if(!strcmp(type,"wifi.propose")) {
+        expected|=1024|8192|16384;r.wifi=2;
+        if(!base[0]||base[0]=='0')return false;
+        for(const char* c=base;*c;++c){if(*c<'0'||*c>'9'||r.wifi_base>(UINT64_MAX-unsigned(*c-'0'))/10)return false;r.wifi_base=r.wifi_base*10+unsigned(*c-'0');}
+        if(!wifi_wire::decode(wifi_ssid,r.wifi_ssid,sizeof(r.wifi_ssid))||!r.wifi_ssid[0]||
+           !wifi_wire::decode(wifi_password,r.wifi_password,sizeof(r.wifi_password))||
+           (r.wifi_password[0]&&!WifiConfiguration::text(r.wifi_password,sizeof(r.wifi_password),8,63)))return false;
+    } else if(!strcmp(type,"wifi.cancel")){expected|=4096;r.wifi=3;r.maintenance_request=nums[12];if(!nums[12])return false;}
+    else if(!strcmp(type,"maintenance.get"))r.maintenance=1;
     else if(!strcmp(type,"maintenance.request")) {
         expected|=2048;r.maintenance=2;
         if(!strcmp(action,"restart"))r.maintenance_action=DeviceMaintenance::Action::restart;
@@ -153,6 +166,22 @@ const char* maintenanceResult(DeviceMaintenance::Result value) {
 }
 size_t encode(const Event& e,char* out,size_t capacity) {
     Writer w(out,capacity);
+    if(e.kind==Kind::wifi_snapshot||e.kind==Kind::wifi_update||e.kind==Kind::wifi_result) {
+        const auto& c=e.wifi;
+        const char* phases[]={"idle","approval","applying","failed"};
+        const char* reasons[]={"none","cancelled","expired","disconnected","storage","radio","rollback","unavailable"};
+        const char* origins[]={"legacy","factory","custom"};
+        const char* results[]={"accepted","cancelled","no_change","invalid","conflict","busy","unauthorized","unavailable"};
+        w.add("{\"v\":1,\"type\":\"%s\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\",\"base\":\"%llu\",\"ssid\":",
+            e.kind==Kind::wifi_snapshot?"wifi.snapshot":e.kind==Kind::wifi_update?"wifi.update":"wifi.result",
+            (unsigned long)e.id,(unsigned long long)e.revision,(unsigned long long)e.sequence,(unsigned long long)c.base);
+        const auto text=[&w](const char* value){w.add("\"");for(;*value;++value){if(*value=='\"'||*value=='\\')w.add("\\");w.add("%c",*value);}w.add("\"");};
+        text(c.ssid);w.add(",\"proposed\":");text(c.proposed);
+        w.add(",\"origin\":\"%s\",\"phase\":\"%s\",\"reason\":\"%s\",\"request\":%lu,\"remaining_ms\":%lu,\"password_change\":%s,\"available\":%s",
+            origins[unsigned(c.origin)],phases[unsigned(c.phase)],reasons[unsigned(c.reason)],(unsigned long)c.request,(unsigned long)c.remaining_ms,c.password_change?"true":"false",c.available?"true":"false");
+        if(e.kind==Kind::wifi_result)w.add(",\"status\":\"%s\"",results[unsigned(e.wifi_result)]);
+        w.add("}");return w.ok?w.used:0;
+    }
     if(e.kind==Kind::maintenance_snapshot||e.kind==Kind::maintenance_update||e.kind==Kind::maintenance_result) {
         const auto& s=e.maintenance;
         const char* kind=e.kind==Kind::maintenance_snapshot?"maintenance.snapshot":e.kind==Kind::maintenance_update?"maintenance.update":"maintenance.result";

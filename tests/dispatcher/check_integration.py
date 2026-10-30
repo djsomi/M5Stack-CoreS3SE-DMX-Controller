@@ -45,7 +45,7 @@ assert "if (target_value != controller.channel(target_channel))" not in view
 
 old_view = baseline("src/view_sender.h")
 # Approved Settings and Stage5B allocation changes are independently guarded by network tests.
-view_for_guard = re.sub(r"        // Stage 5 local network information begin.*?        // Stage 5 local network information end.\n\n", "", stage5a_view(stage5b_view(restore("src/view_sender.h",view))), flags=re.S)
+view_for_guard = re.sub(r"        // Stage 5 local network information begin.*?        // Stage 5 local network information end.\n\n", "", stage5a_view(stage5b_view(restore("src/view_sender.h",(root / "src/view_sender.h").read_text(encoding="utf-8")))), flags=re.S)
 for start, end in [
     ("    void drawPrecisionEditor(void)", "    void openPrecisionEditor(void)"),
     ("    void drawPrecisionKeypad(", "    void drawPrecisionEditor(void)"),

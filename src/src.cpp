@@ -612,7 +612,7 @@ void drawSelectSetup(void) {
 class ApplicationMaintenanceBackend final : public DeviceMaintenance::Backend {
     MaintenanceTransport shutdown_transport{dmx_transport};
  public:
-    bool busy() override {return device_settings.busy()||command_dispatcher.pending()!=0||view_sender.maintenanceUiActive();}
+    bool busy() override {return device_settings.persistencePending()||command_dispatcher.pending()!=0||view_sender.maintenanceUiActive()||network_service::configuration().active()||view_sender.wifiUiActive();}
     void begin(bool) override {shutdown_transport.begin();}
     DeviceMaintenance::Step zeroFrame(int64_t now) override {return shutdown_transport.zeroFrame(now);}
     DeviceMaintenance::Step quiesce(int64_t now) override {return shutdown_transport.quiesce(now);}
@@ -630,7 +630,7 @@ void controllerPowerOff(void) {
 
 
 void setup(void) {
-    websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings, &device_maintenance);
+    websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings, &device_maintenance, &network_service::configuration());
     wifi_startup_trace::capture("setup.enter");
     network_service::prepare(); // Owner-only credential I/O, before ADC/radio/DMX.
     wifi_startup_trace::capture("credentials.after");
@@ -732,6 +732,8 @@ void loop(void) {
 
     // Owner-task servicing precedes every page/startup/wake early return.
     dmx_transport.poll(esp_timer_get_time());
+    network_service::setConfigurationBusy(scene_mode!=mode_sender||device_maintenance.active()||view_sender.maintenanceUiActive()||
+        (!network_service::configuration().active()&&view_sender.wifiUiActive()));
     network_service::ownerTick(esp_timer_get_time(), dmx_transport.health().errors,
                                dmx_transport.health().fault_stopped);
     serviceDmxTransportDiagnostics();
@@ -739,7 +741,7 @@ void loop(void) {
     command_dispatcher.setSenderActive(scene_mode == mode_sender&&!device_maintenance.committed());
     websocket_service::ownerPoll(scene_mode == mode_sender);
     command_dispatcher.process();
-    if (scene_mode == mode_sender&&!device_maintenance.active()&&!view_sender.maintenanceUiActive()) view_sender.serviceControllerChanges();
+    if (scene_mode == mode_sender&&!device_maintenance.active()&&!view_sender.maintenanceUiActive()&&!network_service::configuration().active()&&!view_sender.wifiUiActive()) view_sender.serviceControllerChanges();
 
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::service();
@@ -756,6 +758,13 @@ void loop(void) {
         if (display_sleeping) {display_sleeping=false;M5.Display.setBrightness(g_display_normal_brightness);}
         last_display_activity_ms=now;
         view_sender.serviceMaintenanceUi(device_maintenance);delay(1);return;
+    }
+
+    if(scene_mode==mode_sender&&(network_service::configuration().active()||view_sender.wifiUiActive())) {
+        view_sender.serviceDmxOutput();
+        if(display_sleeping){display_sleeping=false;M5.Display.setBrightness(g_display_normal_brightness);}
+        last_display_activity_ms=now;
+        view_sender.serviceWifiUi(network_service::configuration());delay(1);return;
     }
 
     // Continue the short boot chime without blocking UI/DMX processing.
