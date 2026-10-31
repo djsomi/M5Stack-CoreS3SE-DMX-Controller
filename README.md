@@ -73,9 +73,46 @@ A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the **
 
 ---
 
+## v0.3.0 — local stable source
+
+The v0.3.0 source is hardware-accepted and finalized locally; hosted publication
+and new stable firmware bundles are separate distribution steps. Preserved
+`0.3.0-rc.1` archives predate the final fixes and must not be relabeled as stable.
+Public v0.2.0 uses an 8 MiB layout; v0.3.0 uses the measured 16 MiB flash.
+An app-only update cannot migrate the partition table. Use separately addressed
+images, not a padded FULL image, when preserving NVS.
+
+There are two Wi-Fi-capable production profiles: Unit (recommended) and Base
+(experimental). Future stable bundles use `CoreS3SE-DMX-v0.3.0-UNIT.zip` and
+`CoreS3SE-DMX-v0.3.0-BASE-EXPERIMENTAL.zip`, containing four addressed images,
+manifest, exact source identity, checksums and instructions. Diagnostics are not
+normal release firmware; no separate Wi-Fi/no-Wi-Fi variant is needed.
+
+- [Installation and v0.2.0 upgrade instructions](docs/V0_3_0_INSTALLATION.md)
+- [Migration acceptance and outstanding checks](docs/V0_3_0_MIGRATION_ACCEPTANCE.md)
+- [v0.3.0 release notes and limitations](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
+- [Changelog](CHANGELOG.md)
+- [Preset Backup and Import/Export](docs/PRESET_EXPORT_IMPORT.md)
+
+Preset Save/Delete, Import/Export, reboot persistence and final Backup UI passed
+user-performed physical acceptance. The selective Unit migration retained seeded
+v0.2.0 presets/settings and reboot persistence. Separate Base migration and
+interrupted-upgrade recovery remain unverified; Unit acceptance does not certify
+Base. The upgrade excludes NVS at `0x9000`/`0x5000`.
+
 ## Features
 
 - Full **512-channel DMX universe**
+- Complete offline mobile/desktop web DMX control, live multi-client synchronization
+- Web faders, +/- fine adjustment and direct numeric entry
+- Web P1–P8 load/save/delete with overwrite/delete confirmation
+- Transactional JSON preset Backup/Import, timestamped downloads and progress dialogs
+- Guarded reclamation of obsolete legacy preset blobs after verified generation adoption
+- Authoritative web blackout and pre-blackout snapshot restoration
+- SoftAP, embedded HTTP/WebSocket assets and automatic connection recovery
+- Wi-Fi Configuration with physical approval, expiry and credential recovery
+- Live Device Settings previews, commit-on-release and physical/web synchronization
+- Web Restart/Power Off confirmation with five-second physical CANCEL
 - Touchscreen channel selection and value editing
 - Persistent **P1-P8 presets**
 - Protected preset save using hold-to-save
@@ -87,7 +124,7 @@ A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the **
 - Low-battery visual and audible warnings
 - Persistent settings storage
 - Screen always-on option
-- Touch and statup sounds
+- Touch and startup sounds
 - Software RESTART, POWER OFF with Double-tap protection
 - Separate hardware profiles for:
   - **M5Stack Unit DMX U183**
@@ -118,7 +155,7 @@ The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controlle
 ---
 # Functions
 
-## Presets
+## Physical Presets
 
 Eight presets are available:
 
@@ -154,7 +191,7 @@ Clearing is protected by a hold action.
 
 ---
 
-## Blackout
+## Physical Blackout
 
 BLACKOUT uses double-tap protection.
 
@@ -213,9 +250,35 @@ BACK
 
 Both RESTART and POWER OFF require a double tap within approximately **500 ms**.
 
-Before restart / shutdown, the firmware sends several all-zero DMX frames.
+The established shutdown preparation is retained. Complete zero frames before
+shutdown have not been established by external capture.
 
 ---
+
+## Offline web interface
+
+In physical Sender Settings, read the current SSID and password. Join the device's
+Wi-Fi network and open **http://192.168.4.1/**. The interface works without internet
+and in iPhone Safari/Home Screen mode. The AP suppresses its DHCP default-router
+option; client cellular routing depends on the OS.
+
+Editor supports all 512 channels. Presets provides Load, Save and Delete; overwrite
+and deletion need explicit browser confirmation. Blackout sends zero while keeping
+its entry snapshot; edits during blackout do not energize outputs and are discarded
+when the original snapshot is restored.
+
+Settings contains Device Settings, Device Maintenance, Wi-Fi Configuration and
+browser-only preferences. Slider previews apply live and save on release. Maintenance
+requires browser confirmation and allows five seconds to CANCEL on the device.
+Wi-Fi changes additionally require physical OK within 60 seconds; CANCEL/expiry
+before approval discards them. Rejoin after applying new credentials. Blank New
+password keeps the existing password. HOLD RESET WIFI for two seconds schedules a
+Wi-Fi-only factory reset for the next explicit restart; presets/settings are kept.
+
+Factory credentials use the AP MAC suffix and are predictable. Change them through
+the physical-approval flow. Associated clients share control; WPA2 association is
+not a separate administrative authorization layer, and HTTP/WebSocket is not
+application-encrypted. No STA/AP+STA or OTA updater is implemented.
 
 ## Battery Monitoring
 
@@ -331,49 +394,34 @@ pio run -e cores3se_base -t upload
 
 The project is built with PlatformIO and uses:
 
-- [M5Unified](https://github.com/m5stack/M5Unified)
-- [M5GFX](https://github.com/m5stack/M5GFX)
+- PlatformIO `espressif32@6.7.0`, Arduino 2.0.16 / ESP-IDF 4.4.7
+- [M5Unified 0.2.21](https://github.com/m5stack/M5Unified)
+- [M5GFX 0.2.28](https://github.com/m5stack/M5GFX)
 - [esp_dmx](https://github.com/someweisguy/esp_dmx)
 
 The current application branch was developed around **esp_dmx v2.02** because it matches the API used by the original application.
 
-### CoreS3SE compatibility note
+### Reproducible builds and candidate provenance
 
-With esp_dmx v2.02 on newer ESP32-S3 toolchains, the library may require compatibility changes in `dmx_ll.h` for renamed ESP-IDF UART register members.
+Repository-local PlatformIO hooks apply and verify the ESP32-S3 compatibility
+and reviewed TX ownership/RS485_CLASH patches to upstream esp_dmx v2.02. Do not
+manually edit `.pio/libdeps`. Compressed web assets are deterministic and embedded
+in firmware; no filesystem upload is required.
 
-The changes used during development were:
+Build normally with `pio run -e cores3se_unit` or `pio run -e cores3se_base`.
+Read-only `/status` and web Status report version, build environment, Git HEAD,
+modified-input flag and source fingerprint. Stable distribution binaries must be
+rebuilt from the clean local v0.3.0 tag and match its source commit and fingerprint.
+An RC bundle or pre-commit build with `.modified` provenance is not that artifact.
+The candidate packager remains a local validation tool; original RC archives and
+checksums are retained unchanged.
 
-```cpp
-hw->uart_idle_conf_reg_t.tx_idle_num
-```
-
-to:
-
-```cpp
-hw->idle_conf.tx_idle_num
-```
-
-```cpp
-hw->uart_txbrk_conf_reg_t.tx_brk_num
-```
-
-to:
-
-```cpp
-hw->txbrk_conf.tx_brk_num
-```
-
-and:
-
-```cpp
-hw->uart_status_reg_t.rxd
-```
-
-to:
-
-```cpp
-hw->status.rxd
-```
+Only production Unit/Base builds are packaged. Diagnostics remain developer
+checks. Two OTA slots reserve capacity but do not provide an OTA updater or
+validated health rollback. A slow client can still temporarily stall a native
+synchronous WebSocket send; bounded queues/recovery do not remove that limitation.
+Upper-flash writes, external DMX electrical/frame-coherence measurements and
+physical slider precision remain documented limits/deferred work.
 
 ---
 
@@ -457,3 +505,11 @@ Please avoid reporting a Base DMX issue as confirmed hardware failure unless the
 DMX512 controls lighting and related equipment. Test new firmware in a safe environment before using it during a live event.
 
 This project is an independent community project and is **not an official M5Stack product**.
+
+### Deferred physical fader limitation
+
+Slow continuous touchscreen fader movement may exhibit intermittent coordinate stalls originating at or before the touch-controller acquisition layer. Historical upstream code contains the same relevant acquisition mechanisms. No application-level cause was demonstrated. The behavior is not proven to have occurred on the original firmware.
+
+The captured raw-coordinate correction is retained. Touch investigation tools are
+explicit opt-ins; THDIFF register-write experiments remain suspended. See
+[stabilization notes](docs/V0_3_0_STABILIZATION_PHASE1.md).

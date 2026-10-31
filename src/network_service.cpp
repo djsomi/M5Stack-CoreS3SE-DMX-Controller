@@ -1,3 +1,4 @@
+#include "firmware_version.h"
 #include "status_ssid.h"
 #include "network_service.h"
 #include "hardware_diagnostics.h"
@@ -64,6 +65,10 @@ char ws_output[websocket_bridge::max_json];
 int64_t request_window = 0;
 unsigned window_requests = 0;
 bool launched = false;
+bool lifecycle_fault = false; // Failed teardown forbids resource reuse.
+uint32_t power_request = 1; // mux protected; explicit requests only, no auto retry.
+bool canvas_available = false;
+bool netif_initialized = false, default_events_ready = false; // Worker-only, process lifetime.
 bool sweep_pending = false;
 int64_t sweep_queued_at = 0; // mux protected; one outstanding HTTP work item.
 softap_policy::Stations stations;
@@ -510,13 +515,15 @@ esp_err_t serve(httpd_req_t* r) {
             httpd_resp_set_type(r,"application/json");return finish(r,httpd_resp_send(r,json,length));
         }
         const auto& bundle=web_assets::bundle();
+        const auto& identity=firmware_build::info();
         wifi_config_t active{};
         char ssid_json[67];
         const bool have_ssid=esp_wifi_get_config(WIFI_IF_AP,&active)==ESP_OK &&
             status_telemetry::ssidJson(active.ap.ssid,active.ap.ssid_len?active.ap.ssid_len:
                 strnlen(reinterpret_cast<const char*>(active.ap.ssid),sizeof(active.ap.ssid)),ssid_json);
         int n=snprintf(json,sizeof(json),
-            "{\"build\":\"%s\",\"profile\":\"%s\",\"layout\":\"%s\",\"ssid\":%s,\"ms\":%lu,\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
+            "{\"version\":\"%s\",\"source_commit\":\"%s\",\"source_modified\":%s,\"build_id\":\"%s\",\"build\":\"%s\",\"profile\":\"%s\",\"layout\":\"%s\",\"ssid\":%s,\"ms\":%lu,\"stage\":5,\"phase\":\"%s\",\"ip\":\"%s\",\"stations\":%lu,\"max_stations\":%lu,\"dhcp_router_option\":%s,\"requests\":%lu,\"rejected\":%lu,\"max_owner_gap_us\":%lu,\"tx_errors\":%lu,\"tx_stopped\":%s,\"worker_stack_hwm\":%lu,\"http_stack_hwm\":%lu,\"samples\":[",
+            identity.version,identity.commit,identity.modified?"true":"false",identity.build_id,
             bundle.source_sha256,bundle.profile,bundle.layout,have_ssid?ssid_json:"null",(unsigned long)(uint32_t(now/1000)),
             phaseName(s.phase),s.ip,(unsigned long)s.clients,(unsigned long)s.max_clients,s.router_option_disabled?"false":"true",
             (unsigned long)s.requests,(unsigned long)s.rejected,
@@ -580,12 +587,12 @@ struct WifiJob {
 } wifi_job;
 class ConfigurationBackend final : public WifiConfiguration::Backend {
  public:
-    bool available() override {portENTER_CRITICAL(&mux);const bool ok=shared.phase==Phase::ready&&!shared.reset_pending&&!wifi_job.busy&&!configuration_busy;portEXIT_CRITICAL(&mux);return ok;}
+    bool available() override {portENTER_CRITICAL(&mux);const bool ok=shared.phase==Phase::ready&&shared.enabled&&!shared.reset_pending&&!wifi_job.busy&&!configuration_busy;portEXIT_CRITICAL(&mux);return ok;}
     bool connected(uint32_t generation) override {return websocket_service::hasGeneration(generation);}
     void current(softap_policy::Credentials& c) override {portENTER_CRITICAL(&mux);c=credentials;portEXIT_CRITICAL(&mux);}
     bool begin(const softap_policy::Credentials& c) override {
         portENTER_CRITICAL(&mux);
-        const bool ok=!configuration_busy&&!wifi_job.busy&&shared.phase==Phase::ready&&!shared.reset_pending;
+        const bool ok=!configuration_busy&&!wifi_job.busy&&shared.phase==Phase::ready&&shared.enabled&&!shared.reset_pending;
         if(ok){wifi_job.candidate=c;++wifi_job.epoch;wifi_job.busy=wifi_job.queued=true;wifi_job.notice=wifi_job.retired=wifi_job.retire_requested=wifi_job.probe=false;wifi_job.result=WifiConfiguration::Work::pending;}
         portEXIT_CRITICAL(&mux);return ok;
     }
@@ -694,17 +701,29 @@ bool wifiChange(esp_netif_t* netif) {
     return healthy;
 }
 
-void worker(void*) {
+bool runNetwork() {
     esp_netif_t* netif=nullptr;bool initialized=false,started=false;
     esp_event_handler_instance_t station_handler=nullptr;
     esp_err_t error=ESP_OK;
     phase(Phase::starting);
+    if(!canvas_available) {wifi_startup_trace::capture("guard.canvas",ESP_ERR_NO_MEM,true);phase(Phase::failed,ESP_ERR_NO_MEM);return true;}
+    const auto m=memory();
+    const uint32_t failed_guards=(m.internal<81920?1U:0U)|(m.largest<49152?2U:0U)|(m.dma<32768?4U:0U);
+    wifi_startup_trace::capture("guard.preflight",failed_guards?ESP_ERR_NO_MEM:ESP_OK,failed_guards!=0,nullptr,failed_guards);
+    if(m.internal<81920 || m.largest<49152 || m.dma<32768) {phase(Phase::failed,ESP_ERR_NO_MEM);return true;}
     auto check=[&](esp_err_t e){if(e!=ESP_OK) error=e;return e==ESP_OK;};
     do {
         if(!safe(memory())) {wifi_startup_trace::capture("guard.worker.entry",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
-        if(!check(traced("esp_netif_init",[]{return esp_netif_init();}))) break;
-        const auto event_error=traced("esp_event_loop_create_default",[]{return esp_event_loop_create_default();},ESP_ERR_INVALID_STATE);
-        if(event_error!=ESP_OK && event_error!=ESP_ERR_INVALID_STATE) {error=event_error;break;}
+        // ESP-IDF requires one TCP/IP initialization, even across radio cycles.
+        if(!netif_initialized) {
+            if(!check(traced("esp_netif_init",[]{return esp_netif_init();}))) break;
+            netif_initialized=true;
+        }
+        if(!default_events_ready) {
+            const auto event_error=traced("esp_event_loop_create_default",[]{return esp_event_loop_create_default();},ESP_ERR_INVALID_STATE);
+            if(event_error!=ESP_OK && event_error!=ESP_ERR_INVALID_STATE) {error=event_error;break;}
+            default_events_ready=true;
+        }
         esp_netif_config_t netcfg=ESP_NETIF_DEFAULT_WIFI_AP();
         wifi_startup_trace::capture("esp_netif_new",0,false,nullptr,0,true);
         netif=esp_netif_new(&netcfg);
@@ -743,6 +762,7 @@ void worker(void*) {
         if(!check(traced("station.events.register",[&]{return esp_event_handler_instance_register(
             WIFI_EVENT,ESP_EVENT_ANY_ID,stationEvent,nullptr,&station_handler);}))) break;
         if(!check(traced("esp_wifi_start",[]{return esp_wifi_start();}))) break;started=true;
+        portENTER_CRITICAL(&mux);shared.radio_on=true;++shared.ui_revision;portEXIT_CRITICAL(&mux);
         // Default AP event handlers bring the interface up asynchronously.
         unsigned wait=0;
         while(!esp_netif_is_netif_up(netif) && wait++<50) vTaskDelay(pdMS_TO_TICKS(50));
@@ -784,6 +804,8 @@ void worker(void*) {
         uint32_t previous_requests=0;unsigned previous_clients=0;int64_t maintenance=0;
         for(;;) {
             vTaskDelay(pdMS_TO_TICKS(20)); // Bounded HTTP-task pump; never queues work from the Controller task.
+            portENTER_CRITICAL(&mux);const bool enabled=shared.enabled;portEXIT_CRITICAL(&mux);
+            if(!enabled)break; // Before queuing any more HTTP/credential work.
             if(!wifiChange(netif)){error=ESP_FAIL;break;}
             bool queue_sweep=false;
             portENTER_CRITICAL(&mux);
@@ -808,26 +830,68 @@ void worker(void*) {
             if((s.http_stack && s.http_stack<1024) || s.worker_stack<1024) {wifi_startup_trace::capture("guard.stack",ESP_ERR_NO_MEM,true);error=ESP_ERR_NO_MEM;break;}
         }
     } while(false);
-    // Only worker may block on teardown. Never reset/reinitialize the DMX driver.
+    // Stop the HTTP task first: close callbacks retire Bridge generations and
+    // no pump callback survives its return and a new server may reuse sessions[].
     portENTER_CRITICAL(&mux);ws_diag.stopping=true;ws_diag.server_stop_rc=error;portEXIT_CRITICAL(&mux);
-    if(server) {traced("httpd_stop",[]{return httpd_stop(server);});server=nullptr;}
+    bool clean=true;
+    if(server) {
+        const auto rc=traced("httpd_stop",[]{return httpd_stop(server);});
+        if(rc==ESP_OK)server=nullptr;else {clean=false;error=rc;}
+    }
     emitFirstFailure();
-    if(started) traced("esp_wifi_stop",[]{return esp_wifi_stop();});
-    if(station_handler) traced("station.events.unregister",[&]{return esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,station_handler);});
-    worker_task=nullptr;
-    portENTER_CRITICAL(&mux);stations.clear();publishStations();
+    if(started) {
+        const auto rc=traced("esp_wifi_stop",[]{return esp_wifi_stop();});
+        if(rc==ESP_OK || rc==ESP_ERR_WIFI_NOT_STARTED) {
+            portENTER_CRITICAL(&mux);shared.radio_on=false;portEXIT_CRITICAL(&mux);
+        } else {clean=false;error=rc;}
+    }
+    if(station_handler) {
+        const auto rc=traced("station.events.unregister",[&]{return esp_event_handler_instance_unregister(WIFI_EVENT,ESP_EVENT_ANY_ID,station_handler);});
+        if(rc!=ESP_OK){clean=false;error=rc;}
+    }
+    // Never destroy/reuse resources under an unretired server or event handler.
+    if(clean) {
+        if(netif) esp_netif_destroy_default_wifi(netif);
+        wifi_startup_trace::capture("netif.destroy.after");
+        if(initialized) {
+            const auto rc=traced("esp_wifi_deinit",[]{return esp_wifi_deinit();});
+            if(rc!=ESP_OK){clean=false;error=rc;}
+        }
+    }
+    portENTER_CRITICAL(&mux);
+    if(clean) {
+        stations.clear();publishStations();sweep_pending=false;sweep_queued_at=0;
+        shared.ip[0]=0;shared.router_option_disabled=false;shared.radio_on=false;
+        ws_diag.stopping=false;ws_diag.server_stop_rc=0;
+    }
+    lifecycle_fault=!clean;
+    const bool enabled=shared.enabled;
 #if DMX_HW_DIAGNOSTICS
     station_diag.queried=false;station_diag.applied=false;++station_trace_revision;
 #endif
     portEXIT_CRITICAL(&mux);
 #if DMX_HW_DIAGNOSTICS
-    emitStations(true); // One final offline/error sample; no client connection required.
+    emitStations(true);
 #endif
-    if(netif) esp_netif_destroy_default_wifi(netif);
-    wifi_startup_trace::capture("netif.destroy.after");
-    if(initialized) traced("esp_wifi_deinit",[]{return esp_wifi_deinit();});
-    record(8,0);phase(Phase::failed,error==ESP_OK?ESP_FAIL:error);
-    vTaskDelete(nullptr);
+    record(8,0);
+    phase(clean&&!enabled?Phase::disabled:Phase::failed,error==ESP_OK&&enabled?ESP_FAIL:error);
+    return clean;
+}
+void worker(void*) {
+    // Keep one lifecycle owner, including OFF and failed states. No competing
+    // re-created worker or implicit restart after failure/explicit disable.
+    uint32_t seen=0;
+    for(;;) {
+        portENTER_CRITICAL(&mux);
+        const uint32_t request=power_request;
+        const bool enabled=shared.enabled,blocked=lifecycle_fault;
+        portEXIT_CRITICAL(&mux);
+        if(request!=seen&&!blocked) {
+            seen=request;
+            if(enabled)runNetwork();else phase(Phase::disabled);
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 }
 void prepare() {
@@ -858,6 +922,12 @@ void prepare() {
         // Only acknowledge the explicit reset after the atomic blob write/readback.
         if(valid && reset) valid=storage.remove("factory");
     }
+    bool enabled=true; // Existing installations safely retain Wi-Fi ON.
+    const bool power_valid=!storage.isKey("enabled") ||
+        (storage.getType("enabled")==PT_U8 && storage.getUChar("enabled",2)<=1);
+    if(power_valid && storage.isKey("enabled"))enabled=storage.getUChar("enabled",1)!=0;
+    if(!power_valid)enabled=false; // Explicit local repair; never guess corrupted intent.
+    shared.enabled=enabled;shared.power_error=power_valid?0:ESP_ERR_INVALID_STATE;
     storage.end();
     if(!valid) {memset(&credentials,0,sizeof(credentials));phase(Phase::failed,ESP_FAIL);return;}
     ui_credentials=credentials;
@@ -866,16 +936,38 @@ void prepare() {
 void launch(bool canvas_reserved) {
     if(launched || status().phase!=Phase::prepared) return;
     launched=true;
-    if(!canvas_reserved) {wifi_startup_trace::capture("guard.canvas",ESP_ERR_NO_MEM,true);phase(Phase::failed,ESP_ERR_NO_MEM);return;}
+    canvas_available=canvas_reserved;
     const auto m=memory();
     portENTER_CRITICAL(&mux);shared.before=m;shared.current=m;samples[0]={m,1,0,0};sample_count=1;portEXIT_CRITICAL(&mux);
-    const uint32_t failed_guards=(m.internal<81920?1U:0U)|(m.largest<49152?2U:0U)|(m.dma<32768?4U:0U);
-    wifi_startup_trace::capture("guard.preflight",failed_guards?ESP_ERR_NO_MEM:ESP_OK,failed_guards!=0,nullptr,failed_guards);
-    if(m.internal<81920 || m.largest<49152 || m.dma<32768) {phase(Phase::failed,ESP_ERR_NO_MEM);return;}
     wifi_startup_trace::capture("xTaskCreatePinnedToCore",0,false,nullptr,0,true);
     const auto task_result=xTaskCreatePinnedToCore(worker,"net-worker",8192,nullptr,1,&worker_task,0);
     wifi_startup_trace::capture("xTaskCreatePinnedToCore",task_result==pdPASS?ESP_OK:ESP_ERR_NO_MEM,task_result!=pdPASS,nullptr,uint32_t(task_result));
     if(task_result!=pdPASS) phase(Phase::failed,ESP_ERR_NO_MEM);
+}
+bool requestEnabled(bool enabled) {
+    if(xTaskGetCurrentTaskHandle()!=application_owner)return false;
+    const auto s=status();
+    if(!worker_task || s.phase==Phase::starting || s.phase==Phase::stopping ||
+       s.phase==Phase::prepared || configuration_authority.active())return false;
+    portENTER_CRITICAL(&mux);const bool blocked=lifecycle_fault;portEXIT_CRITICAL(&mux);
+    if(blocked)return false;
+    Preferences storage;
+    bool saved=storage.begin("dmxwifi",false);
+    if(saved) {
+        // Verify even an unchanged intent; no redundant flash commit when valid.
+        const bool same=storage.isKey("enabled")&&storage.getType("enabled")==PT_U8&&
+            storage.getUChar("enabled",2)==unsigned(enabled);
+        saved=same || storage.putUChar("enabled",enabled?1:0)==1;
+        saved=saved && storage.getType("enabled")==PT_U8 && storage.getUChar("enabled",2)==unsigned(enabled);
+        storage.end();
+    }
+    portENTER_CRITICAL(&mux);
+    if(lifecycle_fault)saved=false; // Teardown may have failed during NVS I/O.
+    shared.power_error=saved?0:ESP_FAIL;
+    if(saved) {shared.enabled=enabled;++power_request;shared.phase=enabled?Phase::starting:Phase::stopping;shared.error=0;}
+    ++shared.ui_revision;
+    portEXIT_CRITICAL(&mux);
+    return saved; // Radio/HTTP operations only on the existing worker.
 }
 void ownerTick(int64_t now,uint32_t errors,bool stopped) {
     static int64_t previous=0;
@@ -913,6 +1005,6 @@ bool requestFactoryReset() {
 }
 
 const char* phaseName(Phase p) {
-    switch(p) {case Phase::disabled:return "OFF";case Phase::prepared:return "PREPARED";case Phase::starting:return "STARTING";case Phase::ready:return "READY";default:return "FAILED";}
+    switch(p) {case Phase::disabled:return "OFF";case Phase::prepared:return "PREPARED";case Phase::starting:return "STARTING";case Phase::stopping:return "STOPPING";case Phase::ready:return "READY";default:return "FAILED";}
 }
 }

@@ -5,6 +5,7 @@ import subprocess
 from canvas_guard_support import stage5a_view
 from softap_guard_support import stage5b_view
 from preset_loaded_guard_support import prior
+from release_guard_support import prior as before_release
 root=Path(__file__).resolve().parents[2]
 def base(name):
     return subprocess.check_output(['git','-c','safe.directory='+root.as_posix(),'show','f31411a:'+name],cwd=root).decode('utf-8')
@@ -53,7 +54,7 @@ for name in ['src/dmx_transport.cpp','src/dmx_transport.h','src/dmx_transport_es
         # Stage6B.1 adds only checked UI composition and tighter asset-size gates.
         # All other firmware/build inputs are also protected by check_scope.py.
         continue
-    assert prior(name,(root/name).read_text(encoding='utf-8'))==base(name),name
+    assert prior(name,before_release(name,(root/name).read_text(encoding='utf-8')))==base(name),name
 net=(root/'src/network_service.cpp').read_text()
 assert all(s not in net for s in ['M5.', 'DmxController', 'CommandDispatcher', 'DmxTransport', 'Serial.', 'HWCDC', 'WiFi.begin('])
 assert net.index('esp_wifi_set_config(WIFI_IF_AP,&ap)')<net.index('esp_wifi_start()')

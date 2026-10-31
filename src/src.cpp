@@ -2,6 +2,9 @@
 #include "common.h"
 #include "dmx_hardware.h"
 #include "hardware_diagnostics.h"
+#include "firmware_version.h"
+#include "physical_fader_diagnostics.h"
+#include "thdiff_experiment.h"
 #include "network_service.h"
 #include "websocket_service.h"
 #include "dmx_transport_esp_dmx.h"
@@ -544,9 +547,9 @@ static void drawStartupScreen(void) {
     M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextColor(TFT_DARKGRAY, TFT_BLACK);
 #if defined(DMX_HARDWARE_UNIT)
-    M5.Display.drawString("UNIT DMX", 160, 78);
+    M5.Display.drawString("UNIT DMX - V" DMX_FIRMWARE_VERSION, 160, 78);
 #elif defined(DMX_HARDWARE_BASE)
-    M5.Display.drawString("DMX BASE", 160, 78);
+    M5.Display.drawString("BASE DMX - V" DMX_FIRMWARE_VERSION, 160, 78);
 #endif
 
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -617,6 +620,7 @@ class ApplicationMaintenanceBackend final : public DeviceMaintenance::Backend {
     DeviceMaintenance::Step zeroFrame(int64_t now) override {return shutdown_transport.zeroFrame(now);}
     DeviceMaintenance::Step quiesce(int64_t now) override {return shutdown_transport.quiesce(now);}
     void execute(DeviceMaintenance::Action action) override {
+        thdiff::beforeExit();
         if(action==DeviceMaintenance::Action::restart)esp_restart();
         else if(action==DeviceMaintenance::Action::power_off)view_sender.performOriginalPowerOff();
     }
@@ -625,9 +629,14 @@ static ApplicationMaintenanceBackend maintenance_backend;
 static DeviceMaintenance device_maintenance(maintenance_backend);
 void controllerRestart(void) {device_maintenance.local(DeviceMaintenance::Action::restart,millis(),scene_mode==mode_sender);}
 void controllerPowerOff(void) {
+    thdiff::beforeExit();
     M5.Power.powerOff();
 }
 
+
+#if DMX_THDIFF_EXPERIMENT
+bool thdiffTouchCaptured() { return view_sender.diagnosticFaderCaptured(); }
+#endif
 
 void setup(void) {
     websocket_service::initialize(dmx_controller, command_dispatcher, &device_settings, &device_maintenance, &network_service::configuration());
@@ -700,6 +709,7 @@ dmx_set_pin(
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::begin();
 #endif
+    websocket_service::prepareArchive();
     network_service::launch(network_canvas_reserved);
     startup_started_ms = millis();
 
@@ -728,7 +738,12 @@ int getBtnIndex(int x, int y) {
 int focus_idx = -1;
 
 void loop(void) {
+    FADER_SCOPE(faderLoop, loop);
+    FADER_START(faderM5);
     M5.update();
+    FADER_STOP(faderM5, m5);
+    FADER_TOUCH();
+    FADER_START(faderOwner);
 
     // Owner-task servicing precedes every page/startup/wake early return.
     dmx_transport.poll(esp_timer_get_time());
@@ -742,6 +757,7 @@ void loop(void) {
     websocket_service::ownerPoll(scene_mode == mode_sender);
     command_dispatcher.process();
     if (scene_mode == mode_sender&&!device_maintenance.active()&&!view_sender.maintenanceUiActive()&&!network_service::configuration().active()&&!view_sender.wifiUiActive()) view_sender.serviceControllerChanges();
+    FADER_STOP(faderOwner, owner);
 
 #if DMX_HW_DIAGNOSTICS
     hardware_diagnostics::service();

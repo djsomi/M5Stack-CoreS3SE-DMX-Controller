@@ -56,14 +56,14 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     error="invalid";
     if(!data||!length||length>max_message)return false;
     Parser p{data,data+length};
-    uint32_t nums[15]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{},action[16]{},wifi_ssid[45]{},wifi_password[85]{};
+    uint32_t nums[19]{};unsigned fields=0;char type[24]{},setting[16]{},base[21]{},action[16]{},wifi_ssid[45]{},wifi_password[85]{},archive_data[129]{};
     struct Clear {char* p;~Clear(){WifiConfiguration::erase(p,85);}} clear{wifi_password};
     if(!p.eat('{'))return false;
     do {
         char key[16];if(!p.string(key,sizeof(key))||!p.eat(':'))return false;
-        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base","action","request","ssid","password"};
-        unsigned k=0;while(k<15&&strcmp(key,keys[k]))++k;
-        if(k==15||(fields&(1U<<k)))return false;
+        const char* keys[]={"v","id","type","channel","value","active","slot","target","setting","gesture","base","action","request","ssid","password","bytes","offset","token","data"};
+        unsigned k=0;while(k<19&&strcmp(key,keys[k]))++k;
+        if(k==19||(fields&(1U<<k)))return false;
         fields|=1U<<k;
         if(k==2){if(!p.string(type,sizeof(type)))return false;}
         else if(k==8){if(!p.string(setting,sizeof(setting)))return false;}
@@ -71,6 +71,7 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
         else if(k==10){if(!p.string(base,sizeof(base)))return false;}
         else if(k==13){if(!p.string(wifi_ssid,sizeof(wifi_ssid)))return false;}
         else if(k==14){if(!p.string(wifi_password,sizeof(wifi_password)))return false;}
+        else if(k==18){if(!p.string(archive_data,sizeof(archive_data)))return false;}
         else if(k==5){if(!p.boolean(nums[k]))return false;}
         else if(!p.number(nums[k]))return false;
         p.space();if(p.p==p.end)return false;
@@ -82,7 +83,13 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
     r.id=nums[1];
     if(nums[0]!=1){error="version";return false;}
     unsigned expected=7;
-    if(!strcmp(type,"wifi.get"))r.wifi=1;
+    if(!strcmp(type,"presets.export"))r.archive=1;
+    else if(!strcmp(type,"presets.read")){r.archive=2;expected|=(1U<<16)|(1U<<17);}
+    else if(!strcmp(type,"presets.import")){r.archive=3;expected|=1U<<15;if(!nums[15]||nums[15]>preset_archive::max_file)return false;}
+    else if(!strcmp(type,"presets.chunk")){r.archive=4;expected|=(1U<<16)|(1U<<17)|(1U<<18);size_t size=0;if(!preset_archive::unbase64(archive_data,r.archive_data,size))return false;r.archive_length=uint8_t(size);}
+    else if(!strcmp(type,"presets.commit")){r.archive=5;expected|=1U<<17;}
+    else if(!strcmp(type,"presets.cancel")){r.archive=6;expected|=1U<<17;}
+    else if(!strcmp(type,"wifi.get"))r.wifi=1;
     else if(!strcmp(type,"wifi.propose")) {
         expected|=1024|8192|16384;r.wifi=2;
         if(!base[0]||base[0]=='0')return false;
@@ -136,6 +143,7 @@ bool decode(const char* data,size_t length,Request& r,const char*& error) {
         if(nums[6]<1||nums[6]>8||(command==CommandType::copy_preset&&(nums[7]<1||nums[7]>8)))return false;
         r.command=ControllerCommand::presetCommand(command,int(nums[6])-1,nums[7]?int(nums[7])-1:0);
     }
+    if(r.archive){r.archive_token=nums[17];r.archive_total=nums[15];r.archive_offset=nums[16];if(r.archive!=1&&r.archive!=3&&!r.archive_token)return false;}
     r.command.source=CommandSource::external;
     return fields==expected;
 }
@@ -166,6 +174,13 @@ const char* maintenanceResult(DeviceMaintenance::Result value) {
 }
 size_t encode(const Event& e,char* out,size_t capacity) {
     Writer w(out,capacity);
+    if(e.kind==Kind::archive_result){
+        if(e.archive_length>preset_archive::export_chunk_size)return 0;
+        char data[4*((preset_archive::export_chunk_size+2)/3)+1];preset_archive::base64(e.values,e.archive_length,data);
+        w.add("{\"v\":1,\"type\":\"presets.result\",\"id\":%lu,\"revision\":\"%llu\",\"seq\":\"%llu\",\"status\":\"%s\",\"token\":%lu,\"offset\":%lu,\"bytes\":%lu,\"count\":%u,\"data\":\"%s\"}",
+            (unsigned long)e.id,(unsigned long long)e.revision,(unsigned long long)e.sequence,e.reason?e.reason:"invalid",(unsigned long)e.archive_token,(unsigned long)e.archive_offset,(unsigned long)e.archive_total,unsigned(e.archive_count),data);
+        return w.ok?w.used:0;
+    }
     if(e.kind==Kind::wifi_snapshot||e.kind==Kind::wifi_update||e.kind==Kind::wifi_result) {
         const auto& c=e.wifi;
         const char* phases[]={"idle","approval","applying","failed"};

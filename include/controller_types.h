@@ -13,7 +13,7 @@ constexpr size_t dmx_max_patch_channels = 8;
 enum class CommandType : uint8_t {
     set_channel, adjust_channel, set_channels, set_blackout,
     load_preset, save_preset, copy_preset, clear_preset,
-    reset_sender, invalid
+    reset_sender, replace_presets, invalid
 };
 
 enum class CommandSource : uint8_t { touch, external, system };
@@ -27,6 +27,7 @@ struct ControllerCommand {
     union Payload {
         DmxChannelValue channel;
         int32_t blackout;
+        uint32_t archive_token;
         struct { int32_t slot; int32_t target; } preset;
         struct { uint8_t count; DmxChannelValue values[max_patch_channels]; } patch;
         Payload() : patch{} {}

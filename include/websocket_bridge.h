@@ -9,7 +9,10 @@
 namespace websocket_bridge {
 constexpr unsigned max_clients=4, inbox_capacity=16, outbox_capacity=8;
 constexpr size_t max_message=256, max_json=2560;
-struct Lock { virtual void enter()=0; virtual void leave()=0; virtual uint32_t nowMs() const {return 0;} virtual ~Lock()=default; };
+struct Lock { virtual void enter()=0; virtual void leave()=0; virtual uint32_t nowMs() const {return 0;}
+    virtual uint64_t nowUs() const {return uint64_t(nowMs())*1000;}
+    virtual void archivePrepared(uint32_t,uint32_t,unsigned) {} // Bounded diagnostics hook, no I/O under lock.
+    virtual ~Lock()=default; };
 struct Token { uint32_t generation=0; uint8_t slot=0; };
 enum class Stop : uint8_t { none, requested, queue_full, rate_limit, send_failure };
 struct ClientInfo {
@@ -22,7 +25,7 @@ struct Failure {
     uint32_t ms=0,queued=0,outstanding=0;
     uint64_t last_enqueued_revision=0,rejected_revision=0;
 };
-enum class Kind : uint8_t { hello, snapshot, channel, universe, mode, ack, error, settings_snapshot, settings_update, settings_result, maintenance_snapshot, maintenance_update, maintenance_result, wifi_snapshot, wifi_update, wifi_result };
+enum class Kind : uint8_t { hello, snapshot, channel, universe, mode, ack, error, settings_snapshot, settings_update, settings_result, maintenance_snapshot, maintenance_update, maintenance_result, wifi_snapshot, wifi_update, wifi_result, archive_result };
 struct Event {
     Kind kind=Kind::error;
     uint64_t revision=0, sequence=0;
@@ -33,6 +36,7 @@ struct Event {
     uint8_t loaded=0; bool modified=false;
     uint16_t channel=0;
     uint8_t value=0, values[512]{}, presets[8]{};
+    uint32_t archive_token=0,archive_total=0,archive_offset=0;uint16_t archive_length=0;uint8_t archive_count=0;
     const char* reason=nullptr; // Only compile-time protocol error literals.
     DeviceSetting setting=DeviceSetting::brightness;
     DeviceSettings::Result settings_result=DeviceSettings::Result::invalid;
@@ -49,7 +53,7 @@ struct Metrics {
     uint64_t last_controller_revision=0;
     Failure first;
 };
-struct Request { Token token; uint32_t id=0; bool snapshot=false, initial=false, settings=false, settings_write=false; DeviceSetting setting=DeviceSetting::brightness;uint32_t setting_value=0;DeviceSettings::Edit settings_edit=DeviceSettings::Edit::none;uint32_t settings_gesture=0;uint64_t settings_base=0;uint8_t maintenance=0;DeviceMaintenance::Action maintenance_action=DeviceMaintenance::Action::none;uint32_t maintenance_request=0;uint8_t wifi=0;uint64_t wifi_base=0;char wifi_ssid[33]{},wifi_password[64]{};
+struct Request { uint8_t archive=0,archive_length=0;uint32_t archive_token=0,archive_total=0,archive_offset=0;uint8_t archive_data[preset_archive::chunk_size]{}; Token token; uint32_t id=0; bool snapshot=false, initial=false, settings=false, settings_write=false; DeviceSetting setting=DeviceSetting::brightness;uint32_t setting_value=0;DeviceSettings::Edit settings_edit=DeviceSettings::Edit::none;uint32_t settings_gesture=0;uint64_t settings_base=0;uint8_t maintenance=0;DeviceMaintenance::Action maintenance_action=DeviceMaintenance::Action::none;uint32_t maintenance_request=0;uint8_t wifi=0;uint64_t wifi_base=0;char wifi_ssid[33]{},wifi_password[64]{};
     ControllerCommand command;
     ~Request(){WifiConfiguration::erase(wifi_password,sizeof(wifi_password));} };
 bool decode(const char* data,size_t length,Request& request,const char*& error);
@@ -74,6 +78,7 @@ class Bridge {
     void sendFailed(Token token);
     Metrics metrics();
     ClientInfo clientInfo(Token token);
+    void archiveBuffer(char* data,size_t size){archive_.buffer=data;archive_.capacity=size;}
     // Application task, before Dispatcher::process; one in-flight web command.
     void ownerPoll(bool sender_active);
  private:
@@ -95,6 +100,15 @@ class Bridge {
     uint64_t sequence_=0;
     uint8_t presets_[8]{};
     bool presets_ready_=false; // Owner-only derived metadata, invalidated by preset operations.
+    struct Archive {
+        char* buffer=nullptr;size_t capacity=0;
+        uint8_t mode=0,count=0;uint32_t owner=0,token=0,counter=0,total=0,received=0,started=0,touched=0;
+        uint64_t base=0;
+    } archive_;
+    bool archiveRequest(Request& request);
+    void archiveReply(const Request& request,const char* status,size_t length=0);
+    void abortArchive();
+    static bool archiveAllowed(void* context);
     Metrics metrics_;
     DeviceSettings* settings_;
     WifiConfiguration* wifi_;uint64_t wifi_revision_=0;

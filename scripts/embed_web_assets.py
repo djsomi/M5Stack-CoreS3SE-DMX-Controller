@@ -9,6 +9,9 @@ root = Path(env.subst("$PROJECT_DIR"))
 sys.path.insert(0, str(root / "scripts"))
 from web_asset_pipeline import verify, emit_cpp, build_source_digest
 from firmware_layout import partition_sdk, validate_table, inspect_build, write_json
+from build_provenance import identity
+from touch_acquisition_trace import install as install_touch_trace
+install_touch_trace(env, root)
 
 profile = env.subst("$PIOENV")
 if profile not in ("cores3se_unit", "cores3se_base", "cores3se_unit_diagnostics", "cores3se_base_diagnostics"):
@@ -23,7 +26,8 @@ manifest = verify(root)
 source_digest = build_source_digest(root)
 build = Path(env.subst("$BUILD_DIR"))
 generated = build / "generated/web_assets.cpp"
-emit_cpp(root, generated, profile, source_digest)
+provenance = identity(root, profile, source_digest)
+emit_cpp(root, generated, profile, source_digest, provenance)
 env.Append(CPPPATH=[str(root / "include")], LINKFLAGS=["-Wl,--undefined=web_asset_bundle"])
 env.BuildSources(str(build / "embedded"), str(generated.parent), "+<web_assets.cpp>")
 inputs = [str(root / "web/generated/manifest.json"), str(root / "include/web_assets.h")]
@@ -38,6 +42,13 @@ def validate_artifacts(source, target, env):
     images = [(str(offset), env.subst(str(path))) for offset, path in env["FLASH_EXTRA_IMAGES"]]
     images.append((str(env["ESP32_APP_OFFSET"]), str(build / "firmware.bin")))
     receipt = inspect_build(root, build, framework, esptool, images, profile, source_digest, manifest)
+    if identity(root, profile, source_digest) != provenance:
+        raise RuntimeError("Git/version identity changed during build; rebuild")
+    application = (build / "firmware.bin").read_bytes()
+    for key in ("version", "source_commit", "build_id"):
+        if provenance[key].encode() not in application:
+            raise RuntimeError("missing linked firmware provenance: " + key)
+    receipt["provenance"] = provenance
     (build / "boot_app0.bin").write_bytes((framework / "tools/partitions/boot_app0.bin").read_bytes())
     write_json(build / "infrastructure.json", receipt)
     print("Stage 4B verified: 16MiB, two 6MiB slots, all gzip assets retained; separate-image receipt written")

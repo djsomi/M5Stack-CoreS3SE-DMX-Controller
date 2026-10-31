@@ -1,7 +1,12 @@
 """Current-source scope/ownership checks, separate from historical reconstruction."""
 from pathlib import Path
 import subprocess
+import sys
 ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT/'tests/network'))
+from wifi_power_guard_support import prior as before_wifi_power
+from release_guard_support import prior as before_release
+from thdiff_guard_support import prior as before_thdiff
 BASE='3730ea421a5a10d6f2be4451df6328e18c1e3aa1'
 def read(name):return (ROOT/name).read_text(encoding='utf-8')
 def old(name):return subprocess.check_output(['git','-c','safe.directory='+ROOT.as_posix(),'show',BASE+':'+name],cwd=ROOT).decode('utf-8')
@@ -18,20 +23,20 @@ for path in ['src/dmx_controller.cpp','src/dmx_controller.h','src/command_dispat
              'src/view_receiver.h','include/device_maintenance.h','include/maintenance_transport.h',
              'src/http_policy.h','src/http_policy.cpp','platformio.ini','partitions/cores3se_16mb_ota.csv',
              'scripts/web_asset_pipeline.py','scripts/web_ui_bundle.py','scripts/package_firmware.py']:
-    assert read(path)==old(path),'Unrelated implementation change: '+path
+    assert before_release(path,read(path))==old(path),'Unrelated implementation change: '+path
 settings=read('include/device_settings.h')
 polish='    bool persistencePending() const {return pending_;}\n    // Owner-task maintenance admission cancels only ephemeral remote state; never writes NVS.\n    void cancelPreviewForMaintenance() {cancelPreview();}\n'
 assert settings.replace(polish,'')==old('include/device_settings.h')
 assert 'device_settings.persistencePending()||command_dispatcher.pending()' in app
 for signature in ['void controllerPowerOff(void)','void controllerRestart(void)']:
-    assert function(app,signature)==function(old('src/src.cpp'),signature)
+    assert function(before_thdiff('src/src.cpp',app),signature)==function(old('src/src.cpp'),signature)
 for signature in ['    void performOriginalPowerOff(','    void sendDmxZeroBeforePowerAction(',
                   '    void handleSettingsPowerOffTap(','    void handleSettingsRestartTap(',
                   '    bool serviceMaintenanceUi(','    bool restoreMaintenancePage(','    void updateBatteryMonitor(']:
     assert function(view,signature)==function(old('src/view_sender.h'),signature),'Changed accepted function: '+signature
 for signature in ['int io(','esp_err_t serve(','void stationEvent(']:
-    assert function(net,signature)==function(old('src/network_service.cpp'),signature)
-worker=function(net,'void worker(')
+    assert function(before_release('src/network_service.cpp',net),signature)==function(old('src/network_service.cpp'),signature)
+worker=function(before_wifi_power('src/network_service.cpp',net),'void worker(')
 assert worker.replace('            if(!wifiChange(netif)){error=ESP_FAIL;break;}\n','')==function(old('src/network_service.cpp'),'void worker(')
 prepare=function(net,'void prepare(')
 assert prepare.index('wifi_credentials::recover')<prepare.index('const bool exists=storage.isKey("ap1")')
@@ -61,9 +66,9 @@ encoder=function(wire,'size_t encode(').split('if(e.kind==Kind::wifi_snapshot',1
 assert 'c.pass' not in encoder.replace('c.password_change','') and '\\"password\\":' not in encoder
 print('PASS current Wi-Fi approval/worker boundaries, unchanged startup/HTTP/DMX/power/maintenance/NVS domains, single canvas, stale-work epoch and sanitized publication')
 
-assert 'settings_wifi_reset_y = 394' in view and 'settings_content_h = 462' in view
+assert 'settings_wifi_reset_y = 434' in view and 'settings_content_h = 562' in view
 settings_draw=function(view,'    void drawSettingsScreen(')
 assert settings_draw.index('c.fillScreen(TFT_BLACK)')<settings_draw.index('char network_line[96]')
 assert settings_draw.index('char network_line[96]')<settings_draw.index('pushFullscreenCanvas(')
 assert 'WIFI ONLY' not in settings_draw and '/status FOR MEMORY HISTORY' not in settings_draw
-assert 'settings_wifi_reset_y && content_y < settings_wifi_reset_y + 28' in view
+assert 'settings_wifi_reset_y && content_y < settings_wifi_reset_y + settings_wifi_button_h' in view

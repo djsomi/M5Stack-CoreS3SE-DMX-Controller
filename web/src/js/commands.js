@@ -2,13 +2,13 @@
 // requires:
 () => {
   function create() {
-    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, wifi = null, last = null;
+    let next = 0, pending = null, write = null, operation = null, setting = null, maintenance = null, wifi = null, archive = null, last = null;
     function cancel() {
       if (pending) last = Object.freeze({id: pending.id, kind: "uncertain"});
       pending = null;
       write = null;
       operation = null;
-      setting = null; maintenance = null; wifi = null;
+      setting = null; maintenance = null; wifi = null; archive = null;
     }
     return {
       begin() { cancel(); next = 0; },
@@ -93,13 +93,20 @@
         wifi = Object.freeze({id, kind}); return {id, data};
       },
       completeWifi(message) { if (!wifi || wifi.id !== message.id) return null; const result = wifi; wifi = null; return result; },
+      archive(kind, fields) {
+        if (archive || next === 4294967295 || !["export", "read", "import", "chunk", "commit", "cancel"].includes(kind)) return null;
+        const id = ++next, data = JSON.stringify({v: 1, id, type: "presets." + kind, ...fields});
+        if (data.length > 256) return null;
+        archive = {id}; return {id, data};
+      },
+      completeArchive(message) { if (!archive || archive.id !== message.id) return false; archive = null; return true; },
       complete(message) {
         if (!pending || pending.id !== message.id) return false;
         last = Object.freeze({id: pending.id, kind: message.type, status: message.status || "snapshot"});
         pending = null; return true;
       },
       cancel,
-      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, wifi, last})
+      current: () => Object.freeze({pending: pending ? pending.id : null, write, operation, setting, maintenance, wifi, archive, last})
     };
   }
   return {create};

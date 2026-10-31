@@ -52,6 +52,9 @@ CommandStatus CommandDispatcher::validate(const ControllerCommand& c) const {
             if (!validSlot(c.payload.preset.slot) || !validSlot(c.payload.preset.target))
                 return CommandStatus::invalid;
             break;
+        case CommandType::replace_presets:
+            if(!controller_.archiveValid(c.payload.archive_token))return CommandStatus::invalid;
+            break;
         case CommandType::reset_sender:
             if (c.source != CommandSource::system) return CommandStatus::invalid;
             break;
@@ -108,6 +111,9 @@ CommandDispatcher::Result CommandDispatcher::apply(const ControllerCommand& c, u
         case CommandType::clear_preset:
             result.domain = controller_.clearPreset(static_cast<uint8_t>(c.payload.preset.slot));
             break;
+        case CommandType::replace_presets:
+            result.domain=controller_.replaceArchive(c.payload.archive_token);
+            break;
         case CommandType::reset_sender:
             controller_.reset();
             break;
@@ -121,8 +127,10 @@ CommandDispatcher::Result CommandDispatcher::apply(const ControllerCommand& c, u
             break;
         case DmxController::Result::corrupt:
         case DmxController::Result::read_failed:
+        case DmxController::Result::storage_full:
         case DmxController::Result::write_failed:
         case DmxController::Result::metadata_failed:
+        case DmxController::Result::archive_uncertain:
             result.status = CommandStatus::storage_error;
             break;
         default:

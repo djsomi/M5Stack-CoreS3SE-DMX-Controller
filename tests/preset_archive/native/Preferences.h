@@ -1,0 +1,4 @@
+#pragma once
+#include "nvs.h"
+#include "esp_log.h"
+class Preferences{nvs_handle_t handle=0;bool started=false;public:~Preferences(){end();}bool begin(const char* name,bool ro){started=nvs_open(name,ro?NVS_READONLY:NVS_READWRITE,&handle)==0;return started;}void end(){if(started)nvs_close(handle);started=false;}size_t putBytes(const char* key,const void* value,size_t length){auto e=nvs_set_blob(handle,key,value,length);if(!e)e=nvs_commit(handle);if(e)fprintf(stderr,"PUT %s %x\n",key,e);return e?0:length;}size_t getBytes(const char* key,void* value,size_t length){size_t n=0;if(nvs_get_blob(handle,key,nullptr,&n)||n>length||nvs_get_blob(handle,key,value,&n))return 0;return n;}size_t putUChar(const char* key,uint8_t value){auto e=nvs_set_u8(handle,key,value);if(!e)e=nvs_commit(handle);return e?0:1;}bool remove(const char* key){return !nvs_erase_key(handle,key);}};

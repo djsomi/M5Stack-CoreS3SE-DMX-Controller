@@ -80,7 +80,8 @@ async function exercise(page) {
   assert.ok((await visuals()).every(b=>b.disabled));await semantics(true);
   await page.waitForFunction(()=>window.__headerSockets.length===2&&document.querySelector('.connection').dataset.live==='true');await settle();
   assert.deepEqual(await visuals(),baseline);await semantics(false);
-  assert.deepEqual(await page.evaluate(()=>window.__headerSockets[1].sent),[],'no uncertain operation replay');
+  assert.deepEqual(await page.evaluate(()=>window.__headerSockets[1].sent),[{v:1,id:1,type:'wifi.get'}],
+    'only the established read-only Wi-Fi subscription; no uncertain operation replay');
 }
 (async()=>{
   const browser=await chromium.launch({headless:true,...(process.env.DMX_CHROME_PATH?{executablePath:process.env.DMX_CHROME_PATH}:{}),args:['--no-sandbox']});

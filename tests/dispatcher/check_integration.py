@@ -10,6 +10,7 @@ from canvas_guard_support import stage5a_view
 from softap_guard_support import stage5b_view
 from device_settings_guard_support import restore
 from maintenance_guard_support import prior as before_maintenance
+from release_guard_support import prior as before_release
 stage1_commit = "0e43640e57519e47177b08fae9c0b86ff8b0e9d9"
 app = before_maintenance("src/src.cpp",(root / "src/src.cpp").read_text(encoding="utf-8"))
 view = before_maintenance("src/view_sender.h",(root / "src/view_sender.h").read_text(encoding="utf-8"))
@@ -71,7 +72,7 @@ assert "dmx_send_packet" not in shutdown and "serviceTx" not in shutdown
 for path in ["include/dmx_hardware.h", "src/preset_store.h",
              "include/hardware_diagnostics.h", "src/hardware_diagnostics.cpp",
              "scripts/patch_esp_dmx_v202.py"]:
-    assert (root / path).read_text(encoding="utf-8") == baseline(path), f"Unexpected protected-file change: {path}"
+    assert before_release(path, (root / path).read_text(encoding="utf-8")) == baseline(path), f"Unexpected protected-file change: {path}"
 
 config = (root / "platformio.ini").read_text(encoding="utf-8")
 for addition in ("    pre:scripts/patch_esp_dmx_tx_ownership.py\n",

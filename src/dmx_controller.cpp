@@ -157,14 +157,15 @@ DmxController::Result DmxController::savePreset(uint8_t slot) {
         if (memcmp(saved, working_, packet_size) == 0) return Result::ok;
     }
     // Even a failed partial replacement invalidates old load provenance.
+    ++preset_revision_; // Invalidate uploads even if a storage API fails after writing.
     const bool invalidated = invalidateLoaded(slot);
     if (!storage_.save(slot, working_)) {
         if (invalidated) changed(ChangeKind::preset, 0, slot);
-        return Result::write_failed;
+        return storage_.noSpace()?Result::storage_full:Result::write_failed;
     }
     if (!markCleared(slot, false)) {
         if (invalidated) changed(ChangeKind::preset, 0, slot);
-        return Result::metadata_failed;
+        return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
     }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
@@ -182,8 +183,9 @@ DmxController::Result DmxController::copyPreset(uint8_t source, uint8_t target) 
     uint8_t packet[packet_size] = {};
     if (!storage_.load(source, packet)) return Result::read_failed;
     packet[0] = 0;
-    if (!storage_.save(target, packet)) return Result::write_failed;
-    if (!markCleared(target, false)) return Result::metadata_failed;
+    ++preset_revision_;
+    if (!storage_.save(target, packet)) return storage_.noSpace()?Result::storage_full:Result::write_failed;
+    if (!markCleared(target, false)) return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
     changed(ChangeKind::preset, 0, target);
     return Result::ok;
 }
@@ -192,10 +194,11 @@ DmxController::Result DmxController::clearPreset(uint8_t slot) {
     Result result = readablePreset(slot);
     if (result != Result::ok) return result;
     // Keep the legacy blob; logical occupancy is the existing cleared mask.
+    ++preset_revision_;
     const bool invalidated = invalidateLoaded(slot);
     if (!markCleared(slot, true)) {
         if (invalidated) changed(ChangeKind::preset, 0, slot);
-        return Result::metadata_failed;
+        return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
     }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
@@ -210,4 +213,30 @@ bool DmxController::invalidateLoaded(uint8_t slot) {
         restore_loaded_preset_ = 0; restore_loaded_modified_ = false; dirty = true;
     }
     return dirty;
+}
+
+DmxController::Result DmxController::captureArchive() {
+    discardArchive();archive_.present=0;memset(archive_.values,0,sizeof(archive_.values));
+    // One owner turn; storage can read/verify an active generation just once.
+    const auto state=storage_.captureCollection(archive_);
+    return state==DmxPresetStorage::SlotState::valid?Result::ok:state==DmxPresetStorage::SlotState::corrupt?Result::corrupt:Result::read_failed;
+}
+DmxController::Result DmxController::stageArchive(const char* data,size_t length,uint64_t base,const preset_archive::Gate& gate) {
+    discardArchive();if(base!=preset_revision_)return Result::archive_conflict;
+    if(!gate.allowed()||!preset_archive::parse(data,length,archive_))return Result::invalid_patch;
+    archive_base_=base;archive_gate_=gate;if(++archive_counter_==0)++archive_counter_;archive_token_=archive_counter_;return Result::ok;
+}
+DmxController::Result DmxController::replaceArchive(uint32_t token) {
+    if(!archiveValid(token))return Result::invalid_patch;
+    discardArchive();if(archive_base_!=preset_revision_)return Result::archive_conflict;
+    if(!archive_gate_.allowed())return Result::invalid_patch;
+    const auto result=storage_.replaceAll(archive_,archive_gate_);
+    if(result==preset_archive::Commit::failed)return storage_.noSpace()?Result::storage_full:Result::write_failed;
+    ++preset_revision_;
+    // Only stored-slot provenance changes. Working/output/restore packets and
+    // blackout state remain byte-for-byte untouched; transport is not published.
+    loaded_preset_=restore_loaded_preset_=0;loaded_modified_=restore_loaded_modified_=false;
+    metadata_loaded_=result==preset_archive::Commit::ok;cleared_mask_=uint8_t(~archive_.present);
+    changed(ChangeKind::preset);
+    return result==preset_archive::Commit::ok?Result::ok:Result::archive_uncertain;
 }

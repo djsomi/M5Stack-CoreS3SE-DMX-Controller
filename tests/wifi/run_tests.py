@@ -38,6 +38,10 @@ subprocess.run([str(compiler),'c++','-std=c++11','-Wall','-Wextra','-Werror','-I
 subprocess.run([str(OUT/'settings-maintenance.exe')],cwd=ROOT,check=True)
 rows=view[view.index('        // Stage 5 local network information begin'):view.index('        // Stage 5 local network information end.')]
 (OUT/'wifi_settings_rows.h').write_text(rows,encoding='utf-8')
+draw=function(view,'    void drawSettingsScreen(')
+(OUT/'wifi_settings_footer.h').write_text(draw[draw.index('        // BUILD DATE FOOTER'):draw.index('        // Battery is a fixed status element')],encoding='utf-8')
+(OUT/'wifi_settings_scroll.h').write_text(function(view,'    void serviceSettingsKineticScroll('),encoding='utf-8')
+(OUT/'wifi_settings_power.h').write_text(function(view,'    bool handleWifiPowerTouch('),encoding='utf-8')
 (OUT/'wifi_settings_reset.h').write_text(function(view,'    bool handleWifiResetTouch('),encoding='utf-8')
 subprocess.run([str(compiler),'c++','-std=c++11','-Wall','-Wextra','-Werror','-Isrc','-Iinclude','-I'+str(OUT),'tests/wifi/test_settings_render.cpp','-o',str(OUT/'settings-render.exe')],cwd=ROOT,check=True)
 subprocess.run([str(OUT/'settings-render.exe')],cwd=ROOT,check=True)

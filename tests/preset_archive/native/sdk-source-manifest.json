@@ -1,0 +1,146 @@
+{
+  "repository": "espressif/esp-idf",
+  "ref": "v4.4.7",
+  "files": [
+    {
+      "path": "components/nvs_flash/src/compressed_enum_table.hpp",
+      "sha": "e276250d5f0eae68a373e44f79d76980ec9a0d26"
+    },
+    {
+      "path": "components/nvs_flash/src/intrusive_list.h",
+      "sha": "798b718a6667c87c9b4190d52922298e5dc5e157"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs.hpp",
+      "sha": "38bb8cb3589dff38be226fe7d75fcd02d1f39386"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_api.cpp",
+      "sha": "69306fad796cf453932e63337dc687676b7812c5"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_cxx_api.cpp",
+      "sha": "b315fecdf14c2cd0cc6f00bcde34b15569daeb42"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_encrypted_partition.cpp",
+      "sha": "653fbefa2c455fdfb22a4aca90bd9dcac7ec72d0"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_encrypted_partition.hpp",
+      "sha": "76c0607a0ac654eb6b679ad5cf6a43d704e05a58"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_handle_locked.cpp",
+      "sha": "3921887448821f008087602700d9fb74e2fc9a19"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_handle_locked.hpp",
+      "sha": "b9b0cb562092d373ccf09ea1ce7a07bdd5095b3a"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_handle_simple.cpp",
+      "sha": "348e197b7cfb945a737df2e60725fbc4d69a5933"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_handle_simple.hpp",
+      "sha": "ff0e93a3d69a79c1d58b691c39c021b8bd1e848b"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_item_hash_list.cpp",
+      "sha": "21bf8b315314c6b5aefa9eb7a12acd261cb1b9d3"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_item_hash_list.hpp",
+      "sha": "ead5eeb10fa0373e53224fde8da1e8310f798e71"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_memory_management.hpp",
+      "sha": "933f08256eeaff7899a286592ff1a2d909a5e2ae"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_page.cpp",
+      "sha": "dbae73060e1c3dc35d88a5a097656228c367f737"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_page.hpp",
+      "sha": "f933c60381b56a875ebdfa2fea2528488d9a2187"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_pagemanager.cpp",
+      "sha": "cdc6b221dd075744a8c568337c4275a33804ba94"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_pagemanager.hpp",
+      "sha": "4a1c19f7ecaddce006cc82ca9505f276c806547f"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition.cpp",
+      "sha": "f1b7d36d2dcada0eba60cf7dd268947ab7a39a7e"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition.hpp",
+      "sha": "8ed544a6b112809f6aa8d1da49c2b4535fd2ce83"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition_lookup.cpp",
+      "sha": "e9d27256fa675d3dad33da8a883188ad035617d9"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition_lookup.hpp",
+      "sha": "62a8e8b6fefe176b599742681bf6138c738e4d4b"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition_manager.cpp",
+      "sha": "e90137eb2f34c8d2f3a2b855cd9e20f551600c64"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_partition_manager.hpp",
+      "sha": "ebed1214e380d234c2ad29e113e8e4c00d8bb42d"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_platform.hpp",
+      "sha": "c47fa40020d758bbf7156a6d8090149d28400571"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_storage.cpp",
+      "sha": "cd1cb14edc225697ebfdb5692904f331def145da"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_storage.hpp",
+      "sha": "c2df7dc470d040f78c553d87e9c196c3d8fc1ed6"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_test_api.h",
+      "sha": "8ba2c4faa81dd9181a81b4f58d62fef2cab4c6a5"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_types.cpp",
+      "sha": "a9369a4e272d3f381b69d1e55064bd456e99e9ca"
+    },
+    {
+      "path": "components/nvs_flash/src/nvs_types.hpp",
+      "sha": "53d3555693dfbe16a59fb6b489953decad214262"
+    },
+    {
+      "path": "components/nvs_flash/src/partition.hpp",
+      "sha": "4cbfb6d9ddf4c9dbfe8a30264631a2e72dfd00fe"
+    },
+    {
+      "path": "components/nvs_flash/include/nvs.h",
+      "sha": "a800d4d18474b3ccf5d07b6cef8c235a5472183c"
+    },
+    {
+      "path": "components/nvs_flash/include/nvs_flash.h",
+      "sha": "7e3d6a798587f219c34b21951a6a53940074588e"
+    },
+    {
+      "path": "components/nvs_flash/include/nvs_handle.hpp",
+      "sha": "b09d013d22ab61f84f09e5ca93dca3a0b3e97d2f"
+    },
+    {
+      "path": "components/nvs_flash/private_include/nvs_internal.h",
+      "sha": "1bf2cb8c4b2b076ff6133caf83b0058d9c736e68"
+    }
+  ]
+}

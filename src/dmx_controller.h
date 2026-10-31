@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "controller_types.h"
+#include "preset_archive.h"
 
 class DmxPresetStorage {
  public:
@@ -15,6 +16,19 @@ class DmxPresetStorage {
     virtual bool save(uint8_t slot, const uint8_t* packet) = 0;
     virtual bool loadClearedMask(uint8_t& mask) = 0;
     virtual bool saveClearedMask(uint8_t mask) = 0;
+    virtual bool noSpace() const {return false;}
+    virtual SlotState captureCollection(preset_archive::Collection& out) {
+        uint8_t cleared=0;if(!loadClearedMask(cleared))return SlotState::error;
+        for(uint8_t slot=0;slot<preset_count;++slot){
+            if(cleared&(1U<<slot))continue;
+            const auto state=inspect(slot);if(state==SlotState::missing)continue;
+            if(state!=SlotState::valid)return state;
+            uint8_t packet[packet_size]{};if(!load(slot,packet))return SlotState::error;
+            memcpy(out.values[slot],packet+1,512);out.present|=uint8_t(1U<<slot);
+        }
+        return SlotState::valid;
+    }
+    virtual preset_archive::Commit replaceAll(const preset_archive::Collection&,const preset_archive::Gate&) {return preset_archive::Commit::failed;}
 };
 
 // All access, including observers and the storage adapter, belongs to the
@@ -26,7 +40,7 @@ class DmxController {
     static constexpr uint8_t preset_count = DmxPresetStorage::preset_count;
     enum class Result {
         ok, invalid_channel, invalid_value, invalid_slot, empty, same_slot,
-        occupied, corrupt, read_failed, write_failed, metadata_failed, invalid_patch
+        occupied, corrupt, read_failed, write_failed, metadata_failed, invalid_patch, archive_conflict, archive_uncertain, storage_full
     };
     enum class ChangeKind { reset, channel, universe, blackout, preset };
     struct Change {
@@ -61,6 +75,14 @@ class DmxController {
     Result savePreset(uint8_t slot);
     Result copyPreset(uint8_t source, uint8_t target);
     Result clearPreset(uint8_t slot);
+    uint64_t presetRevision() const {return preset_revision_;}
+    Result captureArchive();
+    Result stageArchive(const char* data,size_t length,uint64_t base,const preset_archive::Gate& gate);
+    uint32_t archiveToken() const {return archive_token_;}
+    const preset_archive::Collection& archive() const {return archive_;}
+    bool archiveValid(uint32_t token) const {return token&&token==archive_token_;}
+    void discardArchive(){archive_token_=0;}
+    Result replaceArchive(uint32_t token);
 
  private:
     bool loadMetadata();
@@ -69,6 +91,10 @@ class DmxController {
     Result readablePreset(uint8_t slot);
     void changed(ChangeKind kind, uint16_t channel = 0, uint8_t slot = 0);
 
+    preset_archive::Collection archive_;
+    preset_archive::Gate archive_gate_;
+    uint32_t archive_token_=0,archive_counter_=0;
+    uint64_t archive_base_=0,preset_revision_=0;
     DmxPresetStorage& storage_;
     uint8_t working_[packet_size] = {};
     uint8_t restore_[packet_size] = {};

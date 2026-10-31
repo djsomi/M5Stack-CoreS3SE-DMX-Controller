@@ -38,9 +38,9 @@ reset=net.split('bool requestFactoryReset()',1)[1].split('const char* phaseName'
 assert 'xTaskGetCurrentTaskHandle()!=application_owner' in reset
 assert 'storage.putUChar("factory",1)' in reset and 'putBytes' not in reset
 assert 'WIFI Ready - Clients %lu/%lu' in view
-assert 'network_service::uiRevision()' in view and 'status_y < settings_view_h && settings_wifi_reset_y + 52 - settings_scroll_y >= 0' in view
+assert 'network_service::uiRevision()' in view and 'status_y < settings_view_h && settings_wifi_notice_y + 10 - settings_scroll_y >= 0' in view
 assert 'network_service::requestFactoryReset()' in view and '>= 2000' in view
-assert 'RESTART TO APPLY' in view and 'WIFI RESET APPLY NEXT BOOT' in view and 'WIFI ONLY - PRESETS ARE KEPT' not in view
+assert 'RESTART TO APPLY' in view and 'RESET TAKES EFFECT AFTER REBOOT' in view and 'WIFI ONLY - PRESETS ARE KEPT' not in view
 assert 'wifi_reset_completed = true;' in view and 'wifi_reset_canceled = true;' in view
 if a.dhcp_header:
     target=a.dhcp_header.resolve();assert (root/'dist').resolve() in target.parents

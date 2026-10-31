@@ -141,7 +141,7 @@ def build_source_digest(root=ROOT):
     return sha(canonical(rows))
 
 
-def emit_cpp(root, destination, profile, source_digest):
+def emit_cpp(root, destination, profile, source_digest, provenance=None):
     manifest = verify(root)
     lines = ['// Generated: do not edit. No static constructors or runtime allocation.',
              '#include "web_assets.h"', '#include <string.h>', 'namespace {']
@@ -164,6 +164,13 @@ def emit_cpp(root, destination, profile, source_digest):
               '  for (size_t i=0; i<bundle().count; ++i)',
               '    if (strcmp(path, assets[i].path)==0) return &assets[i];',
               '  return nullptr;', '}', '}', '']
+    if provenance is not None:
+        lines += ['#include "firmware_version.h"', 'namespace {',
+                  'const firmware_build::Info build_info = {%s,%s,%s,%s,%s,%s};' % (
+                      json.dumps(provenance["version"]), json.dumps(provenance["source_commit"]),
+                      json.dumps(profile), json.dumps(source_digest), json.dumps(provenance["build_id"]),
+                      "true" if provenance["source_modified"] else "false"),
+                  '}', 'const firmware_build::Info& firmware_build::info() { return build_info; }', '']
     data = "\n".join(lines).encode()
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not destination.exists() or destination.read_bytes() != data:

@@ -10,6 +10,8 @@
 #include "command_dispatcher.h"
 #include "dmx_transport.h"
 #include "hardware_diagnostics.h"
+#include "physical_fader_diagnostics.h"
+#include "captured_fader_touch.h"
 #include "network_service.h"
 #include "fullscreen_canvas_memory.h"
 #include <soc/soc_memory_types.h>
@@ -250,6 +252,18 @@ class view_sender_t : public view_t {
             return true;
         }
 
+        int main_fader_y=tp.y;
+        bool main_fader_sample=false;
+        if (main_value_slider_dragging) {
+            main_fader_sample=captured_fader_touch::read(
+                M5.Touch,M5.Display,main_value_slider_touch_id,tp,main_fader_y);
+            if (!main_fader_sample) {
+                main_value_slider_dragging=false;
+                main_touch_consume_release=captured_fader_touch::anyPressed(M5.Touch);
+                if (!main_touch_consume_release) tp.state=m5::touch_state_t::none;
+            }
+        }
+
         if (main_touch_consume_release) {
             if (!tp.state) {
                 main_touch_consume_release = false;
@@ -357,11 +371,18 @@ class view_sender_t : public view_t {
 
                         if (tp.wasPressed()) {
                             main_value_slider_dragging = slider_hit;
+                            if (slider_hit) main_value_slider_touch_id=tp.id;
                         }
                     }
 
                     if (main_value_slider_dragging) {
-                        new_value = 255 - ((tp.y - slider_y) << 1);
+                        if (!main_fader_sample && !captured_fader_touch::read(
+                                M5.Touch,M5.Display,main_value_slider_touch_id,tp,main_fader_y)) {
+                            main_value_slider_dragging=false;
+                            main_touch_consume_release=captured_fader_touch::anyPressed(M5.Touch);
+                        } else {
+                            new_value = 255 - (main_fader_y - slider_y) * 2;
+                        }
                     }
 
                     if (new_value < 0) {
@@ -369,12 +390,18 @@ class view_sender_t : public view_t {
                     } else if (new_value > 255) {
                         new_value = 255;
                     }
+                    if (main_value_slider_dragging) FADER_MAP(main, target_channel, new_value, target_value);
                     if (target_value != new_value) {
                         modified |= applyMainCommand(ControllerCommand::channelCommand(
                             CommandType::set_channel, target_channel, new_value));
                     }
                 }
             }
+        }
+
+        // A fullscreen entry above owns all further UI work this iteration.
+        if (active_fullscreen_page != fullscreen_page_none) {
+            return true;
         }
 
         switch (ui_mode) {
@@ -535,6 +562,9 @@ class view_sender_t : public view_t {
     }
 
     bool maintenanceUiActive() const {return maintenance_ui_open;}
+#if DMX_THDIFF_EXPERIMENT
+    bool diagnosticFaderCaptured() const {return main_value_slider_dragging || precision_slider_dragging;}
+#endif
 
     // Shared-canvas handoff: finish the previous LCD transfer before reusing pixels.
     bool serviceMaintenanceUi(DeviceMaintenance& maintenance) {
@@ -689,8 +719,11 @@ class view_sender_t : public view_t {
     bool applyMainCommand(const ControllerCommand& command) {
         const int previous = target_value;
         const auto revision = controller.revision();
+        FADER_START(faderCommand);
         dispatcher.executeLocal(command);
+        FADER_STOP(faderCommand, command);
         const int committed = controller.channel(target_channel);
+        FADER_ACCEPT(target_channel, previous, committed);
         // Incremental slider painting needs the old display value, never a write draft.
         target_value = previous;
         if (previous != committed) drawUIValueSet(committed);
@@ -734,6 +767,10 @@ class view_sender_t : public view_t {
     uint64_t settings_device_revision = UINT64_MAX;
     bool wifi_reset_active = false, wifi_reset_canceled = false, wifi_reset_completed = false;
     bool wifi_reset_failed = false;
+    bool wifi_power_active = false, wifi_power_canceled = false, wifi_power_completed = false;
+    bool wifi_power_target = false;
+    uint8_t wifi_power_touch_id = 0;
+    uint32_t wifi_power_started_ms = 0;
     uint32_t wifi_reset_started_ms = 0;
     // Stage 5C Settings network fields end.
 
@@ -743,6 +780,7 @@ class view_sender_t : public view_t {
     bool precision_consume_release = false;
     bool main_touch_consume_release = false;
     bool main_value_slider_dragging = false;
+    uint8_t main_value_slider_touch_id = 0;
     bool precision_slider_dragging = false;
     int precision_step = 1;
     int precision_repeat_dir = 0;
@@ -890,8 +928,9 @@ class view_sender_t : public view_t {
 
     // Settings are drawn in a vertically scrollable content area.
     // More settings can simply be added lower down later.
-    static constexpr int settings_content_h = 462;
-    static constexpr int settings_wifi_reset_y = 394;
+    static constexpr int settings_content_h = 562;
+    static constexpr int settings_wifi_reset_y = 434;
+    static constexpr int settings_wifi_power_y = 288;
     static constexpr int settings_view_h = 240;
     static constexpr int settings_scroll_max =
         settings_content_h - settings_view_h;
@@ -922,13 +961,17 @@ class view_sender_t : public view_t {
 
     // Sliders stay in the left/main control area. The top-right corner
     // is reserved for the fixed close button.
-    static constexpr int settings_slider_x = 22;
-    static constexpr int settings_slider_w = 220;
-    static constexpr int settings_content_center_x =
-        settings_slider_x + (settings_slider_w >> 1);
+    // Inclusive visible bounds shared by all three sliders and Wi-Fi buttons.
+    static constexpr int settings_controls_left = 10;
+    static constexpr int settings_controls_right = 240;
+    static constexpr int settings_slider_radius = 8;
+    static constexpr int settings_slider_x = settings_controls_left + settings_slider_radius;
+    static constexpr int settings_slider_w = settings_controls_right - settings_controls_left - 2 * settings_slider_radius;
+    static constexpr int settings_slider_center_x = (settings_controls_left + settings_controls_right) / 2;
+    static constexpr int settings_content_center_x = 132; // Preserve network/footer placement.
 
-    static constexpr int settings_slider_touch_x0 = 8;
-    static constexpr int settings_slider_touch_x1 = 258;
+    static constexpr int settings_slider_touch_x0 = settings_controls_left;
+    static constexpr int settings_slider_touch_x1 = settings_controls_right;
 
     // Gesture direction threshold.
     static constexpr int settings_gesture_threshold = 9;
@@ -951,6 +994,12 @@ class view_sender_t : public view_t {
     static constexpr int settings_poweroff_w = settings_back_w;
     static constexpr int settings_poweroff_h = settings_back_h;
 
+    static constexpr int settings_wifi_button_x = settings_controls_left;
+    static constexpr int settings_wifi_button_w = settings_controls_right - settings_controls_left + 1;
+    static constexpr int settings_wifi_button_h = settings_back_h;
+    static constexpr int settings_wifi_notice_y =
+        settings_wifi_reset_y + settings_wifi_button_h + 18;
+
     static constexpr uint32_t settings_power_double_tap_ms = 500;
 
     bool settings_restart_tap_armed = false;
@@ -970,7 +1019,7 @@ class view_sender_t : public view_t {
     static constexpr int volume_slider_y = 234;
 
     // Automatic firmware build timestamp at the end of the scrollable page.
-    static constexpr int build_timestamp_y = 282;
+    static constexpr int build_timestamp_y = 540;
 
     static constexpr int settings_slider_touch_h = 34;
 
@@ -1100,6 +1149,7 @@ bool presetExists(uint8_t slot) {
 const char* presetError(DmxController::Result result) {
     switch (result) {
         case DmxController::Result::corrupt: return "PRESET CORRUPT";
+        case DmxController::Result::storage_full: return "PRESET STORAGE FULL";
         case DmxController::Result::metadata_failed: return "PRESET METADATA FAILED";
         case DmxController::Result::read_failed: return "PRESET READ FAILED";
         default: return "SAVE FAILED";
@@ -1470,15 +1520,12 @@ bool loadPreset(uint8_t slot) {
         }
 
         // Five equally spaced discrete positions.
-        int step =
-            settings_slider_w / 4;
-
         int relative =
             x - settings_slider_x;
 
         int value =
-            ((relative + (step >> 1)) /
-             step) +
+            ((relative * 4 + (settings_slider_w >> 1)) /
+             settings_slider_w) +
             1;
 
         if (value < 1) value = 1;
@@ -1503,15 +1550,12 @@ bool loadPreset(uint8_t slot) {
         }
 
         // Five positions: 0,1,2,3,4.
-        int step =
-            settings_slider_w / 4;
-
         int relative =
             x - settings_slider_x;
 
         int value =
-            (relative + (step >> 1)) /
-            step;
+            (relative * 4 + (settings_slider_w >> 1)) /
+            settings_slider_w;
 
         if (value < 0) value = 0;
         if (value > 4) value = 4;
@@ -1528,9 +1572,6 @@ bool loadPreset(uint8_t slot) {
         if (value < 0) value = 0;
         if (value > 4) value = 4;
 
-        int step =
-            settings_slider_w / 4;
-
         gfx->fillRect(
             settings_slider_x,
             y - 2,
@@ -1541,7 +1582,7 @@ bool loadPreset(uint8_t slot) {
 
         int knob_x =
             settings_slider_x +
-            value * step;
+            value * settings_slider_w / 4;
 
         if (knob_x > settings_slider_x) {
             gfx->fillRect(
@@ -1556,7 +1597,7 @@ bool loadPreset(uint8_t slot) {
         for (int i = 0; i < 5; ++i) {
             int x =
                 settings_slider_x +
-                i * step;
+                i * settings_slider_w / 4;
 
             uint16_t tick_color =
                 (i <= value)
@@ -1593,7 +1634,7 @@ bool loadPreset(uint8_t slot) {
         gfx->fillCircle(
             knob_x,
             y,
-            8,
+            settings_slider_radius,
             TFT_WHITE
         );
 
@@ -1621,9 +1662,6 @@ bool loadPreset(uint8_t slot) {
         if (value < 1) value = 1;
         if (value > 5) value = 5;
 
-        int step =
-            settings_slider_w / 4;
-
         // Track.
         gfx->fillRect(
             settings_slider_x,
@@ -1636,7 +1674,7 @@ bool loadPreset(uint8_t slot) {
         // Active part.
         int knob_x =
             settings_slider_x +
-            (value - 1) * step;
+            (value - 1) * settings_slider_w / 4;
 
         gfx->fillRect(
             settings_slider_x,
@@ -1650,7 +1688,7 @@ bool loadPreset(uint8_t slot) {
         for (int i = 0; i < 5; ++i) {
             int x =
                 settings_slider_x +
-                i * step;
+                i * settings_slider_w / 4;
 
             uint16_t tick_color =
                 (i + 1 <= value)
@@ -1696,7 +1734,7 @@ bool loadPreset(uint8_t slot) {
         gfx->fillCircle(
             knob_x,
             y,
-            8,
+            settings_slider_radius,
             TFT_WHITE
         );
 
@@ -2042,7 +2080,7 @@ bool loadPreset(uint8_t slot) {
 
             c.drawString(
                 brightness_text,
-                settings_content_center_x,
+                settings_slider_center_x,
                 bright_label_screen_y
             );
         }
@@ -2091,7 +2129,7 @@ bool loadPreset(uint8_t slot) {
 
             c.drawString(
                 timeout_text,
-                settings_content_center_x,
+                settings_slider_center_x,
                 timeout_label_screen_y
             );
         }
@@ -2137,7 +2175,7 @@ bool loadPreset(uint8_t slot) {
 
             c.drawString(
                 volume_text,
-                settings_content_center_x,
+                settings_slider_center_x,
                 volume_label_screen_y
             );
         }
@@ -2151,6 +2189,59 @@ bool loadPreset(uint8_t slot) {
                 deviceSettings().value(DeviceSetting::volume)
             );
         }
+
+        // Stage 5 local network information begin (no HTTP/log credentials).
+        const auto network = network_service::status();
+        c.setFont(&fonts::Font0);
+        c.setTextDatum(textdatum_t::middle_center);
+        c.setTextColor(TFT_WHITE, TFT_BLACK);
+        char network_line[96];
+        auto networkText = [&](const char* text, int y, int center_x = settings_content_center_x) {
+            const int screen_y = sy(y);
+            if (screen_y <= -10 || screen_y >= 250) return;
+            char fitted[96];
+            snprintf(fitted, sizeof(fitted), "%s", text);
+            size_t length = strlen(fitted);
+            if (c.textWidth(fitted) > 240) {
+                while (length && c.textWidth(fitted) > 222) fitted[--length] = '\0';
+                snprintf(fitted + length, sizeof(fitted) - length, "...");
+            }
+            c.drawString(fitted, center_x, screen_y);
+        };
+        settings_network_revision = network.ui_revision;
+        // Local-only radio control. Intent is not presented as a confirmed ON.
+        const bool changing = network.phase == network_service::Phase::starting ||
+            network.phase == network_service::Phase::stopping || network.phase == network_service::Phase::prepared;
+        const bool holding = wifi_power_active && !wifi_power_canceled && !wifi_power_completed;
+        const int power_y = sy(settings_wifi_power_y);
+        c.drawRoundRect(settings_wifi_button_x, power_y, settings_wifi_button_w, settings_wifi_button_h, 6,
+            changing ? TFT_DARKGRAY : (holding ? TFT_YELLOW : (network.radio_on ? TFT_GREEN : TFT_WHITE)));
+        if (holding)
+            snprintf(network_line, sizeof(network_line), "KEEP HOLDING...");
+        else if (changing)
+            snprintf(network_line, sizeof(network_line), "Wi-Fi: %s", network_service::phaseName(network.phase));
+        else
+            snprintf(network_line, sizeof(network_line), "Wi-Fi: %s", network.radio_on ? "ON" : "OFF");
+        networkText(network_line, settings_wifi_power_y + (settings_wifi_button_h >> 1), settings_wifi_button_x + (settings_wifi_button_w >> 1));
+        if (network.power_error)
+            snprintf(network_line, sizeof(network_line), "WIFI SAVE FAILED (%d)", network.power_error);
+        else
+        if (network.phase == network_service::Phase::ready)
+            snprintf(network_line, sizeof(network_line), "WIFI Ready - Clients %lu/%lu", (unsigned long)network.clients, (unsigned long)network.max_clients);
+        else
+            snprintf(network_line, sizeof(network_line), "WIFI %s (%d)", network_service::phaseName(network.phase), network.error);
+        networkText(network_line, 356);
+        snprintf(network_line, sizeof(network_line), "SSID: %s", network_service::ssid());
+        networkText(network_line, 374);
+        snprintf(network_line, sizeof(network_line), "PASSWORD: %s", network_service::password());
+        networkText(network_line, 392);
+        snprintf(network_line, sizeof(network_line), "IP: %s", network.ip[0] ? network.ip : "not-ready");
+        networkText(network_line, 410);
+        const int reset_y = sy(settings_wifi_reset_y);
+        c.drawRoundRect(settings_wifi_button_x, reset_y, settings_wifi_button_w, settings_wifi_button_h, 6, wifi_reset_active ? TFT_GREEN : TFT_WHITE);
+        networkText(wifi_reset_active && !wifi_reset_canceled && !wifi_reset_completed ? "KEEP HOLDING..." : "RESET WIFI", settings_wifi_reset_y + (settings_wifi_button_h >> 1), settings_wifi_button_x + (settings_wifi_button_w >> 1));
+        networkText(network.reset_pending ? "RESET SAVED: RESTART TO APPLY" : (wifi_reset_failed ? "RESET FAILED - TRY AGAIN" : "RESET TAKES EFFECT AFTER REBOOT"), settings_wifi_notice_y);
+        // Stage 5 local network information end.
 
         // ----------------------------------------------------
         // BUILD DATE FOOTER
@@ -2166,42 +2257,6 @@ bool loadPreset(uint8_t slot) {
                 build_timestamp_screen_y
             );
         }
-
-        // Stage 5 local network information begin (no HTTP/log credentials).
-        const auto network = network_service::status();
-        c.setFont(&fonts::Font0);
-        c.setTextDatum(textdatum_t::middle_center);
-        c.setTextColor(TFT_WHITE, TFT_BLACK);
-        char network_line[96];
-        auto networkText = [&](const char* text, int y) {
-            const int screen_y = sy(y);
-            if (screen_y <= -10 || screen_y >= 250) return;
-            char fitted[96];
-            snprintf(fitted, sizeof(fitted), "%s", text);
-            size_t length = strlen(fitted);
-            if (c.textWidth(fitted) > 240) {
-                while (length && c.textWidth(fitted) > 222) fitted[--length] = '\0';
-                snprintf(fitted + length, sizeof(fitted) - length, "...");
-            }
-            c.drawString(fitted, settings_content_center_x, screen_y);
-        };
-        settings_network_revision = network.ui_revision;
-        if (network.phase == network_service::Phase::ready)
-            snprintf(network_line, sizeof(network_line), "WIFI Ready - Clients %lu/%lu", (unsigned long)network.clients, (unsigned long)network.max_clients);
-        else
-            snprintf(network_line, sizeof(network_line), "WIFI %s (%d)", network_service::phaseName(network.phase), network.error);
-        networkText(network_line, 316);
-        snprintf(network_line, sizeof(network_line), "SSID: %s", network_service::ssid());
-        networkText(network_line, 334);
-        snprintf(network_line, sizeof(network_line), "PASSWORD: %s", network_service::password());
-        networkText(network_line, 352);
-        snprintf(network_line, sizeof(network_line), "IP: %s", network.ip[0] ? network.ip : "not-ready");
-        networkText(network_line, 370);
-        const int reset_y = sy(settings_wifi_reset_y);
-        c.drawRoundRect(24, reset_y, 216, 28, 5, wifi_reset_active ? TFT_GREEN : TFT_WHITE);
-        networkText(wifi_reset_active && !wifi_reset_canceled && !wifi_reset_completed ? "KEEP HOLDING..." : "HOLD RESET WIFI 2s", settings_wifi_reset_y + 14);
-        networkText(network.reset_pending ? "RESET SAVED: RESTART TO APPLY" : (wifi_reset_failed ? "RESET FAILED - TRY AGAIN" : "WIFI RESET APPLY NEXT BOOT"), settings_wifi_reset_y + 42);
-        // Stage 5 local network information end.
 
         // Battery is a fixed status element and must remain completely
         // identical to the normal Sender screen. Force a redraw here because
@@ -2341,6 +2396,7 @@ bool loadPreset(uint8_t slot) {
         resetPrecisionState();
         setActiveFullscreenPage(fullscreen_page_settings);
         settings_screen = true;
+        wifi_power_active = false;
         settings_scroll_y = 0;
         settings_scroll_add = 0;
         settings_redraw_pending = false;
@@ -2359,6 +2415,7 @@ bool loadPreset(uint8_t slot) {
 
     void closeSettingsScreen(void) {
         settings_screen = false;
+        wifi_power_active = false;
         setActiveFullscreenPage(fullscreen_page_none);
         settings_scroll_add = 0;
         settings_redraw_pending = false;
@@ -2384,12 +2441,47 @@ bool loadPreset(uint8_t slot) {
         const uint32_t revision = network_service::uiRevision();
         if (revision == settings_network_revision) return;
         settings_network_revision = revision;
-        const int status_y = 316 - settings_scroll_y;
-        if (status_y < settings_view_h && settings_wifi_reset_y + 52 - settings_scroll_y >= 0) settings_redraw_pending = true;
+        const int status_y = settings_wifi_power_y - settings_scroll_y;
+        if (status_y < settings_view_h && settings_wifi_notice_y + 10 - settings_scroll_y >= 0) settings_redraw_pending = true;
+    }
+
+    bool handleWifiPowerTouch(const decltype(M5.Touch.getDetail())& tp, int content_y) {
+        const bool inside = tp.x >= settings_wifi_button_x && tp.x < settings_wifi_button_x + settings_wifi_button_w && content_y >= settings_wifi_power_y && content_y < settings_wifi_power_y + settings_wifi_button_h;
+        if (!wifi_power_active && tp.wasPressed() && inside) {
+            wifi_power_active = true; wifi_power_canceled = wifi_power_completed = false;
+            wifi_power_touch_id = tp.id;
+            wifi_power_started_ms = millis();
+            const auto network = network_service::status();
+            wifi_power_target = !network.radio_on;
+            wifi_power_canceled = network.phase == network_service::Phase::starting ||
+                network.phase == network_service::Phase::stopping || network.phase == network_service::Phase::prepared;
+            settings_scroll_add = 0; settings_drag_mode = settings_drag_none;
+            settings_redraw_pending = true;
+        }
+        if (!wifi_power_active) return false;
+        // A release event has a nonzero state too: require the actual touch bit
+        // so releasing at the deadline can never complete a hold retrospectively.
+        if (!tp.isPressed()) {
+            wifi_power_active = false;
+            settings_redraw_pending = true;
+            return true;
+        }
+        if (!wifi_power_canceled && (tp.id != wifi_power_touch_id || !inside || abs(tp.x - tp.base_x) >= settings_gesture_threshold || abs(tp.y - tp.base_y) >= settings_gesture_threshold)) {
+            wifi_power_canceled = true;
+            settings_redraw_pending = true;
+        }
+        if (!wifi_power_canceled && !wifi_power_completed && uint32_t(millis() - wifi_power_started_ms) >= 1000) {
+            wifi_power_completed = true;
+            // requestEnabled rejects transition/configuration conflicts. Saved
+            // credentials and the next-boot factory-reset intent are untouched.
+            network_service::requestEnabled(wifi_power_target);
+            settings_redraw_pending = true;
+        }
+        return true; // Consume the entire hold, including canceled gestures.
     }
 
     bool handleWifiResetTouch(const decltype(M5.Touch.getDetail())& tp, int content_y) {
-        const bool inside = tp.x >= 24 && tp.x < 240 && content_y >= settings_wifi_reset_y && content_y < settings_wifi_reset_y + 28;
+        const bool inside = tp.x >= settings_wifi_button_x && tp.x < settings_wifi_button_x + settings_wifi_button_w && content_y >= settings_wifi_reset_y && content_y < settings_wifi_reset_y + settings_wifi_button_h;
         if (tp.wasPressed() && inside) {
             wifi_reset_active = true; wifi_reset_canceled = wifi_reset_completed = wifi_reset_failed = false;
             wifi_reset_started_ms = millis();
@@ -2418,6 +2510,7 @@ bool loadPreset(uint8_t slot) {
             touch_y + settings_scroll_y;
 
         // Stage 5C Settings network touch begin.
+        if (handleWifiPowerTouch(tp, content_y)) return;
         if (handleWifiResetTouch(tp, content_y)) return;
         // Stage 5C Settings network touch end.
 
@@ -4258,6 +4351,10 @@ bool loadPreset(uint8_t slot) {
     }
 
     void setActiveFullscreenPage(fullscreen_page_t page) {
+        // Retain Main's position, but never carry its animation into another page.
+        if (page != fullscreen_page_none) {
+            scroll_y_add = 0;
+        }
         active_fullscreen_page = page;
 
         if (page != fullscreen_page_settings) {
@@ -4399,8 +4496,12 @@ bool loadPreset(uint8_t slot) {
             return;
         }
 
+        FADER_VALUE(faderBefore, controller.channel(target_channel));
+        FADER_START(faderCommand);
         dispatcher.executeLocal(ControllerCommand::channelCommand(
             CommandType::set_channel, target_channel, new_value));
+        FADER_STOP(faderCommand, command);
+        FADER_ACCEPT(target_channel, faderBefore, controller.channel(target_channel));
         target_value = controller.channel(target_channel);
 
         visible[target_channel] = true;
@@ -4582,6 +4683,7 @@ bool loadPreset(uint8_t slot) {
     }
 
     void drawPrecisionEditor(void) {
+        FADER_SCOPE(faderRender, precision);
         fullscreen_page_t owner =
             precision_keypad_screen
                 ? fullscreen_page_keypad
@@ -4696,6 +4798,7 @@ bool loadPreset(uint8_t slot) {
         );
 
         pushFullscreenCanvas(owner, "PRECISION");
+        FADER_VISIBLE(precision, target_value);
         precision_redraw_pending = false;
     }
 
@@ -4980,6 +5083,7 @@ bool loadPreset(uint8_t slot) {
 
         if (precision_slider_dragging) {
             int value = precisionValueFromY(tp.y);
+            FADER_MAP(precision, target_channel, value, target_value);
             if (value != target_value) {
                 applyLiveDmxValue(value);
                 drawPrecisionEditor();
@@ -5022,6 +5126,7 @@ bool loadPreset(uint8_t slot) {
     }
 
     void drawUIValueSet(uint16_t new_value, bool force_redraw = false) {
+        FADER_SCOPE(faderRender, bar);
         M5.Display.setTextDatum(textdatum_t::middle_center);
         M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
         M5.Display.setFont(&fonts::AsciiFont8x16);
@@ -5053,6 +5158,7 @@ bool loadPreset(uint8_t slot) {
         }
 
         fillBar(&M5.Display, slider_x, py, slider_w, y - py, target_channel);
+        FADER_VISIBLE(main, new_value);
     }
 
     uint32_t getBarColor(int32_t y) {
@@ -5089,6 +5195,7 @@ bool loadPreset(uint8_t slot) {
     }
 
     void updateDisplay(bool full_redraw = false) {
+        FADER_SCOPE(faderRender, grid);
         int idx     = 0;
         bool drawed = false;
 

@@ -1,4 +1,5 @@
 #include "device_maintenance.h"
+#include "thdiff_experiment.h"
 #include <assert.h>
 #include <stdio.h>
 #include <vector>

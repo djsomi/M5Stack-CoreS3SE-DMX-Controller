@@ -4,48 +4,48 @@
       "content_encoding": "gzip",
       "content_type": "text/html; charset=utf-8",
       "file": "index.html.gz",
-      "gzip_size": 4907,
-      "original_size": 19597,
+      "gzip_size": 5360,
+      "original_size": 21662,
       "path": "/",
-      "sha256": "2313ae7ef2924043fe9689f190b677e89a5a5101aacb817858b17656f245fe7b",
+      "sha256": "1fba443a434e4a0e2ab83d117300f36f1cce88eb58ade334b4cca8da355473aa",
       "source": "index.html",
-      "source_sha256": "815f8a69dab5904d721856967ffff75a0c359ac9d8850205c9ca3b92f4e2544a"
+      "source_sha256": "07856df823cc32492ae848e64440532ae48eba80ca2dd6e3b8c11f4c170fc975"
     },
     {
       "content_encoding": "gzip",
       "content_type": "text/css; charset=utf-8",
       "file": "style.css.gz",
-      "gzip_size": 5199,
-      "original_size": 20858,
-      "path": "/style.d2ad5212c259c44e.css",
-      "sha256": "ed8cc2255c1a8b8a49c45814a1738070e9dab453ef7ce46a6527dcfebb3c25e3",
+      "gzip_size": 5411,
+      "original_size": 21735,
+      "path": "/style.ebf4b27527c9d092.css",
+      "sha256": "a39d15147f07fd8bc1369d31fba10cbf1ec0615396cb785f2a1a5aa4ef2b4c0a",
       "source": "style.css",
-      "source_sha256": "d2ad5212c259c44ee65e3a53009cd1820c3ebf7fe44fc0730563378bc5bb3551"
+      "source_sha256": "ebf4b27527c9d092e8456d29e31431d670d185c47da9a144d9f1f8ad8f7cdff7"
     },
     {
       "content_encoding": "gzip",
       "content_type": "text/javascript; charset=utf-8",
       "file": "core.js.gz",
-      "gzip_size": 12467,
-      "original_size": 54437,
-      "path": "/core.87cf5c44a0851a7d.js",
-      "sha256": "73100eca36f67e8d5c5285b7e51c3ffbe5109b65012201e69aa55e81ee9641fb",
+      "gzip_size": 13325,
+      "original_size": 58573,
+      "path": "/core.be1f29adae8909d0.js",
+      "sha256": "6d29106aab4a953a2981d77c78365cb0908a90466393260d65255de5791d3767",
       "source": "core.js",
-      "source_sha256": "87cf5c44a0851a7d25a1a768324f344a67ae7fb9e86e7cd164937ed73978dcd7"
+      "source_sha256": "be1f29adae8909d0983d290541c8e6c894ef5a4e69f0140469753835816fff2b"
     },
     {
       "content_encoding": "gzip",
       "content_type": "text/javascript; charset=utf-8",
       "file": "ui.js.gz",
-      "gzip_size": 12624,
-      "original_size": 49024,
-      "path": "/ui.216e3e8297febfb2.js",
-      "sha256": "2640a2cfcdb63851844815ce94f0c71d2df835ff17ace1b105f693d6d3d1fedf",
+      "gzip_size": 15486,
+      "original_size": 58808,
+      "path": "/ui.2181aa1594f6db1a.js",
+      "sha256": "643032fba7aa3c714a50823d6fa17834eee3e1b1ed7727e5b2c4733674047c40",
       "source": "ui.js",
-      "source_sha256": "216e3e8297febfb26733d0ce326a6c60c6f7b764396e0e73ce03cbd61a4c92f4"
+      "source_sha256": "2181aa1594f6db1ad32046fd70ec468888cdd230336792148f33e02e85a997a3"
     }
   ],
-  "bundle_sha256": "67fbc318ceb0d49a6afcf0e7fb7499f8f7eb369b1de560abb0e2c536240fb091",
+  "bundle_sha256": "e8ad985d1791e93f58b064532cdb63cfe5af5131a791bc50876b13e1231090aa",
   "generator": {
     "python": "3.11.7",
     "zlib": "1.2.13"

@@ -1,4 +1,8 @@
 #include "hardware_diagnostics.h"
+#include "firmware_version.h"
+#include "physical_fader_diagnostics.h"
+#include "touch_configuration_snapshot.h"
+#include "thdiff_experiment.h"
 
 #if DMX_HW_DIAGNOSTICS
 #include <Arduino.h>
@@ -47,6 +51,7 @@ char line[768];
 size_t line_size = 0;
 size_t line_sent = 0;
 bool banner_pending = true;
+bool thdiff_line = false;
 uint32_t configured_flash = 0;
 uint32_t physical_flash = 0;
 uint32_t flash_id = 0;
@@ -78,7 +83,10 @@ void prepareLine() {
         banner_pending = false;
         length = snprintf(
             line, sizeof(line),
-            "[S0] build=v0.2.0-base/32c0571+stage0 date=%s_%s board=%s(%u) profile=%s idf=%s baud=115200 units=bytes configured_flash=%lu cfg_rc=%d physical_flash=%lu physical_rc=%d jedec=%06lx id_rc=%d diag_buffers_bytes=%u\n",
+            "[S0] build=%s commit=%s modified=%u environment=%s inputs=%s date=%s_%s board=%s(%u) profile=%s idf=%s baud=115200 units=bytes configured_flash=%lu cfg_rc=%d physical_flash=%lu physical_rc=%d jedec=%06lx id_rc=%d diag_buffers_bytes=%u\n",
+            firmware_build::info().build_id, firmware_build::info().commit,
+            firmware_build::info().modified ? 1U : 0U, firmware_build::info().environment,
+            firmware_build::info().source_sha256,
             __DATE__, __TIME__, boardName(), static_cast<unsigned>(M5.getBoard()),
             profileName(), esp_get_idf_version(),
             static_cast<unsigned long>(configured_flash), configured_flash_result,
@@ -86,6 +94,11 @@ void prepareLine() {
             static_cast<unsigned long>(flash_id), flash_id_result,
             static_cast<unsigned>(sizeof(snapshots) + sizeof(line))
         );
+    } else if (thdiff::pending()) {
+        length = static_cast<int>(thdiff::formatNext(line, sizeof(line)));
+        thdiff_line = true;
+    } else if (touch_configuration::pending()) {
+        length = static_cast<int>(touch_configuration::formatNext(line, sizeof(line)));
     } else if (queued != 0) {
         const Snapshot& s = snapshots[read_index];
         length = snprintf(
@@ -121,6 +134,8 @@ void begin() {
     configured_flash_result = esp_flash_get_size(nullptr, &configured_flash);
     physical_flash_result = esp_flash_get_physical_size(nullptr, &physical_flash);
     flash_id_result = esp_flash_read_id(nullptr, &flash_id);
+    touch_configuration::captureStartup();
+    thdiff::begin();
 }
 
 void capture(const char* event, const char* screen, const char* owner,
@@ -153,7 +168,14 @@ void capture(const char* event, const char* screen, const char* owner,
 }
 
 void service() {
-    if ((!banner_pending && queued == 0 && line_sent == line_size) || !Serial) {
+    thdiff::poll(); // RX/deadline/rollback run even while diagnostic TX is paused.
+#if DMX_FADER_DIAGNOSTICS
+    // Pause all diagnostic output during touch. Finish any S0 line before FADER
+    // owns this same non-waiting USB path; never interleave partial lines.
+    if (physical_fader::touchActive()) return;
+    if (line_sent == line_size && !thdiff::pending() && physical_fader::service()) return;
+#endif
+    if ((!banner_pending && queued == 0 && line_sent == line_size && !touch_configuration::pending() && !thdiff::pending()) || !Serial) {
         return;
     }
     uint32_t now = millis();
@@ -172,7 +194,13 @@ void service() {
     if (count > tx_chunk_bytes) count = tx_chunk_bytes;
     if (count > static_cast<size_t>(available)) count = available;
     // Never wait for a host, flush, or send beyond the currently free TX space.
-    line_sent += Serial.write(reinterpret_cast<const uint8_t*>(line + line_sent), count);
+    const size_t written = Serial.write(reinterpret_cast<const uint8_t*>(line + line_sent), count);
+    if (!written || written > count) thdiff::outputError();
+    if (written <= count) line_sent += written;
+    if (line_sent == line_size && thdiff_line) {
+        thdiff_line = false;
+        thdiff::lineSent();
+    }
 }
 }
 #endif

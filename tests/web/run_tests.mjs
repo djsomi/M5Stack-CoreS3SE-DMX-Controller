@@ -10,9 +10,12 @@ import './test_loader.mjs';
 import './test_device_settings.mjs';
 import './test_maintenance.mjs';
 import './test_wifi.mjs';
+import './test_archives.mjs';
+import './test_export_response.mjs';
+import './test_import_progress.mjs';
 const root = new URL('../../', import.meta.url);
 const modules = {};
-for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','archives','settings','status','shell','app']) {
   const source = readFileSync(new URL('web/src/js/' + name + '.js', root), 'utf8');
   let networkCalls = 0;
   const denied = () => {++networkCalls; throw Error('Unexpected network activity');};

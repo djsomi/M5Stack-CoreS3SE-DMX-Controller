@@ -16,10 +16,31 @@
     const maintenanceListeners = new Set();
     let wifiEnabled = false, wifiTimer = null, wifiValue = null, wifiError = "", wifiRequest = 0;
     const wifiListeners = new Set();
+    let archivePending = null, archiveTimer = null, archiveBusy = false;
+    function cancelArchive(reason = "Connection lost; retry Export after reconnecting. Import outcome may be unknown; inspect presets before retrying.") {
+      if (archiveTimer !== null) runtime.clearTimeout(archiveTimer);
+      archiveTimer = null; archiveBusy = false;
+      if (archivePending) archivePending.reject(new Error(reason));
+      archivePending = null;
+    }
+    function sendArchive(kind, fields = {}) {
+      const p = requests.current();
+      if (!started || suspended || waiting || !store.read.current().ready || !store.read.current().sender || socket?.readyState !== 1 ||
+          maintenanceLocked() || p.write || p.operation || p.setting || p.maintenance || p.wifi || p.archive)
+        return Promise.reject(new Error("Controller busy or disconnected; not sent."));
+      const command = requests.archive(kind, fields);
+      if (!command) return Promise.reject(new Error("Archive request invalid."));
+      archiveBusy = true;
+      return new Promise((resolve, reject) => {
+        archivePending = {resolve, reject};
+        archiveTimer = runtime.setTimeout(() => retire("reconnecting", "Archive response timed out; outcome unknown"), 5000);
+        try { socket.send(command.data); } catch (_) { retire("reconnecting", "Archive send failed; outcome unknown"); }
+      });
+    }
     function wifiNotify() { wifiListeners.forEach(listener => listener()); }
     function cancelWifi() { if (wifiTimer !== null) runtime.clearTimeout(wifiTimer); wifiTimer = null; }
     function sendWifi(kind = "get", ssid, password, base, request) {
-      if (!store.read.current().ready || waiting || socket?.readyState !== 1 || (kind !== "get" && maintenanceLocked())) return null;
+      if (!store.read.current().ready || waiting || socket?.readyState !== 1 || (kind !== "get" && (maintenanceLocked() || archiveBusy))) return null;
       const command = requests.wifi(kind, ssid, password, base, request); if (!command) return null;
       const id = command.id, epoch = generation; wifiError = "";
       try { socket.send(command.data); } catch (_) { retire("reconnecting", "Wi-Fi outcome unconfirmed"); return null; }
@@ -39,6 +60,7 @@
     }
     function sendMaintenance(kind = "get", argument) {
       if (!store.read.current().ready || waiting || socket?.readyState !== 1) return null;
+      if (kind !== "get" && archiveBusy) return null;
       const command = requests.maintenance(kind, argument); if (!command) return null;
       maintenanceError = ""; const epoch = generation;
       try { socket.send(command.data); } catch (_) { retire("reconnecting", "Maintenance outcome unknown"); return null; }
@@ -57,7 +79,7 @@
     }
     function sendSettings(key, value, phase = null, gesture = 0) {
       if (!store.read.current().ready || waiting || socket?.readyState !== 1) return null;
-      if (key !== undefined && maintenanceLocked()) return null;
+      if (key !== undefined && (maintenanceLocked() || archiveBusy)) return null;
       const command = requests.settings(key, value, phase, gesture, settingsValue?.revision); if (!command) return null;
       settingsError = "";
       try { socket.send(command.data); } catch (_) { retire("reconnecting", "Settings send failed; outcome uncertain"); return null; }
@@ -74,7 +96,7 @@
     function cancelWriteTimer() { if (writeTimer !== null) runtime.clearTimeout(writeTimer); writeTimer = null; }
     function cancelOperationTimer() { if (operationTimer !== null) runtime.clearTimeout(operationTimer); operationTimer = null; }
     const writable = () => started && !suspended && !waiting && store.read.current().ready &&
-      store.read.current().sender && socket?.readyState === 1 && !maintenanceLocked();
+      store.read.current().sender && socket?.readyState === 1 && !maintenanceLocked() && !archiveBusy;
     const now = () => runtime.now ? runtime.now() : Date.now();
     const clock = () => runtime.clock ? runtime.clock() : now();
     function closed(event) {
@@ -97,6 +119,7 @@
       arm(Math.min(8000, Math.round(base * (0.9 + runtime.random() * 0.2))), connect);
     }
     function retire(phase, detail = "", retry = true) {
+      cancelArchive(detail || undefined);
       clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); cancelWifi(); wifiRequest = 0; wifiValue = null; wifiNotify(); maintenanceRequest = 0; ++generation; requests.cancel();
       settingsValue = null; settingsNotify();
       if (maintenanceValue?.phase && maintenanceValue.phase !== "idle") maintenanceError = "Connection lost; maintenance outcome unconfirmed.";
@@ -217,6 +240,13 @@
           }
           store.diagnostics({receivedAt: now()}, false); fresh(); maintenanceNotify(); return;
         }
+        if (message.type === "presets.result") {
+          if (!requests.completeArchive(message) || !archivePending) return;
+          if (archiveTimer !== null) runtime.clearTimeout(archiveTimer);
+          archiveTimer = null; const response = archivePending; archivePending = null;
+          if (!["ready", "data", "staged"].includes(message.status)) archiveBusy = false;
+          fresh(); response.resolve(message); return;
+        }
         if (message.type.startsWith("settings.")) {
           if (waiting || !hello || !settingsEnabled) return;
           const pending = requests.current().setting;
@@ -234,6 +264,12 @@
         }
         store.diagnostics({receivedAt: now(), receivedRevision: message.revision}, false);
         if (message.type === "command.ack" || message.type === "command.error") {
+          if (requests.completeArchive(message)) {
+            if (archiveTimer !== null) runtime.clearTimeout(archiveTimer);
+            archiveTimer = null; archiveBusy = false;
+            const response = archivePending; archivePending = null;
+            response?.reject(new Error("Archive rejected: " + message.status)); return;
+          }
           if (requests.current().wifi?.id === message.id) {
             requests.completeWifi(message); cancelWifi(); wifiValue = null; wifiError = "Wi-Fi configuration unavailable: " + message.status; wifiNotify(); return;
           }
@@ -298,6 +334,7 @@
       native.onerror = () => { if (active()) { store.diagnostics({classification: "transport_error"}, false); retire("reconnecting", "WebSocket connection failed"); } };
       native.onclose = event => {
         if (!active()) return;
+        cancelArchive();
         closed(event);store.diagnostics({classification: "transport_close"}, false);
         socket = null; clear(); cancelWriteTimer(); cancelOperationTimer(); cancelSettings(); cancelMaintenance(); cancelWifi(); wifiRequest = 0; wifiValue = null; wifiNotify(); maintenanceRequest = 0; ++generation; requests.cancel(); probing = false;
         settingsValue = null; settingsNotify();
@@ -319,6 +356,14 @@
       stop() { started = false; retire("disconnected", "", false); },
       resync,
       writable,
+      beginArchive() {
+        const p = requests.current();
+        if (!writable() || p.write || p.operation || p.setting || p.maintenance || p.wifi || p.archive) return null;
+        archiveBusy = true; return generation;
+      },
+      endArchive(epoch) { if (epoch === generation && !archivePending) archiveBusy = false; },
+      archiveEpoch: () => generation,
+      archive: sendArchive,
       onMaintenance(listener) { maintenanceListeners.add(listener); return () => maintenanceListeners.delete(listener); },
       maintenance: () => ({value: maintenanceValue, pending: requests.current().maintenance, error: maintenanceError, owned: !!maintenanceRequest && maintenanceRequest === maintenanceValue?.request}),
       enableMaintenance() { maintenanceEnabled = true; if (!maintenanceValue && !requests.current().maintenance) sendMaintenance(); },

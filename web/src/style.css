@@ -113,8 +113,8 @@ h1:focus-visible { outline: 2px solid #a0c4ff; outline-offset: 5px; }
 .slot-number { color: #8495ac; font-size: 10px; letter-spacing: 1px; }
 .preset-slot strong { font-size: 25px; font-weight: 500; }
 .slot-state { color: #a0aec2; font-size: 11px; }
-.preset-actions, .settings-panel, .status-panel { padding: 22px 18px; }
-.settings-device-grid, .settings-local-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
+.preset-actions, .preset-transfer, .settings-panel, .status-panel { padding: 22px 18px; }
+.preset-tools-grid, .settings-device-grid, .settings-local-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 16px; align-items: start; }
 .device-settings-heading { margin: 0; }
 .device-settings-controls { width: 100%; }
 .device-setting { margin-top: 20px; }
@@ -187,7 +187,7 @@ details.status-panel { margin-top: 16px; }
   .preset-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (min-width: 680px) {
-  .settings-device-grid, .settings-local-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  .preset-tools-grid, .settings-device-grid, .settings-local-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
   .app-container { padding: 0 28px 24px; }
   .app-header { padding-top: 35px; padding-bottom: 28px; }
   .brand-name { font-size: 22px; }
@@ -258,3 +258,12 @@ details.status-panel { margin-top: 16px; }
 #wifi-visibility svg { display: block; width: 22px; height: 22px; }
 #wifi-visibility[aria-pressed=false] .eye-off { display: none; }
 #wifi-visibility:not(:disabled):hover { color: #eef2f8; }
+
+.preset-progress { max-width: min(380px, calc(100vw - 32px)); padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: inherit; }
+.preset-progress h2 { margin: 0 0 12px; font-size: 1.15rem; }
+.preset-progress p { margin: 0; color: var(--muted); line-height: 1.5; }
+.preset-progress .preset-transfer-warning { margin-top: 12px; }
+.preset-progress::backdrop { background: rgba(0, 0, 0, .6); }
+.preset-spinner:not([hidden]) { display: block; width: 28px; height: 28px; margin-bottom: 16px; border: 3px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: preset-spin .9s linear infinite; }
+@keyframes preset-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .preset-spinner:not([hidden]) { animation: none; } }

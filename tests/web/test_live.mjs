@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
 const modules = {};
-for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','settings','status','shell','app']) {
+for (const name of ['protocol','commands','state','transport','control','actions','preferences','fader','editor','presets','archives','settings','status','shell','app']) {
   const code = readFileSync(new URL('../../web/src/js/' + name + '.js', import.meta.url), 'utf8');
   modules[name] = new vm.Script('(' + code + ')', {filename: name + '.js'}).runInNewContext()(modules);
 }
@@ -780,10 +780,10 @@ function operationsFixture() {
       seq:String(BigInt(f.read.current().seq)+1n),revision,...patch};
     f.socket.message(message);view.render();f.view.render();
   }
-  function result(status='applied',patch=null) {
+  function result(status='applied',patch=null,domain=0) {
     const op=f.client.pending().operation;assert.ok(op,'operation in flight');
     if(patch!==null)publish(patch,status==='no_change');
-    f.socket.message({...envelope(status==='applied'||status==='no_change'?'command.ack':'command.error',String(BigInt(f.read.current().seq)+1n),f.read.current().revision,op.id),status,domain:0});
+    f.socket.message({...envelope(status==='applied'||status==='no_change'?'command.ack':'command.error',String(BigInt(f.read.current().seq)+1n),f.read.current().revision,op.id),status,domain});
     view.render();f.view.render();
   }
   const click=id=>nodes[id].listeners.click();
@@ -925,6 +925,14 @@ test('lost operation ack leaves an honest uncertain outcome, closes generation a
   assert.equal(f.read.current().ready,false);assert.equal(f.operations.current().pending,null);assert.equal(f.operations.current().last.status,'uncertain');
   f.socket.end();f.next();const fresh=f.ready();f.presetView.render();assert.equal(fresh.sent.length,0);
   assert.equal(f.operations.current().last.status,'uncertain');assert.match(f.nodes['preset-feedback'].textContent,/outcome unknown/);
+});
+
+test('full NVS gives actionable backup guidance and never replays the mutation',()=>{
+  const f=operationsFixture();assert.equal(f.operations.run('preset.save',1),true);f.result('storage_error',null,14);
+  assert.match(f.operations.current().last.message,/storage full.*Export a backup.*Do not reset/s);
+  assert.equal(f.operations.current().last.status,'failed');
+  assert.equal(JSON.parse(f.socket.sent.at(-1)).type,'state.request');
+  assert.equal(f.socket.sent.filter(data=>JSON.parse(data).type==='preset.save').length,1);
 });
 
 test('storage error may have persisted data; result stays failed while read-only snapshot repairs occupancy',()=>{

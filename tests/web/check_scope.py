@@ -7,17 +7,26 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"network"))
 from preset_loaded_guard_support import prior, check_new_header
 from device_settings_guard_support import restore, check_header
 from wifi_guard_support import check_new
+from release_guard_support import prior as before_release
+from preset_archive_guard_support import check_new as check_archive
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "294b8b8ea21d139555a7222f16b5eeff00d16091"
 PREFIXES = ("src", "include", "patches", "partitions", "scripts")
-ALLOWED = {"scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp", "include/status_ssid.h",
+ALLOWED = {"include/captured_fader_touch.h", "include/physical_fader_diagnostics.h", "src/physical_fader_diagnostics.cpp", "include/firmware_version.h", "scripts/build_provenance.py", "scripts/package_release_candidate.py", "scripts/embed_web_assets.py", "scripts/web_asset_pipeline.py", "scripts/web_ui_bundle.py", "src/network_service.cpp", "include/status_ssid.h",
     "src/websocket_diagnostics.cpp", "include/websocket_diagnostics.h", "src/websocket_bridge.cpp", "include/preset_double_tap.h", "include/device_settings.h", "include/device_maintenance.h", "include/maintenance_transport.h", "include/wifi_configuration.h", "include/wifi_credential_transaction.h", "include/wifi_wire.h", "src/wifi_credential_store.h"}
 
 
 def check():
+    check_archive()
+    ALLOWED.update({'include/preset_archive.h','include/preset_archive_store.h'})
+    ALLOWED.update({'include/touch_acquisition_diagnostics.h','src/touch_acquisition_diagnostics.cpp','scripts/touch_acquisition_trace.py'})
+    ALLOWED.update({'include/touch_configuration_snapshot.h','src/touch_configuration_snapshot.cpp'})
+    ALLOWED.update({'include/thdiff_experiment.h','src/thdiff_experiment.cpp'})
     # Preserve the accepted split; allow only the reviewed action presentation block.
     for path in (ROOT / "web/src/js").glob("*.js"):
+        if path.name == "archives.js":
+            continue  # New isolated factory, exercised by file/transport/browser tests.
         original = subprocess.check_output(["git", "-c", "safe.directory=" + ROOT.as_posix(),
             "show", "4e6fbbeada642e5dc8345421a1d11eb9acc6baa5:" + path.relative_to(ROOT).as_posix()], cwd=ROOT)
         if path.name == "presets.js":
@@ -51,7 +60,7 @@ def check():
         name = raw_name.decode("utf-8"); known.add(name)
         if name in ALLOWED:
             continue
-        data = prior(name,(ROOT / name).read_text(encoding="utf-8")).encode("utf-8")
+        data = prior(name,before_release(name,(ROOT / name).read_text(encoding="utf-8"))).encode("utf-8")
         oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
         assert oid == metadata.split()[2].decode(), "Protected Stage6A file changed: " + name
     for folder in PREFIXES:

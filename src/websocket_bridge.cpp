@@ -108,6 +108,7 @@ void Bridge::reply(const Request& r,CommandStatus status,uint8_t domain) {
     if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}
 }
 void Bridge::ownerPoll(bool sender) {
+    if(archive_.mode&&(!sender||!archiveAllowed(this)||uint32_t(lock_.nowMs()-archive_.touched)>=10000||uint32_t(lock_.nowMs()-archive_.started)>=120000))abortArchive();
     if(wifi_) {
         wifi_->poll(lock_.nowMs());
         if(wifi_->snapshot().revision!=wifi_revision_){auto e=wifiState(Kind::wifi_update);wifi_revision_=e.revision;broadcastWifi(e);wifi_->published();}
@@ -147,6 +148,10 @@ void Bridge::ownerPoll(bool sender) {
             if(c->active){c->ready=true;if(c->outstanding)--c->outstanding;}
         }
         return;
+    }
+    if(r.archive){
+        if(!sender_||(maintenance_&&maintenance_->active())||(wifi_&&wifi_->active())){archiveReply(r,"busy");return;}
+        if(!archiveRequest(r))return;
     }
     if(r.wifi) {
         bool subscribed=false;
@@ -208,14 +213,14 @@ void Bridge::ownerPoll(bool sender) {
     if(++internal_id_==0)++internal_id_;
     r.command.request_id=internal_id_;
     const auto admitted=dispatcher_.submit(r.command);
-    if(admitted.status!=CommandStatus::accepted){reply(r,admitted.status);return;}
+    if(admitted.status!=CommandStatus::accepted){if(r.archive){archiveReply(r,"busy");abortArchive();}else reply(r,admitted.status);return;}
     flight_=r;in_flight_=true;
 }
 void Bridge::completed(void* context,const ControllerCommand& command,const CommandDispatcher::Result& result) {
     auto& self=*static_cast<Bridge*>(context);
     if(command.type==CommandType::load_preset||command.type==CommandType::save_preset||
        command.type==CommandType::copy_preset||command.type==CommandType::clear_preset||
-       command.type==CommandType::reset_sender)self.presets_ready_=false;
+       command.type==CommandType::reset_sender||command.type==CommandType::replace_presets)self.presets_ready_=false;
     const bool changed=result.revision_after!=result.revision_before;
     if(changed) {
         {Guard guard(self.lock_);++self.metrics_.controller_events;self.metrics_.last_controller_revision=result.revision_after;}
@@ -234,7 +239,12 @@ void Bridge::completed(void* context,const ControllerCommand& command,const Comm
         self.broadcast(e);
     }
     if(self.in_flight_&&command.source==CommandSource::external&&command.request_id==self.flight_.command.request_id) {
-        self.in_flight_=false;self.reply(self.flight_,result.status,uint8_t(result.domain));
+        self.in_flight_=false;
+        if(self.flight_.archive){
+            const char* status=result.domain==DmxController::Result::storage_full?"storage_full":result.domain==DmxController::Result::archive_conflict?"conflict":result.domain==DmxController::Result::archive_uncertain?"uncertain":
+                result.status==CommandStatus::applied||result.status==CommandStatus::no_change?"applied":result.status==CommandStatus::storage_error?"storage_error":"invalid";
+            self.archiveReply(self.flight_,status);self.abortArchive();
+        } else self.reply(self.flight_,result.status,uint8_t(result.domain));
     }
 }
 Event Bridge::wifiState(Kind kind,uint32_t id) {
@@ -258,4 +268,49 @@ Event Bridge::settingsState(Kind kind,uint32_t id) {
 void Bridge::broadcastSettings(Event& e) {
     Guard guard(lock_);for(auto& c:clients_)if(c.active&&c.ready&&c.settings)push(c,e);
 }
+void Bridge::abortArchive(){
+    controller_.discardArchive();if(archive_.buffer&&archive_.capacity){const size_t size=std::min(size_t(archive_.total),archive_.capacity);memset(archive_.buffer,0,size);}
+    archive_.mode=0;archive_.owner=0;archive_.total=archive_.received=0;
+}
+bool Bridge::archiveAllowed(void* context){auto& b=*static_cast<Bridge*>(context);return b.sender_&&b.archive_.mode&&b.hasGeneration(b.archive_.owner)&&(!b.maintenance_||!b.maintenance_->active())&&(!b.wifi_||!b.wifi_->active());}
+void Bridge::archiveReply(const Request& r,const char* status,size_t length){
+    auto e=state(Kind::archive_result,r.id);e.reason=status;
+    if(archive_.owner==r.token.generation){e.archive_token=archive_.token;e.archive_total=archive_.total;e.archive_offset=archive_.received;e.archive_count=archive_.count;}
+    if(length){e.archive_offset=r.archive_offset;e.archive_length=uint16_t(length);memcpy(e.values,archive_.buffer+r.archive_offset,length);}
+    Guard guard(lock_);if(auto* c=client(r.token)){if(c->outstanding)--c->outstanding;push(*c,e);}
+}
+bool Bridge::archiveRequest(Request& r){
+    if(!archive_.buffer||archive_.capacity<preset_archive::max_file){archiveReply(r,"unavailable");return false;}
+    if(r.archive==1||r.archive==3){
+        if(archive_.mode){archiveReply(r,"busy");return false;}
+        if(archive_.counter==UINT32_MAX){archiveReply(r,"unavailable");return false;}
+        archive_.owner=r.token.generation;archive_.token=++archive_.counter;archive_.started=archive_.touched=lock_.nowMs();archive_.received=archive_.count=0;archive_.base=controller_.presetRevision();
+        if(r.archive==1){
+            const auto capture_start=lock_.nowUs();
+            const auto result=controller_.captureArchive();
+            const auto captured=lock_.nowUs();
+            if(result!=DmxController::Result::ok){archiveReply(r,"storage_error");abortArchive();return false;}
+            archive_.total=uint32_t(preset_archive::serialize(controller_.archive(),archive_.buffer,archive_.capacity));archive_.count=uint8_t(preset_archive::count(controller_.archive().present));controller_.discardArchive();
+            lock_.archivePrepared(uint32_t(captured-capture_start),uint32_t(lock_.nowUs()-captured),archive_.count);
+            if(!archive_.total){archiveReply(r,"invalid");abortArchive();return false;}archive_.mode=1;
+        }else{archive_.mode=2;archive_.total=r.archive_total;}
+        archiveReply(r,"ready");return false;
+    }
+    if(!archive_.mode||archive_.owner!=r.token.generation||archive_.token!=r.archive_token){archiveReply(r,"unauthorized");return false;}
+    archive_.touched=lock_.nowMs();
+    if(r.archive==6){archiveReply(r,"cancelled");abortArchive();return false;}
+    if(r.archive==2&&archive_.mode==1&&r.archive_offset<archive_.total){archiveReply(r,"data",std::min(size_t(preset_archive::export_chunk_size),size_t(archive_.total-r.archive_offset)));return false;}
+    if(r.archive==4&&archive_.mode==2&&r.archive_offset==archive_.received&&r.archive_length&&r.archive_length<=archive_.total-archive_.received){
+        memcpy(archive_.buffer+archive_.received,r.archive_data,r.archive_length);archive_.received+=r.archive_length;archiveReply(r,"staged");return false;
+    }
+    if(r.archive==5&&archive_.mode==2&&archive_.received==archive_.total){
+        preset_archive::Gate gate;gate.check=archiveAllowed;gate.context=this;
+        const auto result=controller_.stageArchive(archive_.buffer,archive_.total,archive_.base,gate);
+        if(result!=DmxController::Result::ok){archiveReply(r,result==DmxController::Result::archive_conflict?"conflict":"invalid");abortArchive();return false;}
+        archive_.count=uint8_t(preset_archive::count(controller_.archive().present));archive_.mode=3;
+        r.command.type=CommandType::replace_presets;r.command.source=CommandSource::external;r.command.payload.archive_token=controller_.archiveToken();return true;
+    }
+    archiveReply(r,"invalid");abortArchive();return false;
+}
+
 }

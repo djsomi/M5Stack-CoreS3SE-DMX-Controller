@@ -3,7 +3,7 @@
 #include "wifi_configuration.h"
 #include "wifi_startup_trace.h"
 namespace network_service {
-enum class Phase : uint8_t { disabled, prepared, starting, ready, failed };
+enum class Phase : uint8_t { disabled, prepared, starting, stopping, ready, failed };
 struct Memory {
     uint32_t at_ms, internal, minimum, largest, dma, psram;
 };
@@ -16,6 +16,8 @@ struct Status {
     Memory before, after, current;
     uint32_t ui_revision, max_clients;
     bool router_option_disabled, reset_pending;
+    bool enabled, radio_on; // Persisted intent versus confirmed driver start.
+    int power_error;
 };
 // Owner/setup only, before M5/ADC/Wi-Fi/DMX initialization. No credentials logged.
 void prepare();
@@ -23,6 +25,9 @@ WifiConfiguration& configuration();
 void setConfigurationBusy(bool busy);
 // Owner/setup only. UI buffers must already be reserved. Worker owns all radio/HTTP.
 void launch(bool canvas_reserved);
+// Local owner only; verified separate dmxwifi/enabled U8, absent => ON.
+// Reject during startup/teardown or an approved credential transaction.
+bool requestEnabled(bool enabled);
 void ownerTick(int64_t now, uint32_t tx_errors, bool tx_stopped);
 Status status();
 const char* ssid();

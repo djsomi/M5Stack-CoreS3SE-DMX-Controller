@@ -12,10 +12,10 @@
     function clearTimer() { if (timer !== null) runtime.clearTimeout(timer); timer = null; }
     function invalidate() { clearTimer(); entries.clear(); flight = null; }
     function barrier() { invalidate(); epoch = (epoch + 1) >>> 0; }
-    function operationDelay() {
+    function operationDelay(limit = 18) {
       const now = clock();
       while (sent.length && now - sent[0] >= 1000) sent.shift();
-      return sent.length >= 18 ? Math.max(0, 1001 - (now - sent[0])) : 0;
+      return sent.length >= limit ? Math.max(0, 1001 - (now - sent[0])) : 0;
     }
     function intent(channel, value, active) {
       if (!available() || !Number.isInteger(channel) || channel < 1 || channel > 512 ||
@@ -79,7 +79,7 @@
       epoch: () => epoch,
       value: channel => read.channel(channel),
       operationDelay,
-      reserveOperation() { if (operationDelay()) return false; sent.push(clock()); return true; },
+      reserveOperation(limit = 18) { if (operationDelay(limit)) return false; sent.push(clock()); return true; },
       hold(active) { if (active) barrier(); held = active; notify(); },
       edit(channel, value) { return intent(channel, value, true); },
       setFinal(channel, value) { return intent(channel, value, false); },

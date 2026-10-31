@@ -10,12 +10,12 @@ import re
 MODULES = (
     ("protocol", ()), ("commands", ()), ("state", ()),
     ("transport", ("protocol", "commands")), ("control", ()), ("actions", ()), ("preferences", ()), ("fader", ()),
-    ("editor", ("fader",)), ("presets", ()), ("settings", ()),
+    ("editor", ("fader",)), ("presets", ()), ("archives", ()), ("settings", ()),
     ("status", ()), ("shell", ()),
-    ("app", ("state", "transport", "control", "actions", "preferences", "editor", "presets", "settings", "status", "shell")),
+    ("app", ("state", "transport", "control", "actions", "preferences", "editor", "presets", "archives", "settings", "status", "shell")),
 )
 CORE = ("protocol", "commands", "state", "transport", "control", "actions", "preferences")
-UI = ("fader", "editor", "presets", "settings", "status", "shell", "app")
+UI = ("fader", "editor", "presets", "archives", "settings", "status", "shell", "app")
 OUTPUTS = ("core.js", "ui.js")
 
 

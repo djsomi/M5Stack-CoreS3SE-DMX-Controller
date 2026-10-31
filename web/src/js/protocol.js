@@ -16,7 +16,13 @@
     if (!message || Array.isArray(message) || message.v !== 1 || !integer(message.id, 0, 4294967295)) fail();
     const revision = counter(message.revision), sequence = counter(message.seq);
     let extra;
-    if (["wifi.snapshot", "wifi.update", "wifi.result"].includes(message.type)) {
+    if (message.type === "presets.result") {
+      extra = ["status", "token", "offset", "bytes", "count", "data"];
+      if (!message.id || !sequence || !["ready", "data", "staged", "applied", "cancelled", "invalid", "busy", "conflict", "storage_error", "storage_full", "uncertain", "unavailable", "unauthorized", "expired"].includes(message.status) ||
+          !integer(message.token, 0, 4294967295) || !integer(message.bytes, 0, 32768) || !integer(message.offset, 0, message.bytes) ||
+          !integer(message.count, 0, 8) || typeof message.data !== "string" || message.data.length > 684 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(message.data)) fail("protocol_archive");
+    } else if (["wifi.snapshot", "wifi.update", "wifi.result"].includes(message.type)) {
       extra = ["base", "ssid", "proposed", "origin", "phase", "reason", "request", "remaining_ms", "password_change", "available"];
       if (!revision || !sequence || !counter(message.base) || typeof message.ssid !== "string" || !/^[\x20-\x7e]{0,32}$/.test(message.ssid) ||
           typeof message.proposed !== "string" || !/^[\x20-\x7e]{0,32}$/.test(message.proposed) ||
@@ -79,7 +85,7 @@
       }
     } else if (message.type === "command.ack" || message.type === "command.error") {
       extra = ["status", "domain"];
-      if (!integer(message.domain, 0, 11)) fail();
+      if (!integer(message.domain, 0, 14)) fail();
       if (message.type === "command.ack") {
         if (!message.id || !sequence || !["applied", "no_change"].includes(message.status)) fail();
       } else {

@@ -32,7 +32,7 @@
       pending = null; controls.hold(false);
       const name = result.type === "blackout.set" ? "Blackout " + (result.active ? "ON" : "OFF") : "P" + result.slot + " " + result.type.slice(7);
       if (result.kind === "command.ack") record(result, "success", name + " confirmed by Controller (" + result.status + ").");
-      else record(result, "failed", name + " failed: " + result.status +
+      else record(result, "failed", result.domain === 14 ? "Preset storage full. Export a backup; check NVS capacity before retrying. Do not reset presets." : name + " failed: " + result.status +
         (result.status === "storage_error" ? ". Persistent slot may have changed; refreshing state." : ". Showing Controller state."));
       refreshTimer(); notify();
       if (result.status === "storage_error" || result.status === "transport_error") client.resync();

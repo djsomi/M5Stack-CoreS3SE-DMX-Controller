@@ -1,6 +1,6 @@
 // module: app
-// requires: state,transport,control,actions,preferences,editor,presets,settings,status,shell
-({state, transport, control, actions, preferences, editor, presets, settings, status, shell}) => {
+// requires: state,transport,control,actions,preferences,editor,presets,archives,settings,status,shell
+({state, transport, control, actions, preferences, editor, presets, archives, settings, status, shell}) => {
   let started = false;
   function start() {
     if (started) return; started = true;
@@ -21,6 +21,7 @@
     const presetView = presets.mount(document, read, operations, runtime), statusView = status.mount(document, read, label, {fetch: window.fetch?.bind(window), AbortController: window.AbortController,
       ...runtime}, schedule);
     const settingsView = settings.mount(document, prefs, editorView.render, client, read, schedule, runtime);
+    const archiveView = archives.mount(document, window, read, client, writes, operations, schedule);
     function text(id, value) { const node = document.getElementById(id); if (node.textContent !== value) node.textContent = value; }
     function render() {
       frame = null; const current = read.current();
@@ -45,7 +46,7 @@
       text("blackout-summary-detail", pendingBlackout ? "Awaiting Controller confirmation" : operation.last?.type === "blackout.set" && operation.last.status !== "success" ? operation.last.message : current.ready ? "" : "Awaiting live data");
       if (!document.getElementById("view-editor").hidden) editorView.render();
       else { editorView.leave(); writes.leave(); }
-      if (!document.getElementById("view-presets").hidden) presetView.render(); else presetView.leave();
+      if (!document.getElementById("view-presets").hidden) { presetView.render(); archiveView.render(); } else presetView.leave();
       settingsView.setActive(!document.hidden && !document.getElementById("view-settings").hidden);
       if (!document.getElementById("view-settings").hidden) settingsView.render();
       store.diagnostics({renderedRevision: current.ready ? current.revision : null}, false);
