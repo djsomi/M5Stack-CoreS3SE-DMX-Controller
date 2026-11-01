@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests/network"))
 import build_provenance as provenance
 import package_release_candidate as candidate
+import distribution_notices as notices
 import web_asset_pipeline as assets
 from release_guard_support import prior
 
@@ -104,8 +105,13 @@ class ReleaseTests(unittest.TestCase):
             candidate.validate_components(self.folder, bad, self.folder, self.folder)
 
     def make_zip(self, extra=False, wrong_hash=False):
-        for name in candidate.MEMBERS - {"SHA256SUMS.txt"}:
+        notices.copy(ROOT, self.folder)
+        candidate.copy_documentation(ROOT, self.folder)
+        for name in candidate.MEMBERS - {"SHA256SUMS.txt", *notices.FILES, *candidate.RELEASE_DOCUMENTS}:
             (self.folder / name).write_bytes(name.encode())
+        (self.folder / "manifest.json").write_text(json.dumps(
+            {"distribution_notices": notices.file_manifest(ROOT), "release_candidate": True,
+             "distribution_documentation": candidate.documentation_manifest(ROOT)}), encoding="utf-8")
         sums = ''.join(hashlib.sha256((self.folder / name).read_bytes()).hexdigest()+"  "+name+"\n"
                        for name in sorted(candidate.MEMBERS - {"SHA256SUMS.txt"}))
         if wrong_hash:
@@ -129,6 +135,101 @@ class ReleaseTests(unittest.TestCase):
     def test_bad_checksum_rejected(self):
         with self.assertRaises(ValueError):
             candidate.verify_zip(self.make_zip(wrong_hash=True), self.folder)
+
+    def rewrite_zip(self, path, change):
+        with zipfile.ZipFile(path) as archive:
+            files = {name: archive.read(name) for name in archive.namelist()}
+        change(files)
+        for name, data in files.items():
+            if name != "SHA256SUMS.txt":
+                target = self.folder / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+        files["SHA256SUMS.txt"] = ''.join(candidate.sha(data)+"  "+name+"\n"
+            for name, data in sorted(files.items()) if name != "SHA256SUMS.txt").encode()
+        (self.folder / "SHA256SUMS.txt").write_bytes(files["SHA256SUMS.txt"])
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in files.items(): archive.writestr(name, data)
+
+    def test_required_document_inventory_is_exact_and_checksums_cover_all(self):
+        self.assertEqual(candidate.RELEASE_DOCUMENTS, ("KNOWN_ISSUES.md",
+            "docs/V0_3_0_DOCUMENTATION_COVERAGE.md", "docs/PRESET_EXPORT_IMPORT.md"))
+        path = self.make_zip()
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["distribution_documentation"], candidate.documentation_manifest(ROOT))
+            for row in manifest["distribution_documentation"]:
+                self.assertEqual(candidate.sha(archive.read(row["path"])), row["sha256"])
+                self.assertIn(row["sha256"]+"  "+row["path"], archive.read("SHA256SUMS.txt").decode())
+        candidate.verify_zip(path, self.folder)
+
+    def test_missing_or_modified_document_rejected_even_with_updated_checksums(self):
+        for name in candidate.RELEASE_DOCUMENTS:
+            with self.subTest(name=name, defect="missing"):
+                path = self.make_zip()
+                self.rewrite_zip(path, lambda files: files.pop(name))
+                with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder)
+            with self.subTest(name=name, defect="modified"):
+                path = self.make_zip()
+                self.rewrite_zip(path, lambda files: files.update({name: files[name]+b"changed\n"}))
+                with self.assertRaisesRegex(ValueError, "modified release document"):
+                    candidate.verify_zip(path, self.folder)
+
+    def test_forged_document_fingerprint_and_stable_classification_rejected(self):
+        path = self.make_zip()
+        def forge(files):
+            manifest = json.loads(files["manifest.json"])
+            manifest["distribution_documentation"][0]["sha256"] = "0"*64
+            files["manifest.json"] = candidate.dump(manifest)
+        self.rewrite_zip(path, forge)
+        with self.assertRaisesRegex(ValueError, "documentation manifest"):
+            candidate.verify_zip(path, self.folder)
+        path = self.make_zip()
+        def stable(files):
+            manifest = json.loads(files["manifest.json"]);manifest["release_candidate"] = False
+            files["manifest.json"] = candidate.dump(manifest)
+        self.rewrite_zip(path, stable)
+        with self.assertRaisesRegex(ValueError, "stable release classification"):
+            candidate.verify_zip(path, self.folder)
+
+    def test_duplicate_or_unapproved_document_archive_member_rejected(self):
+        for name in ("KNOWN_ISSUES.md", "docs/FT6336U_THDIFF_ABA_TEST.md", "logs/private.txt"):
+            path = self.make_zip()
+            with zipfile.ZipFile(path, "a") as archive: archive.writestr(name, b"not permitted")
+            with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder)
+
+    def document_source(self):
+        root = self.folder / "document-inputs"
+        for name in candidate.RELEASE_DOCUMENTS:
+            path = root / name;path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"# Synthetic public document\n")
+        return root
+
+    def test_document_canonicalization_missing_inputs_and_link_validation(self):
+        root = self.document_source()
+        original = candidate.documentation_manifest(root)
+        for name in candidate.RELEASE_DOCUMENTS:
+            path = root / name
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertEqual(original, candidate.documentation_manifest(root))
+        for name in candidate.RELEASE_DOCUMENTS:
+            path = root / name;data = path.read_bytes();path.unlink()
+            with self.assertRaisesRegex(ValueError, "required release document"):
+                candidate.documentation_manifest(root)
+            path.write_bytes(data)
+        (root / "KNOWN_ISSUES.md").write_text("[Backup](docs/PRESET_EXPORT_IMPORT.md)\n")
+        self.assertEqual(candidate.documentation_links(root), ["docs/PRESET_EXPORT_IMPORT.md"])
+        for target in ("docs/not-present.md", "../../outside.md"):
+            (root / "KNOWN_ISSUES.md").write_text("[Missing]("+target+")\n")
+            with self.assertRaisesRegex(ValueError, "documentation link"):
+                candidate.documentation_links(root)
+        (root / "dist").mkdir();(root / "dist/private.log").write_bytes(b"synthetic")
+        (root / "KNOWN_ISSUES.md").write_text("[Private](dist/private.log)\n")
+        with self.assertRaisesRegex(ValueError, "private build/history link"):
+            candidate.documentation_links(root)
+        (root / "KNOWN_ISSUES.md").write_text("Synthetic forbidden path: C:/Users/fixture-user/private\n")
+        with self.assertRaisesRegex(ValueError, "personal machine path"):
+            candidate.documentation_links(root)
 
     def test_manifest_and_source_input_paths(self):
         data = provenance.input_manifest(ROOT)

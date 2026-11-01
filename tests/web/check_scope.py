@@ -18,6 +18,11 @@ ALLOWED = {"include/captured_fader_touch.h", "include/physical_fader_diagnostics
 
 
 def check():
+    # Publication-only offline tooling: never imported by firmware/build hooks.
+    ALLOWED.add('scripts/distribution_notices.py')
+    ALLOWED.update({'scripts/frozen_source.py', 'scripts/publication_materials.py',
+                    'scripts/publication_release.py', 'scripts/validate_relink.py',
+                    'scripts/source_material_inventory.py'})
     check_archive()
     ALLOWED.update({'include/preset_archive.h','include/preset_archive_store.h'})
     ALLOWED.update({'include/touch_acquisition_diagnostics.h','src/touch_acquisition_diagnostics.cpp','scripts/touch_acquisition_trace.py'})

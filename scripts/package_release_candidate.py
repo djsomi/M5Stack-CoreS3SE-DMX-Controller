@@ -4,19 +4,23 @@ import difflib
 import hashlib
 import json
 from pathlib import Path
+import re
 import zipfile
 
 from build_provenance import identity, input_manifest, git, INPUTS
 from firmware_layout import EXPECTED, LAYOUT_ID, validate_image, partition_sdk, validate_table
 from package_firmware import package
 from web_asset_pipeline import ROOT, verify, build_source_digest
+import distribution_notices
 
 PROFILES = {"cores3se_unit": "UNIT", "cores3se_base": "BASE-EXPERIMENTAL"}
 DOCS = ("docs/V0_3_0_INSTALLATION.md", "docs/V0_3_0_MIGRATION_ACCEPTANCE.md")
+RELEASE_DOCUMENTS = ("KNOWN_ISSUES.md", "docs/V0_3_0_DOCUMENTATION_COVERAGE.md",
+                     "docs/PRESET_EXPORT_IMPORT.md")
 BINARIES = {"bootloader.bin": 0, "partitions.bin": 0x8000,
             "boot_app0.bin": 0xe000, "firmware.bin": 0x10000}
 MEMBERS = set(BINARIES) | {"manifest.json", "SHA256SUMS.txt", "INSTALL.md",
-                            "MIGRATION-TEST.md", "SOURCE-MANIFEST.json", "SOURCE.patch"}
+                            "MIGRATION-TEST.md", "SOURCE-MANIFEST.json", "SOURCE.patch"} | set(distribution_notices.FILES) | set(RELEASE_DOCUMENTS)
 
 
 def sha(data):
@@ -27,8 +31,62 @@ def dump(data):
     return (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def documentation_manifest(root):
+    rows = []
+    for name in RELEASE_DOCUMENTS:
+        path = Path(root) / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("missing/unsafe required release document: " + name)
+        data = distribution_notices.canonical_file(path)
+        rows.append(dict(path=name, bytes=len(data), sha256=sha(data)))
+    return rows
+
+
+def documentation_links(root):
+    """Check repository-context links; do not copy their targets into bundles."""
+    root = Path(root).resolve()
+    targets = set()
+    documentation_manifest(root)
+    for name in RELEASE_DOCUMENTS:
+        text = distribution_notices.canonical_file(root / name).decode("utf-8")
+        if re.search(r"[A-Za-z]:[/\\]Users[/\\](?!<user>(?:[/\\]|$))[^/\\\s]+", text):
+            raise ValueError("personal machine path in release document: " + name)
+        for target in re.findall(r'\]\(([^)]+)\)', text):
+            if target.startswith(("https://", "http://", "mailto:", "#")):
+                continue
+            target = target.split("#", 1)[0]
+            path = (root / name).parent.joinpath(target).resolve()
+            if not path.is_relative_to(root) or not path.exists():
+                raise ValueError("missing/unsafe documentation link: " + name + " -> " + target)
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith(("dist/", "_kezdeti", ".git/", ".pio/")):
+                raise ValueError("private build/history link in release document: " + relative)
+            targets.add(relative)
+    return sorted(targets)
+
+
+def copy_documentation(root, folder):
+    rows = documentation_manifest(root)
+    documentation_links(root)
+    for row in rows:
+        target = Path(folder) / row["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(distribution_notices.canonical_file(Path(root) / row["path"]))
+    return rows
+
+
+def verify_documentation(folder, root, manifest):
+    expected = documentation_manifest(root)
+    if manifest.get("distribution_documentation") != expected:
+        raise ValueError("missing/incorrect documentation manifest")
+    for row in expected:
+        if (Path(folder) / row["path"]).read_bytes() != distribution_notices.canonical_file(Path(root) / row["path"]):
+            raise ValueError("missing/modified release document: " + row["path"])
+
+
 def source_patch(root):
-    paths = (*INPUTS, "tests", "README.md", *DOCS, "docs/V0_3_0_RELEASE_NOTES_DRAFT.md")
+    paths = (*INPUTS, "tests", ".gitattributes", "README.md", *distribution_notices.FILES,
+             *DOCS, *RELEASE_DOCUMENTS, "docs/V0_3_0_RELEASE_NOTES_DRAFT.md", "docs/V0_3_0_PUBLICATION_READINESS.md")
     data = git(root, "diff", "--binary", "HEAD", "--", *paths)
     extras = git(root, "ls-files", "-z", "--others", "--exclude-standard", "--", *paths)
     for name in sorted(p for p in extras.decode().split("\0") if p and "__pycache__" not in Path(p).parts):
@@ -76,13 +134,20 @@ def validate_components(folder, manifest, framework, esptool):
             raise ValueError("missing linked provenance")
 
 
-def verify_zip(path, folder):
+def verify_zip(path, folder, root=ROOT):
+    distribution_notices.verify_tree(folder, root)
     with zipfile.ZipFile(path) as z:
         if len(z.namelist()) != len(MEMBERS) or set(z.namelist()) != MEMBERS or z.testzip():
             raise ValueError("unexpected/corrupt archive contents")
         for name in MEMBERS:
             if z.read(name) != (folder / name).read_bytes():
                 raise ValueError("archive differs from verified bundle")
+        manifest = json.loads(z.read("manifest.json"))
+        if manifest.get("distribution_notices") != distribution_notices.file_manifest(root):
+            raise ValueError("missing/incorrect notice manifest")
+        verify_documentation(folder, root, manifest)
+        if manifest.get("release_candidate") is not True:
+            raise ValueError("candidate archive cannot claim stable release classification")
         sums = z.read("SHA256SUMS.txt").decode("ascii").splitlines()
         expected = MEMBERS - {"SHA256SUMS.txt"}
         found = set()
@@ -99,6 +164,8 @@ def create(root, environment, output, framework, esptool):
     root, output = Path(root), Path(output)
     if environment not in PROFILES:
         raise ValueError("diagnostic/unrecognized environment cannot be a release candidate")
+    distribution_notices.verify_installed(root / ".pio/libdeps" / environment, framework,
+                                         Path(framework).parent / "toolchain-xtensa-esp32s3", root)
     digest = build_source_digest(root)
     expected = identity(root, environment, digest)
     build = root / ".pio/build" / environment
@@ -111,7 +178,11 @@ def create(root, environment, output, framework, esptool):
     if folder.exists() or archive.exists():
         raise FileExistsError("candidate destination already exists; never overwritten")
     package(root, environment, folder)
+    distribution_notices.copy(root, folder)
+    documents = copy_documentation(root, folder)
     manifest = dict(receipt, schema=2, release_candidate=True, diagnostics=False,
+                    distribution_notices=distribution_notices.file_manifest(root),
+                    distribution_documentation=documents,
                     hardware_status="recommended" if environment == "cores3se_unit" else "experimental",
                     physical_migration_validation="pending",
                     nvs=dict(offset=0x9000, size=0x5000, erased_by_images=False),
@@ -132,6 +203,12 @@ def create(root, environment, output, framework, esptool):
     pairs = " ".join("0x%04x %s" % (c["offset"], c["file"]) for c in manifest["components"])
     install = "# Local candidate: " + name + "\n\n"
     install += "Version: `%s`; environment: `%s`; Git HEAD: `%s`; modified inputs: `%s`.\n\n" % (expected["version"], environment, expected["source_commit"], expected["source_modified"])
+    install += "## Packaged public documentation\n\n"
+    install += "\n".join("- [%s](%s)" % (n, n) for n in RELEASE_DOCUMENTS) + "\n\n"
+    install += ("These files retain repository-context evidence links. Resolve links outside this sparse bundle "
+                "against the matching source/publication checkout; historical investigation files are not bundled. "
+                "This candidate records HEAD plus SOURCE.patch, not a completed stable publication. "
+                "A final frozen-firmware distribution must identify its later publication commit separately.\n\n")
     install += "| File | Offset | Bytes |\n|---|---:|---:|\n" + table + "\n\n"
     install += (root / DOCS[0]).read_text(encoding="utf-8")
     install += "\n## Exact command for this bundle\n\nNOT EXECUTED. Replace PORT; first verify checksums, profile, capacity, backup and acceptance gates.\n\n```text\npython -m esptool --chip esp32s3 --port PORT --baud 1500000 write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB " + pairs + "\n```\n"
@@ -146,7 +223,7 @@ def create(root, environment, output, framework, esptool):
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             z.writestr(info, (folder / n).read_bytes(), compresslevel=9)
-    verify_zip(archive, folder)
+    verify_zip(archive, folder, root)
     if identity(root, environment, build_source_digest(root)) != expected:
         raise ValueError("source changed during packaging")
     return archive

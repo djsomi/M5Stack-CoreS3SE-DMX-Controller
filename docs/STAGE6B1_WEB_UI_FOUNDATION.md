@@ -118,7 +118,7 @@ python -B scripts/web_asset_pipeline.py
 ```
 
 On this Windows installation the pinned interpreter is
-`C:/Users/somog/.platformio/penv/Scripts/python.exe`. Ordinary PlatformIO builds
+`C:/Users/<user>/.platformio/penv/Scripts/python.exe`. Ordinary PlatformIO builds
 only verify the checked-in bundle, gzip files and manifest; stale authored
 modules or generated output fail clearly. Verification never regenerates
 checked-in files. Explicit generation first composes `web/src/app.js`, then uses

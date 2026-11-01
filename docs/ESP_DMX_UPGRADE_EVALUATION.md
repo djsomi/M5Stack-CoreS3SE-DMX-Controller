@@ -40,7 +40,7 @@ V2 = .pio/libdeps/cores3se_unit/esp_dmx/src/
 E  = dist/esp-dmx-v410-evaluation-20261024/
 V4 = E/upstream/src/
 P  = E/project/
-SDK = C:/Users/somog/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/
+SDK = C:/Users/<user>/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/
 ```
 
 `E` is an ignored, separate temporary evaluation project, not a replacement

@@ -353,7 +353,7 @@ arrangement (Battery Bottom for a powered Unit DMX). Close other COM8 monitors.
 The following commands are provided for the user, **not executed here**:
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\somog\Downloads\MyCodes\esp dmx controller'
+Set-Location -LiteralPath 'C:\path\to\M5Stack-CoreS3SE-DMX-Controller'
 pio run -e cores3se_unit -t upload --upload-port COM8
 pio device monitor -e cores3se_unit --port COM8 --baud 115200 --rts 0 --dtr 0 --filter time --filter log2file
 ```

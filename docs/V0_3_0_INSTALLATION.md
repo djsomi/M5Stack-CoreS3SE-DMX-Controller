@@ -1,6 +1,14 @@
 # v0.3.0 installation and migration
 
-This describes installation of a newly built, verified v0.3.0 stable bundle.
+Distributable ZIPs must include LICENSE, THIRD_PARTY_NOTICES.md and the complete
+license text/manifest under `licenses/`, covered by internal checksums. See the
+[publication supplement](V0_3_0_PUBLICATION_READINESS.md) for source/relink delivery
+and immutable-tag provenance; this document does not authorize publication.
+
+This describes installation of a verified sparse v0.3.0 stable bundle using
+the accepted frozen images; it does not require replacing those images with
+a build from a later publication checkout. Firmware and packaging provenance
+are distinct. Final stable bundles have not been published by this audit.
 Local source closure does not publish binaries. Original `0.3.0-rc.1` archives
 and their checksums remain historical candidates and must not be relabeled.
 The simplified Unit v0.2 migration and final preset functionality have user-
@@ -55,8 +63,9 @@ The image validator checks actual images and 4 KiB erase rounding. These
 separate ranges exclude NVS `[0x9000,0xe000)`. The partition-table sector ends
 at 0x9000. OTA metadata is intentionally reset to boot app0. First application
 boot adds Wi-Fi records, so compare legacy keys afterward rather than demanding
-whole-NVS byte equality. Preset `dmxpreset`, metadata `dmxmeta` and UI `dmxui`
-schemas are unchanged. A backup is still required; SDK startup error recovery
+whole-NVS byte equality. Legacy `dmxpreset/p1..p8`, metadata `dmxmeta/cleared` and UI `dmxui`
+values remain readable. v0.3.0 adds generation-backed preset storage after
+adoption; this is not a claim that every new NVS record uses the old format. A backup is still required; SDK startup error recovery
 may format broken/incompatible NVS.
 
 **Do not flash a padded FULL.bin at zero:** public v0.2.0 FULL images contain
@@ -81,7 +90,8 @@ two-second RESET WIFI action changes Wi-Fi on the next explicit restart;
 it does not erase presets/settings. The separate Wi-Fi ON/OFF control requires
 a one-second hold, persists across reboot and remains accessible with radio OFF.
 
-Factory passwords are predictable. Change them before shared use. WPA2 association
+Factory passwords are predictable. **Change the password before use in any untrusted
+environment.** WPA2 association
 is not a separate authorization mechanism for DMX/maintenance; HTTP/WS is local
 and unencrypted at the application layer. No STA/AP+STA or authenticated OTA
 updater is provided.
@@ -102,3 +112,35 @@ collection. A later mutation may reclaim only redundant p1–p8 keys after the
 selected collection is verified; unrelated namespaces are untouched. Export a
 JSON backup before downgrading. v0.2 cannot read generation banks or depend on
 reclaimed stale blobs. Do not erase NVS to resolve a storage-full error.
+
+## Operational and migration acceptance boundaries
+
+The accepted simplified physical test upgraded **Unit v0.2.0 to rc.1**, not the
+final frozen stable ZIP. That test deliberately erased data only while preparing
+the genuine v0.2.0 baseline, with the user's approval, then verified that seeded
+presets/non-default settings survived the selective upgrade and reboot. Do not
+confuse initial test preparation with a migration failure. Final stable-bundle
+verification, separate Base migration, preboot raw NVS equality and interrupted-
+upgrade recovery are not established by that historical acceptance.
+
+Before distribution, resolve firmware and source/notice archive checksums against
+the frozen source and a separately reviewed publication commit. Retain the
+original tag and RCs. Do not label candidate files as stable or distribute only
+firmware while omitting corresponding source/build/relink and license material.
+See [source inventory](V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md) and
+[release evidence](V0_3_0_DOCUMENTATION_COVERAGE.md).
+
+After connecting, change the factory password before untrusted use. Windows
+Intel AX200 driver **24.20.2.1** users with packet loss/WS instability can use the
+user-verified **Device Manager > Intel Wi-Fi 6 AX200 > Advanced > MIMO Power Save
+Mode > No SMPS** workaround. It is a client compatibility issue, not a confirmed
+firmware defect or a guarantee for every driver. The accepted fixed-scale web UI
+limits zoom accessibility; native synchronous sends can still stall temporarily.
+
+For Backup, **keep this browser tab open and active until the operation completes**.
+Hiding it intentionally cancels the transfer. If the import outcome is uncertain,
+resynchronize and inspect/export the collection before retrying; do not assume
+that loss of the result undoes a committed import. No automatic replay occurs.
+Full [known issues](../KNOWN_ISSUES.md) include Base, touchscreen, electrical,
+security, downgrade and recovery limits. Export does not include Wi-Fi credentials
+or device settings; it is a preset backup, not a full-device configuration backup.

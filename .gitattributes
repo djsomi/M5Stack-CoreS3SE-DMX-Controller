@@ -1,2 +1,5 @@
 web/generated/*.gz binary
 web/generated/manifest.json text eol=lf
+# Preserve upstream legal whitespace verbatim; integrity is checked by hashes.
+licenses/THIRD_PARTY_LICENSES.txt -whitespace
+licenses/source_materials/** -whitespace

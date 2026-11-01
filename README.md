@@ -92,13 +92,41 @@ normal release firmware; no separate Wi-Fi/no-Wi-Fi variant is needed.
 - [Migration acceptance and outstanding checks](docs/V0_3_0_MIGRATION_ACCEPTANCE.md)
 - [v0.3.0 release notes and limitations](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
 - [Changelog](CHANGELOG.md)
+- [Known issues and operating limits](KNOWN_ISSUES.md)
+- [Release claims and supporting evidence](docs/V0_3_0_DOCUMENTATION_COVERAGE.md)
 - [Preset Backup and Import/Export](docs/PRESET_EXPORT_IMPORT.md)
 
 Preset Save/Delete, Import/Export, reboot persistence and final Backup UI passed
-user-performed physical acceptance. The selective Unit migration retained seeded
-v0.2.0 presets/settings and reboot persistence. Separate Base migration and
+user-performed physical acceptance. The simplified Unit v0.2.0 → rc.1 migration retained seeded
+presets/settings and reboot persistence; it was not a test of the final stable ZIP. Separate Base migration and
 interrupted-upgrade recovery remain unverified; Unit acceptance does not certify
 Base. The upgrade excludes NVS at `0x9000`/`0x5000`.
+
+## Important operating notes
+
+**Change the predictable factory Wi-Fi password before use in untrusted
+environments.** Use web Settings and approve the exact change on the device.
+Associated clients share control; HTTP/WebSocket do not have separate encrypted,
+per-user administration. This is a local SoftAP, not an internet-facing service.
+
+**Keep this browser tab open and active until the operation completes** when
+using Backup Import/Export. Backgrounding intentionally suspends the connection
+and cancels transfers; recovery does not replay writes. Import replaces all
+P1–P8 slots, including empty slots, without changing live output. Export uses
+`DMX-Presets-YY-MM-DD-HH-mm.json` in local browser time. Export before downgrading:
+v0.2.0 cannot read generation-backed edits or rely on reclaimed legacy blobs.
+
+Windows/Intel Wi-Fi 6 AX200 **driver 24.20.2.1** has a user-reported SoftAP
+compatibility issue (packet loss/WebSocket instability). The verified client
+workaround is **Device Manager > Intel Wi-Fi 6 AX200 > Advanced > MIMO Power Save
+Mode > No SMPS**. This is not a confirmed firmware defect; see
+[known issues](KNOWN_ISSUES.md) for scope and evidence.
+
+The accepted mobile UI uses a fixed-scale viewport and limits pinch zoom.
+Historical synchronous TCP send stalls and slow physical touchscreen coordinate
+stalls remain disclosed limitations; no permanent timing/accessibility fix is
+claimed. Unit acceptance does not certify experimental Base hardware. Read the
+[full limitations](KNOWN_ISSUES.md) before installing or using live fixtures.
 
 ## Features
 
@@ -280,6 +308,16 @@ the physical-approval flow. Associated clients share control; WPA2 association i
 not a separate administrative authorization layer, and HTTP/WebSocket is not
 application-encrypted. No STA/AP+STA or OTA updater is implemented.
 
+**Change the factory Wi-Fi password before use in any untrusted environment.**
+Someone who can derive it and join the AP can access DMX, presets and maintenance.
+Physical Wi-Fi-change approval does not authenticate ordinary DMX commands.
+
+The accepted mobile UI intentionally restricts browser zoom to avoid the reproduced
+iOS gesture regression; this is an accessibility limitation. A slow TCP/WebSocket
+send can still block the shared HTTP task temporarily. Automatic recovery is not
+a guarantee of uninterrupted delivery. External DMX timing/coherence measurements
+remain outstanding; see [release limitations](docs/V0_3_0_RELEASE_NOTES_DRAFT.md).
+
 ## Battery Monitoring
 
 The UI displays:
@@ -410,9 +448,12 @@ in firmware; no filesystem upload is required.
 
 Build normally with `pio run -e cores3se_unit` or `pio run -e cores3se_base`.
 Read-only `/status` and web Status report version, build environment, Git HEAD,
-modified-input flag and source fingerprint. Stable distribution binaries must be
-rebuilt from the clean local v0.3.0 tag and match its source commit and fingerprint.
-An RC bundle or pre-commit build with `.modified` provenance is not that artifact.
+modified-input flag and source fingerprint. Stable distribution binaries must originate from the
+verified clean v0.3.0 source and match its accepted receipts, source commit,
+fingerprint and binary checksums. Reuse the accepted frozen images for later
+publication-only packaging; documentation edits do not require a replacement
+firmware build. Record the later publication commit separately. An RC bundle or
+pre-commit build with `.modified` provenance is not that artifact.
 The candidate packager remains a local validation tool; original RC archives and
 checksums are retained unchanged.
 
@@ -438,10 +479,12 @@ Possible future development:
 - CRMX-compatible hardware exploration
 - Fixture profiles
 - Named channels
-- Preset export / import
 - Additional battery statistics
 
 ---
+
+Preset export / import is completed in v0.3.0 (see Backup above); it is no longer
+a pending roadmap item.
 
 ## Original Source / Acknowledgements
 
@@ -463,19 +506,19 @@ Many thanks to **M5Stack** for publishing the original DMX512Tools example and m
 
 This project is released under the **MIT License**.
 
-Because this project is derived from M5Stack's MIT-licensed DMX512Tools example, the original M5Stack copyright and MIT license notice must be retained for portions derived from the upstream source.
+[LICENSE](LICENSE) preserves the original **Copyright (c) 2022 M5Stack** and
+complete upstream MIT text alongside the existing additional-project notice.
+[Third-party notices](THIRD_PARTY_NOTICES.md) inventory the exact audited library,
+SDK and runtime components. M5GFX contains BSD and other subcomponent terms beyond
+its top-level MIT license; Arduino-ESP32 is LGPL-2.1-or-later. The project MIT
+license does not replace those terms.
 
-A repository `LICENSE` file should therefore preserve the upstream MIT notice and clearly identify the additional modifications / contributions made in this project.
-
-Example attribution wording:
-
-```text
-Original DMX512Tools source:
-Copyright (c) M5Stack
-
-Additional modifications and project-specific code:
-Copyright (c) 2026 Zoltan Somogyvari
-```
+Firmware distribution includes the notice inventory and complete license texts.
+Before binary publication, complete the corresponding-source/relink delivery
+described in the [build and relink guide](docs/V0_3_0_LGPL_DELIVERY.md), including
+the [reviewed build-material inventory](docs/V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md).
+[Publication readiness](docs/V0_3_0_PUBLICATION_READINESS.md) distinguishes the
+immutable v0.3.0 firmware tag from later packaging work.
 
 ---
 

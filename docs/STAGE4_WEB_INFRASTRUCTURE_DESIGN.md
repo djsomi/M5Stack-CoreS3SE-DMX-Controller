@@ -76,7 +76,7 @@ choice, web asset directory or web packaging hook. Both current driver hooks
 remain required and outside this task's scope.
 
 The installed board manifest
-`C:/Users/somog/.platformio/platforms/espressif32/boards/esp32-s3-devkitc-1.json`
+`C:/Users/<user>/.platformio/platforms/espressif32/boards/esp32-s3-devkitc-1.json`
 selects `default_8MB.csv` and `upload.flash_size = 8MB`. Its generic N8/No-PSRAM
 description is not an inventory of the actual CoreS3SE. This board choice is
 why the build uses 8 MiB despite the measured physical 16,777,216 bytes.

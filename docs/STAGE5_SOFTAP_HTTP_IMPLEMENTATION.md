@@ -417,7 +417,7 @@ have the verified Stage 4B 16 MiB migration. Use the **normal Unit** environment
 first; no separate Serial/HWCDC initialization or diagnostic workaround:
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\somog\Downloads\MyCodes\esp dmx controller'
+Set-Location -LiteralPath 'C:\path\to\M5Stack-CoreS3SE-DMX-Controller'
 pio run -e cores3se_unit -t upload --upload-port COM8
 ```
 

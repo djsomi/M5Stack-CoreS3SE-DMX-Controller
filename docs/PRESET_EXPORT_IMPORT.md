@@ -84,7 +84,19 @@ See the final report/record below for exact build sizes and source fingerprint. 
 
 All prior network, HTTP deadlines, WebSocket, Controller, Dispatcher, transport, Settings, maintenance, Wi-Fi lifecycle, physical fader/navigation and diagnostics-isolation regressions are retained. Historical whole-file freeze checks use an exact hash-pinned inverse of this feature, while current functionality is tested separately; protected driver/UI/partition files are not broadly exempted.
 
-## Physical acceptance checklist (user-reported PASS)
+## Physical acceptance scope and extended checklist
+
+Final user-reported acceptance covers normal physical/web Save/Delete,
+Import/Export, reboot persistence and the final Backup UI on the tested controller.
+The following list also contains **proposed extended checks**, not a statement
+that every item/profile was physically passed. In particular, separate Base
+migration, controlled power cuts/injected flash faults, upper-flash checks and
+external DMX electrical/frame-gap measurements remain unverified. Normal
+acceptance does not certify those. See the final
+[coverage matrix](V0_3_0_DOCUMENTATION_COVERAGE.md) and
+[known issues](../KNOWN_ISSUES.md).
+
+### Extended operator checklist
 
 1. On Unit and experimental Base, export empty, sparse and eight occupied slots; verify first/last channels and byte-for-byte re-export. Confirm no credentials/settings appear.
 2. On iPhone Safari, Home Screen mode and desktop, check two cards, native download/save and native JSON picker. Cancel confirmation and verify presets unchanged.
