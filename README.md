@@ -1,556 +1,279 @@
-# M5Stack CoreS3SE DMX Controller
+# ESP DMX Controller — ESP32-S3 / M5Stack CoreS3SE
 
 ![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--S3-orange)
 ![DMX512](https://img.shields.io/badge/Protocol-DMX512-blue)
 ![M5Stack](https://img.shields.io/badge/Hardware-M5Stack-red)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-
-A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the **M5Stack CoreS3SE**. It provides a battery-powered touchscreen interface for controlling a full **512-channel DMX universe**, with presets, blackout, battery monitoring and support for **M5Stack Unit DMX** and **DMX Base** hardware. 
+An **open-source, portable ESP32 DMX512 lighting controller** for the **M5Stack CoreS3SE**. Control all 512 DMX channels from the touchscreen or an offline Wi-Fi web interface, with presets, blackout, battery monitoring and synchronized settings.
 
 > [!IMPORTANT]
-> **Recommended / tested setup:** M5Stack CoreS3SE + M5Stack Unit DMX (U183) + M5GO Bottom3.
+> **Recommended and tested:** M5Stack CoreS3SE + Unit DMX (U183) + M5GO Bottom3.
 
 > [!WARNING]
-> **Base DMX support is currently experimental.**
->
-> On the Base DMX unit tested during development, random DMX output glitches could be reproduced even with static channel values and simplified test firmware. The same CoreS3SE, fixtures and cabling operated without those glitches when using Unit DMX. This is currently being investigated with M5Stack support and should not be interpreted as a claim that all Base DMX units are affected.
-
----
-
-
+> **Base DMX support is experimental.** Random output glitches occurred on the Base DMX unit tested during development, even with static channel values and simplified firmware. The same CoreS3SE, fixtures and cabling worked without those glitches using Unit DMX. M5Stack support is investigating; this does **not** establish that all Base DMX units are affected.
 
 <p align="center">
-  <img
-    src="docs/images/hero.jpg"
-    width="100%"
-    alt="Portable M5Stack CoreS3SE ESP32-S3 DMX512 touchscreen controller">
+  <img src="docs/images/hero.jpg" width="100%" alt="ESP32 DMX Controller – M5Stack CoreS3SE portable DMX512 lighting controller with Wi-Fi web interface">
 </p>
 
 <table width="100%">
   <tr>
     <td align="center" width="50%">
-      <img
-        src="docs/images/unit-hardware.jpg"
-        width="100%"
-        alt="M5Stack CoreS3SE portable DMX controller with Unit DMX U183"><br>
+      <img src="docs/images/unit-hardware.jpg" width="100%" alt="M5Stack CoreS3SE portable DMX controller with Unit DMX U183"><br>
       <b>CoreS3SE + Unit DMX</b>
     </td>
     <td align="center" width="50%">
-      <img
-        src="docs/images/base-hardware.jpg"
-        width="100%"
-        alt="M5Stack CoreS3SE DMX controller with M5Stack DMX Base"><br>
-      <b>CoreS3SE + Base DMX</b>
+      <img src="docs/images/base-hardware.jpg" width="100%" alt="M5Stack CoreS3SE DMX controller with M5Stack DMX Base"><br>
+      <b>CoreS3SE + Base DMX (experimental)</b>
     </td>
   </tr>
 </table>
 
-### Application Screens
+## Device Screenshots
 
 <table>
   <tr>
     <td align="center">
-      <img src="docs/images/startup-screen.jpg" width="280"><br>
-      <b>Startup Screen</b>
+      <img src="docs/images/esp-dmx-controller-startup-screen.jpg" width="280" alt="ESP DMX Controller startup screen"><br>
+      <b>Startup</b>
     </td>
     <td align="center">
-      <img src="docs/images/main-screen.jpg" width="280"><br>
-      <b>Main DMX Screen</b>
+      <img src="docs/images/esp-dmx-controller-main-screen.jpg" width="280" alt="ESP DMX Controller main DMX channel screen"><br>
+      <b>Main Screen</b>
+    </td>
+    <td align="center">
+      <img src="docs/images/esp-dmx-controller-editor-screen.jpg" width="280" alt="ESP DMX Controller precision value editor"><br>
+      <b>Value Editor</b>
     </td>
   </tr>
   <tr>
     <td align="center">
-      <img src="docs/images/presets-screen.jpg" width="280"><br>
+      <img src="docs/images/esp-dmx-controller-preset-screen.jpg" width="280" alt="ESP DMX Controller preset management screen"><br>
       <b>Presets</b>
     </td>
     <td align="center">
-      <img src="docs/images/settings-screen.jpg" width="280"><br>
-      <b>Settings Screen</b>
+      <img src="docs/images/esp-dmx-controller-settings-screen.jpg" width="280" alt="ESP DMX Controller device settings screen"><br>
+      <b>Settings</b>
+    </td>
+    <td align="center">
+      <img src="docs/images/esp-dmx-controller-settings-screen-2.jpg" width="280" alt="ESP DMX Controller additional settings screen"><br>
+      <b>Additional Settings</b>
     </td>
   </tr>
 </table>
 
 ---
 
-## v0.3.0 — Wi-Fi and web control
+## v0.3.0 — Wi-Fi & Web Control
 
-Control all 512 channels from the touchscreen or the offline web interface at
-**http://192.168.4.1/**. Web Editor, Presets, Settings and Status share live
-Controller state. JSON Backup, blackout, Device Settings, Maintenance and physically
-approved Wi-Fi configuration are included.
+Connect to the controller's Wi-Fi using the credentials shown in its physical Settings screen, then open **http://192.168.4.1/**. The web interface works offline on desktop, tablet and mobile browsers, including iPhone Home Screen mode. Web Editor, Presets, Settings and Status share live controller state.
 
-Two complete factory images are built from this release source:
+- **Editor:** All 512 channels, with faders, fine adjustments and numeric entry.
+- **Presets:** Load (double-tap), save and delete P1–P8. Overwrites and deletions require confirmation.
+- **JSON Backup:** Transactional export/import of all eight preset slots, with timestamped downloads and progress dialogs. Import replaces every slot, including empty ones, without changing live DMX output. **Keep the browser tab active** during transfers.
+- **Blackout:** Transmits zeros while preserving the entry snapshot. Leaving blackout restores that snapshot; edits made during blackout are discarded.
+- **Settings & Maintenance:** Live previews, persistent settings saved on release, physical/web synchronization, browser preferences and confirmed restart/power-off. Maintenance actions allow five seconds for physical **CANCEL**.
+- **Wi-Fi Configuration:** Credential changes require physical **OK** within 60 seconds. A two-second **HOLD RESET WIFI** schedules a Wi-Fi-only reset on the next explicit restart; presets and device settings are retained.
 
-- `CoreS3SE-DMX-Unit-v0.3.0.bin` — recommended Unit DMX U183 + Battery Bottom.
-- `CoreS3SE-DMX-Base-v0.3.0.bin` — experimental Base DMX + external PSU.
+### Web Interface Screenshots
 
-**From v0.2.0:** erase flash, then install the matching factory BIN at 0x0.
-Presets/settings are lost. **For the tested current-format v0.3.0:** an application-
-only update without erase preserves presets/settings. Never use a factory BIN
-for that data-preserving update; it covers the NVS gap.
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-web-ui-editor.jpg">
+        <img src="docs/images/esp-dmx-controller-web-ui-editor.jpg" width="260" alt="ESP32 DMX Controller desktop Web Editor">
+      </a><br><b>DMX Editor</b>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-web-ui-preset.jpg">
+        <img src="docs/images/esp-dmx-controller-web-ui-preset.jpg" width="260" alt="ESP32 DMX Controller desktop presets and backup">
+      </a><br><b>Presets & Backup</b>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-web-ui-settings.jpg">
+        <img src="docs/images/esp-dmx-controller-web-ui-settings.jpg" width="260" alt="ESP32 DMX Controller desktop device and Wi-Fi settings">
+      </a><br><b>Device Settings</b>
+    </td>
+  </tr>
+</table>
 
-The user accepted clean erase/install, presets/Backup, reboot persistence and a
-no-erase current-v0.3.0 app update on the controller. Base remains experimental.
-No separate Wi-Fi/no-Wi-Fi firmware is needed.
+### Mobile Interface Screenshots
 
-- [Installation and update commands](docs/V0_3_0_INSTALLATION.md)
-- [Complete changelog](CHANGELOG.md)
-- [Release notes](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
-- [Known issues](KNOWN_ISSUES.md)
-- [Preset Backup](docs/PRESET_EXPORT_IMPORT.md)
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-mobile-ui-editor.jpg">
+        <img src="docs/images/esp-dmx-controller-mobile-ui-editor.jpg" width="260" alt="ESP32 DMX Controller mobile Web Editor">
+      </a><br><b>DMX Editor</b>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-mobile-ui-preset.jpg">
+        <img src="docs/images/esp-dmx-controller-mobile-ui-preset.jpg" width="260" alt="ESP32 DMX Controller mobile presets and backup">
+      </a><br><b>Presets & Backup</b>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/images/esp-dmx-controller-mobile-ui-settings.jpg">
+        <img src="docs/images/esp-dmx-controller-mobile-ui-settings.jpg" width="260" alt="ESP32 DMX Controller mobile device and Wi-Fi settings">
+      </a><br><b>Device Settings</b>
+    </td>
+  </tr>
+</table>
 
-The release manifest records the exact source commit, hardware profile and
-checksums. Hosted publication and correction of the old local tag are separate
-authorized steps.
+### Firmware & Updates
 
-## Important operating notes
+Two factory images are built from the v0.3.0 release source:
 
-**Change the predictable factory Wi-Fi password before use in untrusted
-environments.** Use web Settings and approve the exact change on the device.
-Associated clients share control; HTTP/WebSocket do not have separate encrypted,
-per-user administration. This is a local SoftAP, not an internet-facing service.
+- `CoreS3SE-DMX-Unit-v0.3.0.bin` — **recommended**, Unit DMX U183 + Battery Bottom.
+- `CoreS3SE-DMX-Base-v0.3.0.bin` — **experimental**, Base DMX + external PSU.
 
-**Keep this browser tab open and active until the operation completes** when
-using Backup Import/Export. Backgrounding intentionally suspends the connection
-and cancels transfers; recovery does not replay writes. Import replaces all
-P1–P8 slots, including empty slots, without changing live output. Export uses
-`DMX-Presets-YY-MM-DD-HH-mm.json` in local browser time. Export before downgrading:
-v0.2.0 cannot read current-format generation-backed presets.
+- **From v0.2.0:** Erase the entire flash and install the matching **factory BIN at `0x0`**. Presets and settings will be lost.
+- **For the tested current-format v0.3.0:** An **application-only** update without erase preserves presets and settings. Do **not** use a factory BIN for a data-preserving update: it also covers the NVS area.
+- **Downgrading:** Export your data first. v0.2.0 cannot read the generation-backed preset storage used by v0.3.0.
 
-Windows/Intel Wi-Fi 6 AX200 **driver 24.20.2.1** has a user-reported SoftAP
-compatibility issue (packet loss/WebSocket instability). The verified client
-workaround is **Device Manager > Intel Wi-Fi 6 AX200 > Advanced > MIMO Power Save
-Mode > No SMPS**. This is not a confirmed firmware defect; see
-[known issues](KNOWN_ISSUES.md) for scope and evidence.
+### Security & Known Limitations
 
-The accepted mobile UI uses a fixed-scale viewport and limits pinch zoom.
-Historical synchronous TCP send stalls and slow physical touchscreen coordinate
-stalls remain disclosed limitations; no permanent timing/accessibility fix is
-claimed. Unit acceptance does not certify experimental Base hardware. Read the
-[full limitations](KNOWN_ISSUES.md) before installing or using live fixtures.
+> [!CAUTION]
+> **Change the predictable factory Wi-Fi password before use in untrusted environments.** Anyone who can join the access point can access DMX control, presets and maintenance. Physical approval protects **Wi-Fi configuration changes only**; connected clients otherwise share control access. HTTP/WebSocket traffic has no application-layer encryption.
 
-## Features
+The device runs as a Wi-Fi access point with embedded HTTP/WebSocket assets and automatic connection recovery (no STA/AP+STA mode or OTA updater). Mobile browser zoom is intentionally restricted to avoid an iOS gesture regression. A slow TCP/WebSocket client can temporarily block web control, and external DMX timing/coherence validation remains outstanding.
 
-- Full **512-channel DMX universe**
-- Complete offline mobile/desktop web DMX control, live multi-client synchronization
-- Web faders, +/- fine adjustment and direct numeric entry
-- Web P1–P8 load/save/delete with overwrite/delete confirmation
-- Transactional JSON preset Backup/Import, timestamped downloads and progress dialogs
-- Guarded reclamation of obsolete legacy preset blobs after verified generation adoption
-- Authoritative web blackout and pre-blackout snapshot restoration
-- SoftAP, embedded HTTP/WebSocket assets and automatic connection recovery
-- Wi-Fi Configuration with physical approval, expiry and credential recovery
-- Live Device Settings previews, commit-on-release and physical/web synchronization
-- Web Restart/Power Off confirmation with five-second physical CANCEL
-- Touchscreen channel selection and value editing
-- Persistent **P1-P8 presets**
-- Protected preset save using hold-to-save
-- Preset **copy** and **clear**
-- **Blackout** with double-tap protection
-- DMX activity / heartbeat indicator
-- Battery percentage display with charging and external-power indication
-- Battery runtime estimation after calibration
-- Low-battery visual and audible warnings
-- Persistent settings storage
-- Screen always-on option
-- Touch and startup sounds
-- Software RESTART, POWER OFF with Double-tap protection
-- Separate hardware profiles for:
-  - **M5Stack Unit DMX U183**
-  - **M5Stack Base DMX**
+**Intel AX200 compatibility:** Driver `24.20.2.1` has a user-reported SoftAP issue. Verified client workaround: **Device Manager → Intel Wi-Fi 6 AX200 → Advanced → MIMO Power Save Mode → No SMPS**. This is not a confirmed firmware defect.
+
+**Documentation:** [Installation & Updates](docs/V0_3_0_INSTALLATION.md) · [Changelog](CHANGELOG.md) · [Release Notes](docs/V0_3_0_RELEASE_NOTES_DRAFT.md) · [Known Issues](KNOWN_ISSUES.md) · [Preset Backup Guide](docs/PRESET_EXPORT_IMPORT.md)
 
 ---
 
-## Hardware
+## Hardware & Power
 
-### Recommended Setup
+**Recommended:** [CoreS3SE](https://docs.m5stack.com/en/core/M5CoreS3%20SE) + [Unit DMX U183](https://docs.m5stack.com/en/unit/Unit-DMX) + [M5GO Bottom3](https://docs.m5stack.com/en/module/M5GO3%20Bottom).
 
-- [M5Stack CoreS3SE](https://docs.m5stack.com/en/core/M5CoreS3%20SE)
-- [M5Stack Unit DMX U183](https://docs.m5stack.com/en/unit/Unit-DMX)
-- [M5Stack M5GO Bottom3](https://docs.m5stack.com/en/module/M5GO3%20Bottom)
+**Experimental:** [M5Stack Base DMX](https://docs.m5stack.com/en/base/DMX_Base).
 
-**Experimental Hardware**
-- [M5Stack Base DMX](https://docs.m5stack.com/en/base/DMX_Base)
+> [!IMPORTANT]
+> The tested **Unit DMX setup requires the battery bottom** to power the DMX hardware; **Base DMX requires an external power supply**.
 
+The M5GO Bottom3 has a **3.7 V / 500 mAh** battery. The tested configuration ran for approximately **5 hours**, depending on brightness, activity and battery condition.
 
-The M5GO Bottom3 contains a **3.7 V / 500 mAh** battery. In the tested controller configuration, practical runtime was approximately **5 hours**, depending on display brightness, activity and battery condition.
+## On-Device Controls
 
-> [!WARNING]
-> **Note that, battery is required for Unit DMX and an external PSU for Base DMX to to power DMX hardware!**
+### DMX Channel Editor
 
+Select a channel on the main screen and adjust its value with the slider, or tap **EDIT** for precise control:
 
+- **+ / −:** Adjust the value, or hold for continuous adjustment.
+- **STEP:** Select increments of **1, 5, 10 or 25**.
+- **Numeric entry:** Tap the value to enter an exact number from **0–255**.
+- **Fader:** Adjust the channel value directly; **BACK** returns to the main screen.
 
+Changes are sent immediately to the live DMX output. The main screen includes a DMX activity/heartbeat indicator.
 
----
-# Functions
+### Physical Presets
 
-## Physical Presets
+Eight presets (**P1–P8**) are stored persistently in ESP32 NVS.
 
-Eight presets are available:
+- **Load:** Double-tap a preset.
+- **Save:** Select a slot and hold **SAVE** for approximately one second. Releasing early cancels the operation.
+- **Copy / Clear:** Long-press an occupied slot. **COPY** only targets an empty slot; **CLEAR** requires a hold action.
 
-```text
-P1 P2 P3 P4
-P5 P6 P7 P8
-```
+### Physical Blackout
 
-Preset data is stored persistently in ESP32 NVS.
+Double-tap **BLACKOUT** to send zero values while saving the current DMX universe. Double-tap again to restore the saved values. The first tap prompts **TAP AGAIN** to prevent accidental activation.
 
-### Save
+### Device Settings & Power
 
-Saving is protected against accidental taps.
+| Setting | Options | Notes |
+|---|---|---|
+| Brightness | `1 / 2 / 3 / 4 / 5` | Five levels |
+| Screen Timeout | `1 / 2 / 3 / 4 / ON` | `ON` keeps the display on |
+| Volume | `0 / 1 / 2 / 3 / 4` | `0` mutes UI sounds |
 
-- Select a preset
-- Hold the SAVE control for approximately 1 second
-- Progress is shown while holding
-- Releasing early cancels the save
+Settings are stored persistently and include touch and startup sounds. Physical **RESTART** and **POWER OFF** require a double tap.
 
-### Copy / Clear
+### Battery Monitoring
 
-Long-press an occupied preset slot to open preset options.
+The screen shows battery percentage, charging/external-power status and estimated remaining runtime.
 
-Available operations:
-
-- `COPY`
-- `CLEAR`
-- `BACK`
-
-Copying is only allowed to an empty destination slot.
-
-Clearing is protected by a hold action.
-
----
-
-## Physical Blackout
-
-BLACKOUT uses double-tap protection.
-
-```text
-First tap  -> TAP AGAIN
-Second tap -> BLACKOUT
-```
-
-The second tap must arrive within approximately **500 ms**.
-
-When blackout is activated, the current DMX universe is preserved and zero values are transmitted.
-
-Double-tapping again restores the previous values.
-
----
-
-## Settings
-
-The Settings screen provides:
-
-### Brightness
-
-Five levels:
-
-```text
-1 / 2 / 3 / 4 / 5
-```
-
-### Screen Timeout
-
-```text
-1 / 2 / 3 / 4 / ON
-```
-
-`ON` means the display remains on continuously.
-
-### Volume
-
-Five positions:
-
-```text
-0 / 1 / 2 / 3 / 4
-```
-
-`0` is mute.
-
-### Software Power Controls
-
-The Settings screen also contains:
-
-```text
-RESTART
-POWER OFF
-BACK
-```
-
-Both RESTART and POWER OFF require a double tap within approximately **500 ms**.
-
-The established shutdown preparation is retained. Complete zero frames before
-shutdown have not been established by external capture.
-
----
-
-## Offline web interface
-
-In physical Sender Settings, read the current SSID and password. Join the device's
-Wi-Fi network and open **http://192.168.4.1/**. The interface works without internet
-and in iPhone Safari/Home Screen mode. The AP suppresses its DHCP default-router
-option; client cellular routing depends on the OS.
-
-Editor supports all 512 channels. Presets provides Load, Save and Delete; overwrite
-and deletion need explicit browser confirmation. Blackout sends zero while keeping
-its entry snapshot; edits during blackout do not energize outputs and are discarded
-when the original snapshot is restored.
-
-Settings contains Device Settings, Device Maintenance, Wi-Fi Configuration and
-browser-only preferences. Slider previews apply live and save on release. Maintenance
-requires browser confirmation and allows five seconds to CANCEL on the device.
-Wi-Fi changes additionally require physical OK within 60 seconds; CANCEL/expiry
-before approval discards them. Rejoin after applying new credentials. Blank New
-password keeps the existing password. HOLD RESET WIFI for two seconds schedules a
-Wi-Fi-only factory reset for the next explicit restart; presets/settings are kept.
-
-Factory credentials use the AP MAC suffix and are predictable. Change them through
-the physical-approval flow. Associated clients share control; WPA2 association is
-not a separate administrative authorization layer, and HTTP/WebSocket is not
-application-encrypted. No STA/AP+STA or OTA updater is implemented.
-
-**Change the factory Wi-Fi password before use in any untrusted environment.**
-Someone who can derive it and join the AP can access DMX, presets and maintenance.
-Physical Wi-Fi-change approval does not authenticate ordinary DMX commands.
-
-The accepted mobile UI intentionally restricts browser zoom to avoid the reproduced
-iOS gesture regression; this is an accessibility limitation. A slow TCP/WebSocket
-send can still block the shared HTTP task temporarily. Automatic recovery is not
-a guarantee of uninterrupted delivery. External DMX timing/coherence measurements
-remain outstanding; see [release limitations](docs/V0_3_0_RELEASE_NOTES_DRAFT.md).
-
-## Battery Monitoring
-
-The UI displays:
-
-- Battery percentage
-- Charging status
-- External-power status
-- Estimated remaining runtime
-
-Battery indicator colors:
-
-| Battery Level | Color |
+| Battery Level | Indicator |
 |---|---|
-| 36-100% | Green |
-| 21-35% | Yellow |
-| 0-20% | Red |
+| 36–100% | Green |
+| 21–35% | Yellow |
+| 0–20% | Red |
 
-Runtime estimation begins only after enough discharge data has been collected.
+Runtime estimates appear after calibration has collected enough discharge data and are smoothed over a rolling window. Visual and audible warnings occur at approximately **20%** and **10%**; warning tones use a fixed high volume regardless of the normal UI volume.
 
-The estimator uses a rolling observation window and smooths the calculated runtime so the displayed value does not jump excessively.
-
-Low-battery warnings are generated at approximately:
-
-- **20%**
-- **10%**
-
-Battery-warning tones use a fixed high warning volume independent of the normal UI volume.
+**Known touchscreen limitation:** Slow continuous fader movement may intermittently stall near the touch-acquisition layer. No application-level cause has been demonstrated, and occurrence in the original firmware is unconfirmed. The raw-coordinate correction remains; diagnostic tools are opt-in and `THDIFF` register-write experiments are suspended. See [Testing](docs/TESTING.md).
 
 ---
 
-## DMX Hardware Profiles
+## Development & Builds
 
-The application code is shared. Hardware-specific UART / direction-control settings are selected by the PlatformIO build environment.
+### DMX Hardware Profiles
 
-### Unit DMX U183
+The same firmware source supports two PlatformIO build environments. Hardware-specific UART and direction-control pins differ:
 
-The Unit DMX is connected to **CoreS3SE Port A**.
+| Signal | Unit DMX U183 (Port A) | Base DMX (M-Bus) |
+|---|---|---|
+| DMX TX | GPIO 2 | GPIO 7 |
+| DMX RX | GPIO 1 | GPIO 10 |
+| Direction / Enable | `-1` (not used) | GPIO 6 |
+| PlatformIO environment | `cores3se_unit` (default) | `cores3se_base` |
 
-| Signal | CoreS3SE GPIO |
-|---|---:|
-| DMX TX | GPIO 2 |
-| DMX RX | GPIO 1 |
-| Direction / Enable | `-1` |
-| Port | Port A |
+Unit DMX handles RS-485 direction internally; Base DMX uses the M-Bus pins from M5Stack's original DMX512Tools example.
 
-The Unit DMX handles the RS-485 direction internally, therefore the firmware does not use a separate enable pin.
-
-Example configuration:
-
-```cpp
-transmitPin = GPIO_NUM_2;
-receivePin  = GPIO_NUM_1;
-enablePin   = -1;
-```
-
-### Base DMX
-
-The Base DMX uses the CoreS3 M-Bus UART / enable pins used by M5Stack's original DMX512Tools example.
-
-| Signal | CoreS3SE GPIO |
-|---|---:|
-| DMX TX | GPIO 7 |
-| DMX RX | GPIO 10 |
-| RS485 Enable | GPIO 6 |
-
-Example configuration:
-
-```cpp
-transmitPin = GPIO_NUM_7;
-receivePin  = GPIO_NUM_10;
-enablePin   = GPIO_NUM_6;
-```
-
----
-
-## PlatformIO Build Environments
-
-Environment names: (unit is default)
-
-```text
-cores3se_unit
-cores3se_base
-```
-
-### Build Unit DMX version
+### PlatformIO Commands
 
 ```bash
+# Build
 pio run -e cores3se_unit
-```
-
-### Upload Unit DMX version
-
-```bash
-pio run -e cores3se_unit -t upload
-```
-
-### Build Base DMX version
-
-```bash
 pio run -e cores3se_base
-```
 
-### Upload Base DMX version
-
-```bash
+# Upload
+pio run -e cores3se_unit -t upload
 pio run -e cores3se_base -t upload
 ```
 
----
-
-## Software Dependencies
-
-The project is built with PlatformIO and uses:
+### Software Dependencies
 
 - PlatformIO `espressif32@6.7.0`, Arduino 2.0.16 / ESP-IDF 4.4.7
 - [M5Unified 0.2.21](https://github.com/m5stack/M5Unified)
 - [M5GFX 0.2.28](https://github.com/m5stack/M5GFX)
-- [esp_dmx](https://github.com/someweisguy/esp_dmx)
+- [esp_dmx v2.02](https://github.com/someweisguy/esp_dmx)
 
-The current application branch was developed around **esp_dmx v2.02** because it matches the API used by the original application.
+### Reproducible Builds & Release Identity
 
-### Reproducible builds and candidate provenance
+Repository-local PlatformIO hooks apply and verify the reviewed ESP32-S3 compatibility and TX ownership/`RS485_CLASH` patches to upstream `esp_dmx` v2.02. **Do not manually edit `.pio/libdeps`.** Compressed web assets are built deterministically into the firmware; no filesystem upload is needed.
 
-Repository-local PlatformIO hooks apply and verify the ESP32-S3 compatibility
-and reviewed TX ownership/RS485_CLASH patches to upstream esp_dmx v2.02. Do not
-manually edit `.pio/libdeps`. Compressed web assets are deterministic and embedded
-in firmware; no filesystem upload is required.
+The read-only `/status` endpoint and web Status page show the version, build environment, Git commit, modified-input flag and source fingerprint. Release binaries must match committed source and checksums. Pre-commit builds are marked `modified`; rebuild after committing to obtain a clean release identity. Historical release candidates, source archives and receipts must not be relabeled.
 
-Build normally with `pio run -e cores3se_unit` or `pio run -e cores3se_base`.
-Read-only `/status` and web Status report version, environment, Git commit,
-modified-input flag and source fingerprint. Release binaries must match their
-actual committed source and checksums. Pre-commit review builds remain marked
-`modified`; after committing, rebuild for clean release identity. Old RCs,
-source archives and receipts remain historical and must not be relabeled.
-
-Only production Unit/Base builds are packaged. Diagnostics remain developer
-checks. Two OTA slots reserve capacity but do not provide an OTA updater or
-validated health rollback. A slow client can still temporarily stall a native
-synchronous WebSocket send; bounded queues/recovery do not remove that limitation.
-Upper-flash writes, external DMX electrical/frame-coherence measurements and
-physical slider precision remain documented limits/deferred work.
+Only Unit/Base production builds are packaged; diagnostics are developer checks. Two OTA slots reserve space but **do not** implement an OTA updater or validated rollback. Slow synchronous WebSocket sends, upper-flash writes, external DMX timing/coherence testing and physical fader precision remain documented limitations or deferred work. See [Release Notes](docs/V0_3_0_RELEASE_NOTES_DRAFT.md) and [Testing](docs/TESTING.md).
 
 ---
 
 ## Roadmap
 
-Possible future development:
+Potential future work includes:
 
-- ESP-NOW wireless DMX transmitter mode
-- Small ESP32 / AtomS3 wireless DMX receiver
-- Link-quality / RSSI indicator
-- Wireless receiver pairing
-- Multiple receiver support
-- Art-Net / sACN support
-- CRMX-compatible hardware exploration
-- Fixture profiles
-- Named channels
-- Additional battery statistics
+- **Wireless DMX:** ESP-NOW transmitter, ESP32/AtomS3 receivers, pairing, signal-quality indication and multiple receivers.
+- **Protocols:** Art-Net / sACN support and CRMX-compatible hardware exploration.
+- **Usability:** Fixture profiles, named channels and additional battery statistics.
 
----
+## Acknowledgements
 
-Preset export / import is completed in v0.3.0 (see Backup above); it is no longer
-a pending roadmap item.
+Based on and extensively developed from M5Stack's [DMX512Tools example](https://github.com/m5stack/M5Module-DMX512/tree/master/examples/DMX512Tools) in the [M5Module-DMX512 repository](https://github.com/m5stack/M5Module-DMX512), originally published under the MIT License. Thanks to **M5Stack** for making the example available.
 
-## Original Source / Acknowledgements
+## License & Third-Party Notices
 
-This project is based on and heavily extended from the official M5Stack:
+This project is distributed under the **MIT License**. [LICENSE](LICENSE) retains the original **Copyright (c) 2022 M5Stack**, the upstream license text and the additional-project notice.
 
-### [DMX512Tools example](https://github.com/m5stack/M5Module-DMX512/tree/master/examples/DMX512Tools)
+[Third-party notices](THIRD_PARTY_NOTICES.md) detail audited libraries, SDKs and runtime components. Some M5GFX subcomponents carry BSD or other terms, and Arduino-ESP32 is LGPL-2.1-or-later; the project's MIT License does not replace those obligations.
 
-from the:
-
-### [M5Stack M5Module-DMX512 repository](https://github.com/m5stack/M5Module-DMX512)
-
-The upstream M5Stack repository is distributed under the **MIT License**.
-
-Many thanks to **M5Stack** for publishing the original DMX512Tools example and making it available for further development.
-
----
-
-## License
-
-This project is released under the **MIT License**.
-
-[LICENSE](LICENSE) preserves the original **Copyright (c) 2022 M5Stack** and
-complete upstream MIT text alongside the existing additional-project notice.
-[Third-party notices](THIRD_PARTY_NOTICES.md) inventory the exact audited library,
-SDK and runtime components. M5GFX contains BSD and other subcomponent terms beyond
-its top-level MIT license; Arduino-ESP32 is LGPL-2.1-or-later. The project MIT
-license does not replace those terms.
-
-Firmware distribution includes the notice inventory and complete license texts.
-Before binary publication, complete the corresponding-source/relink delivery
-described in the [build and relink guide](docs/V0_3_0_LGPL_DELIVERY.md), including
-the [reviewed build-material inventory](docs/V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md).
-[Publication readiness](docs/V0_3_0_PUBLICATION_READINESS.md) distinguishes the
-actual final firmware commit and matching binary/source checksums.
-
----
-
-
+Firmware distribution must include the required notices and full license texts. Before publishing binaries, follow the [source/relink delivery guide](docs/V0_3_0_LGPL_DELIVERY.md) and [build-material inventory](docs/V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md). See [Publication Readiness](docs/V0_3_0_PUBLICATION_READINESS.md) for final commit and source/binary checksum requirements.
 
 ## Contributing
 
-Issues, test results and pull requests are welcome.
-
-For Base DMX testing, useful reports should include:
-
-- exact M5Stack host model
-- Base DMX revision if known
-- power supply
-- fixture model
-- termination configuration
-- firmware build environment
-- esp_dmx version
-- whether the issue also occurs with static DMX values
-
-Please avoid reporting a Base DMX issue as confirmed hardware failure unless the problem has been isolated with reproducible testing.
-
----
+Issues, test results and pull requests are welcome. For Base DMX reports, please include the **CoreS3SE host model, Base revision (if known), PSU, fixture, termination, build environment, `esp_dmx` version** and whether glitches occur with static channel values. Avoid generalizing a single tested Base DMX issue to all hardware without reproducible evidence.
 
 ## Disclaimer
 
-DMX512 controls lighting and related equipment. Test new firmware in a safe environment before using it during a live event.
-
-This project is an independent community project and is **not an official M5Stack product**.
-
-### Deferred physical fader limitation
-
-Slow continuous touchscreen fader movement may exhibit intermittent coordinate stalls originating at or before the touch-controller acquisition layer. Historical upstream code contains the same relevant acquisition mechanisms. No application-level cause was demonstrated. The behavior is not proven to have occurred on the original firmware.
-
-The captured raw-coordinate correction is retained. Touch investigation tools are
-explicit opt-ins; THDIFF register-write experiments remain suspended. See
-[testing and diagnostic isolation](docs/TESTING.md).
+DMX512 controls lighting and related equipment. Test new firmware safely before using it at a live event. This is an independent community project, **not an official M5Stack product**.
