@@ -1,146 +1,118 @@
-# v0.3.0 installation and migration
+# v0.3.0 installation
 
-Distributable ZIPs must include LICENSE, THIRD_PARTY_NOTICES.md and the complete
-license text/manifest under `licenses/`, covered by internal checksums. See the
-[publication supplement](V0_3_0_PUBLICATION_READINESS.md) for source/relink delivery
-and immutable-tag provenance; this document does not authorize publication.
+Use the image matching your hardware:
 
-This describes installation of a verified sparse v0.3.0 stable bundle using
-the accepted frozen images; it does not require replacing those images with
-a build from a later publication checkout. Firmware and packaging provenance
-are distinct. Final stable bundles have not been published by this audit.
-Local source closure does not publish binaries. Original `0.3.0-rc.1` archives
-and their checksums remain historical candidates and must not be relabeled.
-The simplified Unit v0.2 migration and final preset functionality have user-
-reported physical acceptance. Separate Base migration and interrupted-upgrade
-recovery remain unverified. Follow the manifest of the actual bundle used.
+- `CoreS3SE-DMX-Unit-v0.3.0.bin` — Unit DMX U183 + Battery Bottom; recommended.
+- `CoreS3SE-DMX-Base-v0.3.0.bin` — DMX Base + external PSU; experimental.
 
-Choose exactly one bundle:
+Both include Wi-Fi. The device cannot automatically identify which accessory is
+attached. Check the filename and the UNIT DMX / DMX BASE boot label.
 
-- **UNIT:** CoreS3SE + Unit DMX U183 + Battery Bottom; recommended hardware.
-- **BASE-EXPERIMENTAL:** CoreS3SE + DMX Base + external PSU; historical fixture
-  glitches remain under investigation. Unit acceptance does not certify Base.
+## Before starting
 
-Both include Wi-Fi. There is no separate no-Wi-Fi image. Both target ESP32-S3;
-the flasher cannot detect which accessory is attached. Check the manifest profile
-and the device's UNIT DMX / DMX BASE startup label. Do not rely on the chip ID
-to prevent a wrong-profile installation.
+Install Python and the esptool version used to prepare these files:
 
-## Before either installation path
+```powershell
+python -m pip install esptool==4.5.1
+Get-FileHash .\CoreS3SE-DMX-Unit-v0.3.0.bin -Algorithm SHA256
+```
 
-1. Verify the ZIP checksum, extract it into its own directory, and check every
-   entry in SHA256SUMS.txt (`sha256sum -c SHA256SUMS.txt`, or compare PowerShell
-   `Get-FileHash -Algorithm SHA256` results). Do not mix components from bundles.
-2. Check the actual board has 16 MiB flash and confirm reliable USB/ROM recovery.
-   Use normal production firmware, not a diagnostics build. Keep known working
-   power; the Unit needs its Battery Bottom for external Unit power.
-3. Back up any existing device before writing. Full flash/NVS backups contain
-   private data: keep them off GitHub. Close serial monitors and select the actual
-   port. The bundle's generated table and exact command follow these instructions.
+Compare the hash with `SHA256SUMS.txt`. Substitute the Base filename when needed.
+Close serial monitors. Commands below use **COM8**; change it to your actual port.
+They are manual instructions, not commands executed by this project at startup.
 
-## Fresh Install
+## v0.2.0 → v0.3.0: clean installation
 
-Program the four separate image/address pairs in INSTALL.md. On blank NVS the
-application initializes defaults. No whole-chip erase is implicit or required.
-If unknown/corrupt prior storage needs destructive clearing, that is a separate
-explicit operation after backup, not the normal installation or upgrade path.
-No erase command is supplied as part of the normal procedure.
+**This erases presets, settings and Wi-Fi credentials.** A complete flash erase
+is required when coming from v0.2.0. The new 16 MiB layout and current preset
+storage replace the old installation; there is no data-preserving v0.2 migration.
 
-## Upgrade from public v0.2.0 — simplified Unit acceptance passed
+```powershell
+python -m esptool --chip esp32s3 --port COM8 --baud 460800 erase_flash
+python -m esptool --chip esp32s3 --port COM8 --baud 460800 write_flash --flash_mode keep --flash_freq keep --flash_size keep 0x0 .\CoreS3SE-DMX-Unit-v0.3.0.bin
+```
 
-First follow MIGRATION-TEST.md on a controlled device with saved data. Confirm
-the old table uses NVS at **0x9000, size 0x5000**. Back up flash and NVS, record
-all presets/settings, then write the four matching files individually:
+For Base use `CoreS3SE-DMX-Base-v0.3.0.bin` in the second command.
+The headers already encode the verified ESP32-S3 / 16 MB / DIO / 80 MHz settings;
+`keep` avoids rewriting them. The PlatformIO project uses its existing qio build
+configuration; do not override the generated boot image's header by guessing.
 
-| Component | Flash offset |
+Each factory image contains these verified components byte-for-byte:
+
+| Component | Offset |
 |---|---:|
-| bootloader.bin | 0x0000 |
-| partitions.bin | 0x8000 |
-| boot_app0.bin | 0xe000 |
-| firmware.bin | 0x10000 |
+| Bootloader | 0x0000 |
+| Partition table | 0x8000 |
+| OTA initialization | 0xE000 |
+| Application | 0x10000 |
 
-The image validator checks actual images and 4 KiB erase rounding. These
-separate ranges exclude NVS `[0x9000,0xe000)`. The partition-table sector ends
-at 0x9000. OTA metadata is intentionally reset to boot app0. First application
-boot adds Wi-Fi records, so compare legacy keys afterward rather than demanding
-whole-NVS byte equality. Legacy `dmxpreset/p1..p8`, metadata `dmxmeta/cleared` and UI `dmxui`
-values remain readable. v0.3.0 adds generation-backed preset storage after
-adoption; this is not a claim that every new NVS record uses the old format. A backup is still required; SDK startup error recovery
-may format broken/incompatible NVS.
+The merged file spans the NVS range `0x9000–0xDFFF` with 0xFF fill. **Writing it
+can erase NVS even without a separate erase command.** It is not an update image.
+The file ends after the application; it is not padded to the whole 16 MB flash.
 
-**Do not flash a padded FULL.bin at zero:** public v0.2.0 FULL images contain
-0xff over NVS and erase it. App-only flashing does not replace the partition
-table or establish the new 16 MiB layout. This procedure is serial migration,
-not OTA. The application contains all web assets; no filesystem image is needed.
+## Existing current v0.3.0 → updated v0.3.0: retain data
 
-## First boot, web access and recovery
+The user physically verified a normal no-erase application update preserving
+current-format v0.3.0 presets/settings. Use this only with the existing 16 MiB
+layout and generation-backed preset format. Historical RC/pre-cleanup builds
+are not covered merely because their version label contains v0.3.0.
 
-In Sender Settings read the current SSID/password. With no stored credentials,
-SSID defaults to `CoreS3SE-DMX-XXXX`; password is `espdmx-xxxx` (AP MAC suffix).
-Join that SoftAP and open **http://192.168.4.1/**. It works offline; DHCP does
-not advertise the device as an internet router. Cellular routing depends on the
-client. Four stations are configured; do not equate station count with WS clients.
+Extract the matching application from the factory file, then write **only** that
+application at 0x10000. Extraction is byte-for-byte and tested during packaging.
 
-Change Wi-Fi in web Settings, confirm in the browser, then approve the exact
-proposal with physical OK within 60 seconds. CANCEL/timeout before approval
-discards it. Applying disconnects clients; rejoin the new network. Blank New
-password preserves the current password. Failed application attempts recover
-the previous credentials; inspect the local error if recovery fails. The physical
-two-second RESET WIFI action changes Wi-Fi on the next explicit restart;
-it does not erase presets/settings. The separate Wi-Fi ON/OFF control requires
-a one-second hold, persists across reboot and remains accessible with radio OFF.
+```powershell
+python -c "from pathlib import Path; p=Path('CoreS3SE-DMX-Unit-v0.3.0.bin'); p.with_name(p.stem+'-app.bin').write_bytes(p.read_bytes()[0x10000:])"
+python -m esptool --chip esp32s3 --port COM8 --baud 460800 write_flash --flash_mode keep --flash_freq keep --flash_size keep 0x10000 .\CoreS3SE-DMX-Unit-v0.3.0-app.bin
+```
 
-Factory passwords are predictable. **Change the password before use in any untrusted
-environment.** WPA2 association
-is not a separate authorization mechanism for DMX/maintenance; HTTP/WS is local
-and unencrypted at the application layer. No STA/AP+STA or authenticated OTA
-updater is provided.
+For Base replace `Unit` with `Base` in both filenames. Do not run `erase_flash`,
+do not write the complete factory image, and do not replace the partition table
+or OTA metadata for this update. `BUILD_INFO.json` records the extracted app hash
+and size. Back up presets with JSON Export before updating; Backup excludes
+settings and Wi-Fi. These commands target the established app0 layout. No OTA
+updater/app-slot switching is implemented; a manually altered boot slot is outside
+this tested procedure.
 
-If boot fails, hold CoreS3SE RESET until the green download-mode indicator,
-select the re-enumerated USB port, and retry a verified matching four-image
-bundle without erasing NVS. Validate this recovery on the test device. A downgrade
-requires the matching old bootloader/table/OTA-init/app, or an explicitly approved
-private backup restore. The old public FULL is not a data-preserving rollback.
-Neither an empty second OTA slot nor SDK early confirmation proves automatic
-application-health rollback.
+## First boot and recovery
 
-## Preset compatibility and downgrade
+After a clean install, check empty presets and default settings. Read the SSID
+and password on physical Settings, join the SoftAP, and open **http://192.168.4.1/**.
+Factory credentials use `CoreS3SE-DMX-XXXX` / `espdmx-xxxx` derived from the AP MAC.
+**Change the predictable password before use in untrusted environments.** Physical
+approval protects credential changes; associated clients otherwise share control.
+The Unit needs Battery Bottom for external Unit power. Local Wi-Fi ON/OFF remains
+available if the radio is disabled; RESET WIFI takes effect after reboot.
 
-Upgrade leaves the NVS partition at 0x9000/0x5000. Existing legacy presets and
-settings remain readable. Import adopts an atomic generation-backed preset
-collection. A later mutation may reclaim only redundant p1–p8 keys after the
-selected collection is verified; unrelated namespaces are untouched. Export a
-JSON backup before downgrading. v0.2 cannot read generation banks or depend on
-reclaimed stale blobs. Do not erase NVS to resolve a storage-full error.
+Verify the hardware profile, physical controls, web UI, saved presets, Settings,
+Restart/Power Off and another reboot. Keep the Backup tab open/active for transfers.
 
-## Operational and migration acceptance boundaries
+If normal upload fails, enter the board's ROM download mode and retry the matching
+image/port. A factory reinstall resets data; do not describe it as data-preserving
+recovery. Interrupted-upgrade recovery and Base electrical behavior need separate
+acceptance. See [known issues](../KNOWN_ISSUES.md).
 
-The accepted simplified physical test upgraded **Unit v0.2.0 to rc.1**, not the
-final frozen stable ZIP. That test deliberately erased data only while preparing
-the genuine v0.2.0 baseline, with the user's approval, then verified that seeded
-presets/non-default settings survived the selective upgrade and reboot. Do not
-confuse initial test preparation with a migration failure. Final stable-bundle
-verification, separate Base migration, preboot raw NVS equality and interrupted-
-upgrade recovery are not established by that historical acceptance.
+## Build the factory images from source
 
-Before distribution, resolve firmware and source/notice archive checksums against
-the frozen source and a separately reviewed publication commit. Retain the
-original tag and RCs. Do not label candidate files as stable or distribute only
-firmware while omitting corresponding source/build/relink and license material.
-See [source inventory](V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md) and
-[release evidence](V0_3_0_DOCUMENTATION_COVERAGE.md).
+The existing PlatformIO hooks verify the pinned driver patches, embedded assets,
+partition table and component headers. From the matching source checkout:
 
-After connecting, change the factory password before untrusted use. Windows
-Intel AX200 driver **24.20.2.1** users with packet loss/WS instability can use the
-user-verified **Device Manager > Intel Wi-Fi 6 AX200 > Advanced > MIMO Power Save
-Mode > No SMPS** workaround. It is a client compatibility issue, not a confirmed
-firmware defect or a guarantee for every driver. The accepted fixed-scale web UI
-limits zoom accessibility; native synchronous sends can still stall temporarily.
+```powershell
+pio run -e cores3se_unit -e cores3se_base
+python -m esptool --chip esp32s3 merge_bin --flash_mode keep --flash_freq keep --flash_size keep --output CoreS3SE-DMX-Unit-v0.3.0.bin 0x0 .pio/build/cores3se_unit/bootloader.bin 0x8000 .pio/build/cores3se_unit/partitions.bin 0xE000 .pio/build/cores3se_unit/boot_app0.bin 0x10000 .pio/build/cores3se_unit/firmware.bin
+python -m esptool --chip esp32s3 merge_bin --flash_mode keep --flash_freq keep --flash_size keep --output CoreS3SE-DMX-Base-v0.3.0.bin 0x0 .pio/build/cores3se_base/bootloader.bin 0x8000 .pio/build/cores3se_base/partitions.bin 0xE000 .pio/build/cores3se_base/boot_app0.bin 0x10000 .pio/build/cores3se_base/firmware.bin
+```
 
-For Backup, **keep this browser tab open and active until the operation completes**.
-Hiding it intentionally cancels the transfer. If the import outcome is uncertain,
-resynchronize and inspect/export the collection before retrying; do not assume
-that loss of the result undoes a committed import. No automatic replay occurs.
-Full [known issues](../KNOWN_ISSUES.md) include Base, touchscreen, electrical,
-security, downgrade and recovery limits. Export does not include Wi-Fi credentials
-or device settings; it is a preset backup, not a full-device configuration backup.
+Do not add a whole-flash padding option or mix profile components. Release preparation uses these same settings with a separate output directory to
+preserve prior builds. Build timestamps and embedded commit identity may change
+binary bytes; use the checksums supplied with the actual binaries.
+
+## Source and release identity
+
+`BUILD_INFO.json` records the actual source commit, source fingerprint, hardware
+profile and SHA-256 checksums. Both production images must come from that committed
+source with no modified firmware inputs. Do not reuse old RC images/checksums or
+assume the earlier local v0.3.0 tag identifies the cleaned firmware. Tag correction
+and hosted publication require explicit authorization and are not flashing steps.
+
+Binary distribution includes LICENSE and third-party notices plus matching
+source/build/relink materials. See the [source delivery guide](V0_3_0_LGPL_DELIVERY.md).

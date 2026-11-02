@@ -238,9 +238,9 @@ static void blackoutAndPresets() {
     CHECK(h.execute(preset(Type::copy_preset, 1, 7)).status == Status::applied);
     CHECK(h.execute(preset(Type::copy_preset, 1, 7)).status == Status::rejected);
     CHECK(h.execute(preset(Type::clear_preset, 7)).status == Status::applied);
-    CHECK(h.storage.mask == 0x80 && h.storage.states[7] == SlotState::valid);
+    CHECK(h.storage.erases == 1 && h.storage.states[7] == SlotState::missing);
     CHECK(h.execute(preset(Type::load_preset, 7)).status == Status::rejected);
-    CHECK(h.execute(preset(Type::copy_preset, 1, 7)).status == Status::applied && h.storage.mask == 0);
+    CHECK(h.execute(preset(Type::copy_preset, 1, 7)).status == Status::applied && h.storage.states[7] == SlotState::valid);
     CHECK(h.execute(preset(Type::load_preset, 7)).status == Status::applied && h.selected_value == 99);
     const auto frames = h.frame_count;
     CHECK(h.execute(preset(Type::load_preset, 7)).status == Status::no_change);
@@ -260,10 +260,12 @@ static void failuresModesAndPages() {
     CHECK(h.execute(preset(Type::load_preset, 0)).status == Status::storage_error);
     CHECK(h.controller.revision() == revision && h.frame_count == 0);
     h.storage.fail_load = false;
-    h.storage.fail_metadata_write = true;
-    CHECK(h.execute(preset(Type::clear_preset, 0)).status == Status::storage_error);
-    CHECK(h.controller.presetExists(0) && h.storage.mask == 0);
-    h.storage.fail_metadata_write = false;
+    h.storage.fail_erase = true;
+    const auto erased = h.execute(preset(Type::clear_preset, 0));
+    CHECK(erased.status == Status::storage_error && erased.domain == DmxController::Result::write_failed);
+    CHECK(h.controller.presetExists(0) && h.storage.states[0] == SlotState::valid && h.storage.erases == 0);
+    CHECK(h.controller.revision() == revision && h.frame_count == 0);
+    h.storage.fail_erase = false;
     h.storage.states[1] = SlotState::corrupt;
     CHECK(h.execute(preset(Type::load_preset, 1)).status == Status::storage_error);
     h.storage.states[1] = SlotState::error;
@@ -294,10 +296,12 @@ static void failuresModesAndPages() {
     CHECK(h.execute(Command::resetSenderCommand()).status == Status::applied);
     CHECK(h.selected_value == 0 && h.controller.workingPacket()[0] == 0);
     CHECK(h.execute(Command::resetSenderCommand()).status == Status::no_change);
-    Harness metadata;
-    metadata.storage.fail_metadata_read = true;
-    CHECK(metadata.execute(preset(Type::save_preset, 0)).status == Status::storage_error);
-    CHECK(metadata.storage.saves == 0);
+    Harness inspection;
+    inspection.storage.fail_inspect = true;
+    CHECK(inspection.execute(preset(Type::save_preset, 0)).status == Status::storage_error);
+    CHECK(inspection.storage.saves == 0 && inspection.storage.erases == 0);
+    inspection.storage.fail_inspect = false;
+    CHECK(inspection.execute(preset(Type::save_preset, 0)).status == Status::applied);
     puts("PASS storage/transport failures, mode changes, reentrancy, page-independent service, reset");
 }
 

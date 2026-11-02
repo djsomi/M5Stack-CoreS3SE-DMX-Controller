@@ -1,5 +1,6 @@
 """Publication-only safety tests. Real frozen Git reads, disposable reconstructions."""
 import copy
+import historical_documents
 import json
 from pathlib import Path
 import shutil
@@ -24,6 +25,7 @@ class PublicationTests(unittest.TestCase):
         # Keep generated Git fixtures under ignored dist for inspection; Git on
         # Windows can retain directory handles beyond subprocess completion.
         cls.directory = Path(tempfile.mkdtemp(prefix="publication-test-", dir=ROOT / "dist"))
+        cls.publication_fixture = historical_documents.restore(cls.directory / "historical-publication")
         cls.snapshot = cls.directory / "snapshot"
         cls.manifest = frozen.create(ROOT, cls.snapshot)
         cls.restored = cls.directory / "frozen"
@@ -124,7 +126,7 @@ class PublicationTests(unittest.TestCase):
         responses = [frozen.COMMIT.encode(), b"", b"scripts/publication_release.py\n",
                      b"scripts/publication_release.py\0", b"scripts/publication_release.py\n"]
         with patch.object(publication, "git", side_effect=responses):
-            actual = publication.publication_identity(ROOT)
+            actual = publication.publication_identity(self.publication_fixture)
         self.assertIsNone(actual["commit"])
         self.assertTrue(actual["dirty"])
         binary = next(r for r in actual["files"] if r["path"].endswith(".tar.gz"))
@@ -133,7 +135,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(binary["sha256"], materials.sha(raw))
         with patch.object(publication, "git", side_effect=responses):
             with self.assertRaisesRegex(ValueError, "clean, distinct"):
-                publication.publication_identity(ROOT, True)
+                publication.publication_identity(self.publication_fixture, True)
 
     def test_production_change_rejected(self):
         def fake(root, *args):
@@ -144,7 +146,7 @@ class PublicationTests(unittest.TestCase):
             raise AssertionError(args)
         with patch.object(publication, "git", side_effect=fake):
             with self.assertRaisesRegex(ValueError, "non-publication"):
-                publication.publication_identity(ROOT)
+                publication.publication_identity(self.publication_fixture)
 
     def test_exact_document_publication_paths_and_no_broad_docs_permission(self):
         for name in publication.candidate.RELEASE_DOCUMENTS:
@@ -157,15 +159,15 @@ class PublicationTests(unittest.TestCase):
     def test_required_documents_fingerprinted_and_missing_inputs_rejected(self):
         root = self.directory / "publication-document-inputs"
         for name in publication.PUBLICATION_PATHS:
-            source = ROOT / name;target = root / name
+            source = self.publication_fixture / name;target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if source.is_dir(): shutil.copytree(source, target)
             else: shutil.copyfile(source, target)
-        for name in publication.candidate.documentation_links(ROOT):
+        for name in publication.candidate.documentation_links(self.publication_fixture):
             target = root / name
             if not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / name, target)
+                shutil.copyfile(self.publication_fixture / name, target)
         def fake(_, *args):
             if args[0] == "rev-parse": return frozen.COMMIT.encode()
             if args[0] == "merge-base": return b""
@@ -199,7 +201,7 @@ class PublicationTests(unittest.TestCase):
         with patch.object(publication, "git", side_effect=responses), \
              patch.object(publication.candidate, "documentation_links", return_value=[local]):
             with self.assertRaisesRegex(ValueError, "untracked non-publication"):
-                publication.publication_identity(ROOT)
+                publication.publication_identity(self.publication_fixture)
 
     def test_diagnostic_profiles_and_changed_source_rejected(self):
         for profile in ("cores3se_unit_diagnostics", "cores3se_base_diagnostics", "unknown"):

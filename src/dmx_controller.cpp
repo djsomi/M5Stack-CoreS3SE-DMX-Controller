@@ -92,26 +92,8 @@ void DmxController::setBlackout(bool active) {
     changed(ChangeKind::blackout);
 }
 
-bool DmxController::loadMetadata() {
-    if (metadata_loaded_) return true;
-    if (!storage_.loadClearedMask(cleared_mask_)) return false;
-    metadata_loaded_ = true;
-    return true;
-}
-
-bool DmxController::markCleared(uint8_t slot, bool cleared) {
-    if (!loadMetadata()) return false;
-    const uint8_t bit = static_cast<uint8_t>(1U << slot);
-    uint8_t next = cleared ? (cleared_mask_ | bit) : (cleared_mask_ & ~bit);
-    if (next == cleared_mask_) return true;
-    if (!storage_.saveClearedMask(next)) return false;
-    cleared_mask_ = next;
-    return true;
-}
-
 DmxPresetStorage::SlotState DmxController::presetState(uint8_t slot) {
-    if (slot >= preset_count || !loadMetadata()) return DmxPresetStorage::SlotState::error;
-    if (cleared_mask_ & (1U << slot)) return DmxPresetStorage::SlotState::missing;
+    if (slot >= preset_count) return DmxPresetStorage::SlotState::error;
     return storage_.inspect(slot);
 }
 
@@ -148,7 +130,6 @@ DmxController::Result DmxController::loadPreset(uint8_t slot) {
 
 DmxController::Result DmxController::savePreset(uint8_t slot) {
     if (slot >= preset_count) return Result::invalid_slot;
-    if (!loadMetadata()) return Result::metadata_failed;
     const auto state = presetState(slot);
     if (state == DmxPresetStorage::SlotState::error) return Result::read_failed;
     if (state == DmxPresetStorage::SlotState::valid) {
@@ -162,10 +143,6 @@ DmxController::Result DmxController::savePreset(uint8_t slot) {
     if (!storage_.save(slot, working_)) {
         if (invalidated) changed(ChangeKind::preset, 0, slot);
         return storage_.noSpace()?Result::storage_full:Result::write_failed;
-    }
-    if (!markCleared(slot, false)) {
-        if (invalidated) changed(ChangeKind::preset, 0, slot);
-        return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
     }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
@@ -185,7 +162,6 @@ DmxController::Result DmxController::copyPreset(uint8_t source, uint8_t target) 
     packet[0] = 0;
     ++preset_revision_;
     if (!storage_.save(target, packet)) return storage_.noSpace()?Result::storage_full:Result::write_failed;
-    if (!markCleared(target, false)) return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
     changed(ChangeKind::preset, 0, target);
     return Result::ok;
 }
@@ -193,12 +169,11 @@ DmxController::Result DmxController::copyPreset(uint8_t source, uint8_t target) 
 DmxController::Result DmxController::clearPreset(uint8_t slot) {
     Result result = readablePreset(slot);
     if (result != Result::ok) return result;
-    // Keep the legacy blob; logical occupancy is the existing cleared mask.
     ++preset_revision_;
     const bool invalidated = invalidateLoaded(slot);
-    if (!markCleared(slot, true)) {
+    if (!storage_.erase(slot)) {
         if (invalidated) changed(ChangeKind::preset, 0, slot);
-        return storage_.noSpace()?Result::storage_full:Result::metadata_failed;
+        return storage_.noSpace()?Result::storage_full:Result::write_failed;
     }
     changed(ChangeKind::preset, 0, slot);
     return Result::ok;
@@ -236,7 +211,6 @@ DmxController::Result DmxController::replaceArchive(uint32_t token) {
     // Only stored-slot provenance changes. Working/output/restore packets and
     // blackout state remain byte-for-byte untouched; transport is not published.
     loaded_preset_=restore_loaded_preset_=0;loaded_modified_=restore_loaded_modified_=false;
-    metadata_loaded_=result==preset_archive::Commit::ok;cleared_mask_=uint8_t(~archive_.present);
     changed(ChangeKind::preset);
     return result==preset_archive::Commit::ok?Result::ok:Result::archive_uncertain;
 }

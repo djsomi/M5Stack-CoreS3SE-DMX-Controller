@@ -14,13 +14,10 @@ class DmxPresetStorage {
     virtual SlotState inspect(uint8_t slot) = 0;
     virtual bool load(uint8_t slot, uint8_t* packet) = 0;
     virtual bool save(uint8_t slot, const uint8_t* packet) = 0;
-    virtual bool loadClearedMask(uint8_t& mask) = 0;
-    virtual bool saveClearedMask(uint8_t mask) = 0;
+    virtual bool erase(uint8_t slot) = 0;
     virtual bool noSpace() const {return false;}
     virtual SlotState captureCollection(preset_archive::Collection& out) {
-        uint8_t cleared=0;if(!loadClearedMask(cleared))return SlotState::error;
         for(uint8_t slot=0;slot<preset_count;++slot){
-            if(cleared&(1U<<slot))continue;
             const auto state=inspect(slot);if(state==SlotState::missing)continue;
             if(state!=SlotState::valid)return state;
             uint8_t packet[packet_size]{};if(!load(slot,packet))return SlotState::error;
@@ -38,6 +35,8 @@ class DmxController {
     static constexpr size_t channel_count = 512;
     static constexpr size_t packet_size = DmxPresetStorage::packet_size;
     static constexpr uint8_t preset_count = DmxPresetStorage::preset_count;
+    // Numeric status 10 remains reserved for existing v0.3 web clients; no
+    // legacy metadata operation is performed by the Controller.
     enum class Result {
         ok, invalid_channel, invalid_value, invalid_slot, empty, same_slot,
         occupied, corrupt, read_failed, write_failed, metadata_failed, invalid_patch, archive_conflict, archive_uncertain, storage_full
@@ -85,8 +84,6 @@ class DmxController {
     Result replaceArchive(uint32_t token);
 
  private:
-    bool loadMetadata();
-    bool markCleared(uint8_t slot, bool cleared);
     bool invalidateLoaded(uint8_t slot);
     Result readablePreset(uint8_t slot);
     void changed(ChangeKind kind, uint16_t channel = 0, uint8_t slot = 0);
@@ -101,8 +98,6 @@ class DmxController {
     bool blackout_ = false;
     uint8_t loaded_preset_ = 0, restore_loaded_preset_ = 0;
     bool loaded_modified_ = false, restore_loaded_modified_ = false;
-    bool metadata_loaded_ = false;
-    uint8_t cleared_mask_ = 0;
     uint64_t revision_ = 0;
     Observer observer_ = nullptr;
     void* observer_context_ = nullptr;

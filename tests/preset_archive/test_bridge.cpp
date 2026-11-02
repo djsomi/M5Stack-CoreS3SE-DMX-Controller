@@ -8,7 +8,7 @@ using namespace websocket_bridge;
 struct Storage:FakeStorage{unsigned replacements=0;bool fail=false;
  preset_archive::Commit replaceAll(const preset_archive::Collection& c,const preset_archive::Gate& gate)override{
   if(fail||!gate.allowed())return preset_archive::Commit::failed;++replacements;
-  mask=uint8_t(~c.present);for(unsigned i=0;i<8;++i){states[i]=c.present&(1U<<i)?SlotState::valid:SlotState::missing;packets[i][0]=0;memcpy(packets[i]+1,c.values[i],512);}return preset_archive::Commit::ok;
+  for(unsigned i=0;i<8;++i){states[i]=c.present&(1U<<i)?SlotState::valid:SlotState::missing;packets[i][0]=0;memcpy(packets[i]+1,c.values[i],512);}return preset_archive::Commit::ok;
  }};
 struct L:Lock{uint32_t now=1000;bool held=false;unsigned captures=0;
  void enter()override{assert(!held);held=true;}void leave()override{assert(held);held=false;}uint32_t nowMs()const override{return now;}

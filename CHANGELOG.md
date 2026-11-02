@@ -1,141 +1,115 @@
 # Changelog
 
-## Publication-readiness supplement (uncommitted; no new version)
+## v0.3.0 — 2026-11-02
 
-- Reconciled the complete original Copyright (c) 2022 M5Stack MIT notice with
-  the existing project notice; added exact dependency/subcomponent license texts
-  and linked-versus-unused inventory for the frozen v0.3.0 firmware.
-- Added deterministic notice packaging/checksums and missing/tampered notice
-  checks without changing sparse flashing ranges, NVS behavior or firmware.
-- Prepared frozen-source/SDK build materials, demonstrated modified Arduino
-  library relinking for Unit and Base, and added separate firmware/publication
-  provenance preflight. Completed the expanded build-material inventory, exact
-  safe exclusions, Boost/SDK/font/codec notices and paired archive validation.
-  Local validation archives are not stable firmware release bundles.
-- Reconciled completed Preset Backup functionality, security/accessibility/
-  performance limitations and portable public documentation paths.
-- Existing annotated v0.3.0 tag is unchanged. Follow-up repository history and
-  binary distribution/source-delivery provenance remain separately authorized steps.
+Changes since public **v0.2.0** (`32c0571`). The cleaned firmware is
+hardware-accepted. Binary manifests identify the committed source; hosted
+publication and tag correction remain separately authorized steps.
+See [installation](docs/V0_3_0_INSTALLATION.md) and [known issues](KNOWN_ISSUES.md).
 
-## v0.3.0 — 2026-10-31 (frozen local source; GitHub publication pending)
+### Installation changes
 
-Comparison: `v0.2.0` (`32c0571`) → `v0.3.0`
-(`59d73dde675b3e873c6d7bbdf0e7b0c9fc5c568b`). The evidence-backed
-[complete coverage matrix](docs/V0_3_0_DOCUMENTATION_COVERAGE.md) links each change
-to commits, implementation, tests and acceptance. [Release notes](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
-and [known issues](KNOWN_ISSUES.md) contain installation/security qualifications.
+- **Upgrading from v0.2.0 requires a complete flash erase.** Presets, device
+  settings and Wi-Fi configuration are reset. Old preset/NVS migration has been
+  removed; no automatic runtime erase or conversion was added.
+- A normal **application-only update of the tested current-format v0.3.0** keeps
+  presets and settings when flash is not erased. Do not use a factory image for
+  a data-preserving update. Historical release candidates are not covered merely
+  because they display v0.3.0.
+- Two complete, Wi-Fi-capable factory images target Unit DMX and experimental
+  Base DMX. Each includes bootloader, partition table, OTA initialization and app,
+  and is written at 0x0. Both use the 16 MiB layout; no filesystem upload is needed.
 
-### User-visible additions
+### New web interface and Wi-Fi
 
-- Complete offline web control of all 512 channels: banked faders, +/- fine
-  adjustment, numeric entry and authoritative physical/web/multi-client updates.
-- Responsive dark Editor, Presets, Settings and Status views; compact mobile
-  header, persistent navigation, `100svh` internal scrolling, safe-area handling,
-  tab-change scroll reset and browser-local secondary-percentage preference.
-- Web P1–P8 Load/Save/Delete with overwrite/delete confirmation, occupied-slot
-  double-tap loading, shared Loaded/Modified tracking and stable action buttons.
-- Web blackout with confirmed ON/OFF feedback and existing pre-blackout snapshot
-  restoration. Edits/loads during blackout do not energize outputs; release
-  restores the entry values, discarding interim changes.
-- **Backup**: version-1 JSON Export/Import of the entire P1–P8 collection,
-  including empty slots. Import does not load live output. Custom confirmation,
-  animated non-percentage progress, duplicate protection and backend result/error
-  feedback; local-time `DMX-Presets-YY-MM-DD-HH-mm.json` downloads.
-- Shared Device Settings: five-stop brightness/volume/timeout controls, live
-  preview, release-time persistence and physical/web synchronization. Always On
-  ordering matches the device; routine Saved/Applied messages and Refresh removed.
-- Web Restart/Power Off with browser confirmation, five-second physical CANCEL
-  and stable green Confirm styling. Original Power Off remains, including
-  USB-connected operation; no artificial battery/USB restriction.
-- SoftAP with embedded HTTP/WebSocket UI at `http://192.168.4.1/`, four-station
-  configuration, DHCP default-router suppression and current station telemetry.
-- Wi-Fi credential changes with physical OK/CANCEL, 60-second approval expiry,
-  verified persistence and recovery. Separate local Wi-Fi ON/OFF (one-second
-  hold, persisted, default ON) and RESET WIFI (two-second hold, next reboot).
-- Physical Settings slider/button alignment at x=10..240, scrollable network
-  details and Build Date footer. Build/version/environment/source identity is
-  visible through boot/status reporting.
-- Status diagnostics expose current/stale/unavailable readings, memory, station,
-  transport and WebSocket health without exposing stored credentials in APIs.
+- Offline SoftAP control at **http://192.168.4.1/** with responsive Editor,
+  Presets, Settings and Status views for desktop, tablet and iPhone, including
+  tested iOS Home Screen mode.
+- Live control of all 512 channels with banked faders, +/- adjustment and direct
+  numeric entry. Physical controls and multiple clients share authoritative state.
+- Web P1–P8 Load, Save and Delete, overwrite/delete confirmation, occupied-tile
+  double-tap loading, and Loaded/Modified tracking.
+- Web Blackout ON/OFF using the existing entry-snapshot restoration semantics.
+  Edits and loads while blacked out do not energize output; releasing blackout
+  restores entry values and discards interim changes.
+- **Backup** imports/exports the whole saved P1–P8 collection as version-1 JSON,
+  including empty slots, without changing live output. Custom Import confirmation,
+  progress dialogs, duplicate protection and useful failure feedback are included.
+  Export filenames use local time: `DMX-Presets-YY-MM-DD-HH-mm.json`.
+- Shared brightness, screen timeout and volume controls with five stops, live
+  preview, save-on-release and physical/web synchronization.
+- Browser-confirmed Restart and original Power Off, including USB-powered use,
+  with a five-second physical CANCEL countdown.
+- Wi-Fi configuration with physical approval, timeout and recovery. Local Wi-Fi
+  ON/OFF uses a one-second hold and persists; RESET WIFI uses a separate two-second
+  hold and applies after reboot. Wi-Fi OFF leaves local DMX control available.
+- Configured four-station SoftAP, station/status telemetry and DHCP router-option
+  suppression. Cellular routing was verified on iPhone in the tested setup.
+- Automatic stale-connection detection and reconnect, complete-state resync and
+  manual Retry. Mutation commands are never automatically replayed.
 
-### User-visible fixes and refinements
+### Physical UI and usability
 
-- Fixed preset Save/Delete after JSON import under constrained NVS: obsolete
-  legacy `p1`–`p8` blobs are reclaimed only after validating the selected complete
-  generation. No NVS enlargement or destructive reset; real full-storage failures
-  retain data and produce explicit actionable feedback.
-- Captured physical Main faders use available raw coordinates without the default
-  processed movement dead zone, retaining identity/release/cancellation checks.
-  Upstream slow-coordinate stalls remain deferred, not claimed fixed.
-- Main → Settings/Presets/Precision navigation cancels kinetic momentum and avoids
-  stale Main rendering in the same iteration; returning preserves scroll position.
-- Improved Safari/Home Screen navigation stability, focus behavior and bank/preset
-  gestures. Final accepted fixed-scale zoom restrictions are documented, not
-  described as unrestricted pinch-zoom accessibility.
-- Restored compact `CH nnn · value` feedback; stabilized blackout header/preset
-  action buttons through pending commands, preset loads and acknowledgments.
-  Confirmed lower blackout ON status is red; OFF remains muted.
-- Automatic stale-OPEN WebSocket detection, fresh-snapshot recovery and manual
-  Retry; routine successful health probes keep the LIVE indicator stable.
-- Fixed sender-only RS485_CLASH no-receiver/reconnect regression without accepting
-  partial frames or weakening retirement checks. This is separate from Base glitches.
+- Captured Main faders respond to available raw coordinates without the default
+  processed movement dead zone, retaining touch identity/release safeguards.
+- Fixed Main-to-Settings/Presets/Precision navigation during kinetic scrolling;
+  stale Main rendering no longer overwrites the destination page.
+- Aligned Settings sliders/buttons, readable network details, persisted Wi-Fi
+  controls and Build Date footer; boot/status information identifies the build.
+- Stable mobile navigation, Safari/Home Screen viewport behavior, focus and bank
+  gestures; compact channel/value feedback and stable blackout/preset buttons.
+- Existing Precision Editor/keypad, STEP behavior, physical presets/copy/clear,
+  battery warnings, sound, sleep/wake and profile power behavior are retained.
+  These were already present before v0.3.0, rather than new web-era features.
 
-### Internal engineering and performance
+### Reliability, storage and performance
 
-- Extracted one authoritative DMX Controller and serialized CommandDispatcher;
-  networking callbacks never mutate Controller/NVS/display state concurrently.
-- Immutable active TX snapshots, full 513-byte qualified completion, safe buffer
-  retirement, ordered blackout barriers, bounded retries/fail-stop for real faults;
-  sender/receiver separation, baud/break/MAB/pins remain controlled by existing paths.
-- Reproducible repository-local patches on esp_dmx v2.02/2.0.2; v4.1.0 was evaluated
-  but not adopted. Pinned espressif32 6.7.0, M5Unified 0.2.21 and M5GFX 0.2.28 remain.
-- 16 MiB layout replaces the 8 MiB configuration, retains NVS at 0x9000/0x5000,
-  provides two 6 MiB app slots and reserves future storage. No OTA/LittleFS feature.
-- One 153,600-byte shared framebuffer explicitly in PSRAM recovered approximately
-  153.6 KB internal RAM and resolved the measured SoftAP initialization allocation
-  failure; unsupported internal fallback is not silently used.
-- Native HTTP/WS bounded queues, generation-qualified requests, strict validation,
-  snapshot/revision ordering, fair bounded outbox draining and first-failure metrics.
-  Rejected sub-millisecond HTTP budgets cannot truncate to unlimited lwIP timeout;
-  three-second absolute HTTP deadline and byte limits retained.
-- Bounded application liveness probes, lifecycle cleanup and no mutation replay.
-  These do not remove the documented synchronous TCP send-stall limitation.
-- Dual-generation preset banks, CRC/readback checks and atomic selector; bounded
-  inactive-bank reuse and validated legacy cleanup. Corruption/uncertain outcomes
-  are not converted to empty presets or silent success.
-- Export reads one coherent collection, larger bounded download chunks and
-  rate-budget-aware delivery; no artificial percentage progress or JSON changes.
-- Deterministic composer and separate Core/UI gzip bundles, content hashes/manifest
-  checks, embedded assets and 16 KiB compressed per-asset limit.
-- Stage 0 hardware/memory diagnostics, transport/network counters and diagnostics
-  isolation. Temporary touch acquisition/snapshot/THDIFF tools need explicit
-  investigation opt-ins; no experimental register writes in standard builds.
-- Host/integration/browser tests, real ESP-IDF NVS reproduction/fault injection,
-  patch-state checks and production/diagnostics Unit/Base build coverage.
+- One authoritative Controller and serialized command processing for touch/web
+  actions. Networking callbacks do not directly mutate Controller or NVS state.
+- Immutable DMX transmit packets, qualified 513-byte completion, safe retirement,
+  ordered blackout transitions and bounded handling of genuine transport faults.
+- Fixed sender-only RS485_CLASH failures with no receiver or on reconnect;
+  incomplete frames still fail qualification. This does not resolve Base glitches.
+- Fixed Save/Delete failures after Import caused by legacy records consuming NVS.
+  The final factory baseline uses current-format generations for every mutation;
+  obsolete keys are neither adopted nor automatically erased.
+- Two CRC-checked preset generations with atomic selection, bounded inactive-bank
+  reuse and interruption recovery. Genuine exhaustion reports storage-full while
+  retaining the selected collection; corruption is not silently treated as empty.
+- Export captures one coherent stored collection and uses larger bounded chunks
+  with responsive progress feedback. JSON compatibility is unchanged.
+- Shared PSRAM framebuffer frees approximately 153.6 KB of internal RAM, resolving
+  the measured SoftAP startup memory failure. One fullscreen canvas is reused.
+- HTTP sub-millisecond send budgets no longer risk becoming unlimited timeouts.
+  Bounded WebSocket queues, session generations, validation and recovery remain.
+- Deterministic embedded HTML/CSS/Core/UI gzip assets, each under 16 KiB, with
+  content hashes. Dependencies and reproducible esp_dmx patches are pinned.
+- Useful hardware/status diagnostics remain. Touch-register experiments require
+  explicit investigation opt-in and are excluded from normal/standard diagnostics.
 
-### Compatibility, acceptance and distribution
+### Hardware acceptance and known limitations
 
-- Existing grid/Precision/keypad, STEP persistence, physical preset copy/clear,
-  battery alerts/volume restoration, sleep/wake and Unit/Base startup power behavior
-  are preserved from earlier releases; they are not newly introduced here.
-- User-reported Unit hardware acceptance covers web/physical control, multiple
-  clients, settings/maintenance/Wi-Fi, Backup, Save/Delete and reboot persistence.
-  Four stations/three WS sessions were recorded, not four simultaneous WS clients.
-- Simplified Unit v0.2.0 → rc.1 migration retained seeded presets/settings and
-  reboot persistence. Base migration, interrupted-upgrade recovery, physical
-  power-cut tests and external DMX electrical measurements remain unverified.
-- Sparse four-image serial installation excludes NVS; app-only flashing cannot
-  migrate partitions. Old padded FULL images overwrite NVS. Export before
-  downgrading: v0.2 cannot read generation-backed changes/reclaimed legacy blobs.
-- Unit recommended; Base experimental. No accessory-detection flash interlock.
-- Keep Import/Export tab open and active. Change the predictable factory password
-  before untrusted use; associated clients share control over local HTTP/WS.
-- Windows/Intel AX200 driver 24.20.2.1 compatibility issue: user-verified
-  **MIMO Power Save Mode > No SMPS** workaround; not a confirmed firmware defect.
-- Publication supplement supplies notices, corresponding-source/build/relink
-  materials and dual provenance. It is separate from the immutable firmware tag;
-  old RCs and local source/notice validation ZIPs are not final firmware releases.
+- **Recommended:** CoreS3SE + Unit DMX U183 + Battery Bottom. Clean erase/install,
+  normal operation, preset Save/Load/Delete/Backup, reboot persistence and a
+  no-erase current-v0.3.0 app update were physically accepted by the user.
+- **Experimental:** CoreS3SE + DMX Base + external PSU. Builds pass; known random
+  fixture glitches remain. Unit acceptance does not establish Base acceptance.
+- Keep the Backup browser tab **open and active** until Import/Export completes.
+- Change the predictable factory Wi-Fi password before untrusted use. Associated
+  clients share control; HTTP/WS has no separate per-user authorization or TLS.
+- Windows/Intel AX200 driver 24.20.2.1 can exhibit packet loss/WS instability.
+  Verified client workaround: **MIMO Power Save Mode → No SMPS**.
+- Slow continuous physical fader coordinate stalls remain a known acquisition
+  limitation. Fixed-scale zoom/accessibility limits and occasional synchronous
+  TCP send stalls are documented, not claimed fixed.
+- External DMX electrical/timing measurements, shutdown-zero wire guarantees,
+  interrupted-install recovery and OTA health rollback remain unverified. OTA,
+  LittleFS, STA/AP+STA and wireless DMX are not implemented features.
 
-Earlier annotated v0.1.0, v0.1.1 and v0.2.0 tags/history remain unchanged.
-v0.2.0 already included the Precision Editor/shared-canvas UI; v0.1.1 fixed skipped
-low-battery thresholds. No earlier feature or release is retroactively reclassified.
+### Source and notices
+
+- Original **Copyright (c) 2022 M5Stack** attribution and third-party notices are
+  retained. Required corresponding source/build/relink materials must accompany
+  binary publication; old RC/source archives are not relabeled as this release.
+- Public v0.1.0, v0.1.1 and v0.2.0 history is unchanged. v0.2.0 already introduced
+  the Precision Editor; skipped battery-threshold warnings were fixed in v0.1.1.

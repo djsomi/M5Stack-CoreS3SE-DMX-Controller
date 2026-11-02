@@ -25,7 +25,7 @@ int main(int argc,char** argv){
   const unsigned reads=fake_nvs::reads,bank_reads=fake_nvs::bank_reads;assert(controller.archive().present==input.present);
   for(unsigned i=0;i<8;++i)if(input.present&(1U<<i))assert(!memcmp(controller.archive().values[i],input.values[i],512));
 #ifdef EXPECT_BULK_SNAPSHOT
-  if(bank)assert(bank_reads==1&&reads==2); // One selector and one verified generation, regardless of occupancy.
+  if(bank||slots)assert(bank_reads==1&&reads==2);else assert(bank_reads==0&&reads==0); // One selector and one verified generation, regardless of occupancy.
 #endif
   char output[preset_archive::max_file];start=Clock::now();auto bytes=preset_archive::serialize(controller.archive(),output,sizeof(output));auto json=us(start);assert(bytes);
   printf("SNAPSHOT bank=%u slots=%u nvs_reads=%u bank_reads=%u capture_host_us=%llu serialize_host_us=%llu bytes=%u\n",bank,slots,reads,bank_reads,(unsigned long long)capture,(unsigned long long)json,unsigned(bytes));

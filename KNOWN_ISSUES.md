@@ -1,16 +1,19 @@
 # Known issues and operating limits — v0.3.0
 
-Applies to frozen firmware tag `v0.3.0`, commit
-`59d73dde675b3e873c6d7bbdf0e7b0c9fc5c568b`. These are limitations, not claims
-of fixes made during publication preparation. The [evidence matrix](docs/V0_3_0_DOCUMENTATION_COVERAGE.md)
-distinguishes source checks, automated tests and user-reported physical acceptance.
+The cleaned firmware with source fingerprint
+`688fe1feb3969ebf8dec8eef0ddd4f623bbc1c36dcf3bd08f9f4bbd40aca9543`
+has user-reported hardware acceptance, including clean installation, preset
+Backup/reboot persistence and a no-erase current-v0.3.0 application update.
+The released binaries identify their exact source commit; hosted publication
+and tag correction are separate steps. Unit acceptance
+does not certify Base hardware or external electrical timing.
 
 ## Intel Wi-Fi 6 AX200 on Windows
 
 **Client-side compatibility issue; not a confirmed firmware defect.** In the
 reported Windows environment with **Intel AX200 driver 24.20.2.1**, significant
 packet loss and WebSocket instability occurred when connected to the SoftAP.
-Earlier development records measured 26–30% ICMP loss; clean macOS tests succeeded
+Earlier development records measured 26â€“30% ICMP loss; clean macOS tests succeeded
 when the unstable Windows client was disconnected. These observations do not
 prove every Windows/AX200 combination is affected.
 
@@ -22,7 +25,7 @@ This changes a client adapter setting, not the controller firmware. Availability
 and wording may differ between driver versions. The exact driver/workaround is
 user-supplied physical evidence recorded during this documentation audit; it was
 not independently retested by the documentation reviewer. See the
-[Stage 6A acceptance record](docs/STAGE6A_WEBSOCKET_IMPLEMENTATION.md) and coverage K03.
+[testing and acceptance scope](docs/TESTING.md).
 
 ## Keep Backup operations in the foreground
 
@@ -39,7 +42,7 @@ Returning to the foreground reconnects and resynchronizes; it does **not** resum
 or replay mutations. If connection loss occurs after the atomic import selection,
 the import may already have committed. Inspect/export the current collection
 before deciding to retry. Do not assume a missing success message means no write.
-See [Backup](docs/PRESET_EXPORT_IMPORT.md) and [Export analysis](docs/PRESET_EXPORT_RESPONSIVENESS.md).
+See [Backup](docs/PRESET_EXPORT_IMPORT.md).
 
 ## Wi-Fi security and control access
 
@@ -64,7 +67,7 @@ CoreS3SE + **Unit DMX U183 + Battery Bottom** is the recommended hardware-tested
 setup. Bare USB can power the CoreS3SE with external bus output disabled; it does
 not supply the Unit in the accepted guarded startup configuration. Base requires
 its external PSU. There is no automatic accessory detection or wrong-profile
-flashing interlock. Verify the ZIP manifest and `UNIT DMX` / `DMX BASE` boot label.
+flashing interlock. Verify the image filename/BUILD_INFO.json and `UNIT DMX` / `DMX BASE` boot label.
 
 The tested **DMX Base remains experimental**: random fixture glitches were
 observed in controlled Unit/Base comparisons, including static/simplified tests.
@@ -83,7 +86,7 @@ it does not promise to resolve upstream coordinate stalls. THDIFF was observed
 changing from `0xA0` to `0xC8` with touch activity; cause and relation to stutter
 remain unknown. THDIFF write experiments are suspended. Production and standard
 diagnostics exclude investigation implementations; no automatic cleanup write is
-performed. See [stabilization isolation](docs/V0_3_0_STABILIZATION_PHASE1.md).
+performed. See [diagnostic isolation](docs/TESTING.md).
 
 ## Accessibility and mobile browser behavior
 
@@ -134,41 +137,30 @@ An apparent five-second countdown near firmware-update-triggered reboot remains
 a deferred observation of unknown cause, not proof an automatic reset can be
 cancelled. No reboot redesign is included.
 
-## Persistence, migration and recovery limits
+## Persistence, installation and recovery limits
 
-- Legacy v0.2 presets/settings remain readable. After generation adoption and
-  verified legacy-key reclamation, v0.2 cannot read generation-backed edits or
-  rely on old `p1`–`p8` blobs. Export JSON before any downgrade; a downgrade is
-  not a data-preserving rollback promise.
-- Two fixed generations are sustainable in the tested constrained 20 KiB NVS
-  workload. Arbitrary unrelated data can still exhaust storage. `storage_full`
-  is actionable failure, not permission to erase NVS. CRC/selector corruption
-  fails closed; no silent fallback to stale legacy presets is promised.
-- Host tests use the actual ESP-IDF NVS algorithm and injected flash faults.
-  They are not physical power-cut qualification. SDK initialization may format
-  corrupt/incompatible NVS, so sparse flash exclusion alone cannot guarantee all
-  damaged storage survives boot.
-- The simplified **Unit v0.2.0 → rc.1** functional migration passed. Separate Base
-  migration, preboot byte-for-byte NVS retention, interrupted-upgrade recovery and
-  upper-flash write/alias checks remain unverified. The final stable distribution
-  has not itself been used in that historical rc.1 test.
-- Two 6 MiB app slots do not provide an OTA updater or validated application-health
-  rollback. The reserved storage partition is not an implemented LittleFS service.
-  App-only flashing cannot migrate the old table. Old padded FULL images overwrite
-  NVS; use the documented individually addressed images and verify checksums.
+- From v0.2.0, full flash erase is required; prior presets/settings are lost.
+  The complete factory BIN at 0x0 covers NVS and must not be used for a
+  data-preserving update.
+- A no-erase application-only update at 0x10000 preserves the tested current-format
+  v0.3.0 data. Use the same 16 MiB layout and generation-backed storage. Historical
+  RC/pre-cleanup labels alone do not establish compatibility.
+- JSON Backup contains presets only, not device settings or Wi-Fi credentials.
+  Export before destructive reinstall or downgrade. There is no v0.2 raw-NVS
+  migration or data-preserving downgrade promise.
+- Two fixed generations are sustainable in the constrained 20 KiB NVS tests.
+  Arbitrary unrelated data can still exhaust storage. Storage-full is an error,
+  not permission to erase NVS. Selected-data CRC/selector corruption fails closed.
+  Obsolete raw preset keys are ignored, not automatically reclaimed.
+- Actual ESP-IDF NVS host tests inject flash faults; they are not physical
+  power-cut qualification. SDK initialization may format corrupt/incompatible
+  NVS, so application-only flashing is not a guarantee for damaged storage.
+- Clean erase/install and no-erase current-v0.3.0 update were physically accepted
+  by the user. Interrupted-install recovery, upper-flash write/alias checks,
+  separate Base acceptance and external RS-485 measurements remain outstanding.
+- Two app slots do not implement OTA, and health-based rollback is unverified.
+  No LittleFS, STA/AP+STA or wireless DMX feature is claimed.
 
-See [migration acceptance](docs/V0_3_0_MIGRATION_ACCEPTANCE.md) and
-[installation](docs/V0_3_0_INSTALLATION.md) before writing flash. Flash/NVS backups
-can contain secrets; keep them private.
-
-## Publication and source provenance
-
-The frozen tag is unchanged. Later notices, source-delivery tools and this audit
-are publication work, not firmware behavior in that tag. Unit/Base modified-Arduino
-relinking and source/notice inventory are locally validated; these tests do not
-alone constitute a legal opinion or prove bit-for-bit regeneration of timestamped
-images. Final publication must name a separate reviewed packaging commit, preserve
-accepted binary hashes, and deliver the corresponding source/build/notice material
-beside the binaries. Local validation archives and old RCs are not final releases.
-See [source inventory](docs/V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md) and
-[LGPL delivery](docs/V0_3_0_LGPL_DELIVERY.md).
+See [installation](docs/V0_3_0_INSTALLATION.md) for the exact supported commands.
+Historical reports and old archives remain local/repository evidence; they do not
+replace current-source checksums or matching source/build materials.

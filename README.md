@@ -73,34 +73,36 @@ A **portable, small-form-factor ESP32-S3 DMX512 controller** built around the **
 
 ---
 
-## v0.3.0 — local stable source
+## v0.3.0 — Wi-Fi and web control
 
-The v0.3.0 source is hardware-accepted and finalized locally; hosted publication
-and new stable firmware bundles are separate distribution steps. Preserved
-`0.3.0-rc.1` archives predate the final fixes and must not be relabeled as stable.
-Public v0.2.0 uses an 8 MiB layout; v0.3.0 uses the measured 16 MiB flash.
-An app-only update cannot migrate the partition table. Use separately addressed
-images, not a padded FULL image, when preserving NVS.
+Control all 512 channels from the touchscreen or the offline web interface at
+**http://192.168.4.1/**. Web Editor, Presets, Settings and Status share live
+Controller state. JSON Backup, blackout, Device Settings, Maintenance and physically
+approved Wi-Fi configuration are included.
 
-There are two Wi-Fi-capable production profiles: Unit (recommended) and Base
-(experimental). Future stable bundles use `CoreS3SE-DMX-v0.3.0-UNIT.zip` and
-`CoreS3SE-DMX-v0.3.0-BASE-EXPERIMENTAL.zip`, containing four addressed images,
-manifest, exact source identity, checksums and instructions. Diagnostics are not
-normal release firmware; no separate Wi-Fi/no-Wi-Fi variant is needed.
+Two complete factory images are built from this release source:
 
-- [Installation and v0.2.0 upgrade instructions](docs/V0_3_0_INSTALLATION.md)
-- [Migration acceptance and outstanding checks](docs/V0_3_0_MIGRATION_ACCEPTANCE.md)
-- [v0.3.0 release notes and limitations](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
-- [Changelog](CHANGELOG.md)
-- [Known issues and operating limits](KNOWN_ISSUES.md)
-- [Release claims and supporting evidence](docs/V0_3_0_DOCUMENTATION_COVERAGE.md)
-- [Preset Backup and Import/Export](docs/PRESET_EXPORT_IMPORT.md)
+- `CoreS3SE-DMX-Unit-v0.3.0.bin` — recommended Unit DMX U183 + Battery Bottom.
+- `CoreS3SE-DMX-Base-v0.3.0.bin` — experimental Base DMX + external PSU.
 
-Preset Save/Delete, Import/Export, reboot persistence and final Backup UI passed
-user-performed physical acceptance. The simplified Unit v0.2.0 → rc.1 migration retained seeded
-presets/settings and reboot persistence; it was not a test of the final stable ZIP. Separate Base migration and
-interrupted-upgrade recovery remain unverified; Unit acceptance does not certify
-Base. The upgrade excludes NVS at `0x9000`/`0x5000`.
+**From v0.2.0:** erase flash, then install the matching factory BIN at 0x0.
+Presets/settings are lost. **For the tested current-format v0.3.0:** an application-
+only update without erase preserves presets/settings. Never use a factory BIN
+for that data-preserving update; it covers the NVS gap.
+
+The user accepted clean erase/install, presets/Backup, reboot persistence and a
+no-erase current-v0.3.0 app update on the controller. Base remains experimental.
+No separate Wi-Fi/no-Wi-Fi firmware is needed.
+
+- [Installation and update commands](docs/V0_3_0_INSTALLATION.md)
+- [Complete changelog](CHANGELOG.md)
+- [Release notes](docs/V0_3_0_RELEASE_NOTES_DRAFT.md)
+- [Known issues](KNOWN_ISSUES.md)
+- [Preset Backup](docs/PRESET_EXPORT_IMPORT.md)
+
+The release manifest records the exact source commit, hardware profile and
+checksums. Hosted publication and correction of the old local tag are separate
+authorized steps.
 
 ## Important operating notes
 
@@ -114,7 +116,7 @@ using Backup Import/Export. Backgrounding intentionally suspends the connection
 and cancels transfers; recovery does not replay writes. Import replaces all
 P1–P8 slots, including empty slots, without changing live output. Export uses
 `DMX-Presets-YY-MM-DD-HH-mm.json` in local browser time. Export before downgrading:
-v0.2.0 cannot read generation-backed edits or rely on reclaimed legacy blobs.
+v0.2.0 cannot read current-format generation-backed presets.
 
 Windows/Intel Wi-Fi 6 AX200 **driver 24.20.2.1** has a user-reported SoftAP
 compatibility issue (packet loss/WebSocket instability). The verified client
@@ -447,15 +449,11 @@ manually edit `.pio/libdeps`. Compressed web assets are deterministic and embedd
 in firmware; no filesystem upload is required.
 
 Build normally with `pio run -e cores3se_unit` or `pio run -e cores3se_base`.
-Read-only `/status` and web Status report version, build environment, Git HEAD,
-modified-input flag and source fingerprint. Stable distribution binaries must originate from the
-verified clean v0.3.0 source and match its accepted receipts, source commit,
-fingerprint and binary checksums. Reuse the accepted frozen images for later
-publication-only packaging; documentation edits do not require a replacement
-firmware build. Record the later publication commit separately. An RC bundle or
-pre-commit build with `.modified` provenance is not that artifact.
-The candidate packager remains a local validation tool; original RC archives and
-checksums are retained unchanged.
+Read-only `/status` and web Status report version, environment, Git commit,
+modified-input flag and source fingerprint. Release binaries must match their
+actual committed source and checksums. Pre-commit review builds remain marked
+`modified`; after committing, rebuild for clean release identity. Old RCs,
+source archives and receipts remain historical and must not be relabeled.
 
 Only production Unit/Base builds are packaged. Diagnostics remain developer
 checks. Two OTA slots reserve capacity but do not provide an OTA updater or
@@ -518,7 +516,7 @@ Before binary publication, complete the corresponding-source/relink delivery
 described in the [build and relink guide](docs/V0_3_0_LGPL_DELIVERY.md), including
 the [reviewed build-material inventory](docs/V0_3_0_SOURCE_DISTRIBUTION_INVENTORY.md).
 [Publication readiness](docs/V0_3_0_PUBLICATION_READINESS.md) distinguishes the
-immutable v0.3.0 firmware tag from later packaging work.
+actual final firmware commit and matching binary/source checksums.
 
 ---
 
@@ -555,4 +553,4 @@ Slow continuous touchscreen fader movement may exhibit intermittent coordinate s
 
 The captured raw-coordinate correction is retained. Touch investigation tools are
 explicit opt-ins; THDIFF register-write experiments remain suspended. See
-[stabilization notes](docs/V0_3_0_STABILIZATION_PHASE1.md).
+[testing and diagnostic isolation](docs/TESTING.md).

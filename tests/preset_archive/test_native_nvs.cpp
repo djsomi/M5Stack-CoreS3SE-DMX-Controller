@@ -40,7 +40,7 @@ void reset(){flash.cut=flash.fail=0;flash.torn=false;unmount();flash.data.assign
 static const unsigned filler_bytes=3072;
 void blob(const char* ns,const char* key,const void* bytes,size_t size){nvs_handle_t h;check(!nvs_open(ns,NVS_READWRITE,&h),"seed namespace");check(!nvs_set_blob(h,key,bytes,size)&&!nvs_commit(h),"seed blob");nvs_close(h);}
 void seed(unsigned filler=filler_bytes){
- reset();for(unsigned i=0;i<8;++i){uint8_t bytes[513]{};memset(bytes+1,int(i+1),512);char key[4];snprintf(key,sizeof(key),"p%u",i+1);blob("dmxpreset",key,bytes,sizeof(bytes));}
+ reset(); // Fresh current-format installation; unrelated namespaces still consume realistic capacity.
  std::vector<uint8_t> other(filler,37);blob("unrelated","retained",other.data(),other.size());
  nvs_handle_t h;check(!nvs_open("dmxui",NVS_READWRITE,&h)&&!nvs_set_u8(h,"volume",0)&&!nvs_commit(h),"device settings");nvs_close(h);
  uint8_t credentials[96];memset(credentials,79,sizeof(credentials));blob("dmxwifi","ap1",credentials,sizeof(credentials));
@@ -86,7 +86,9 @@ void mutations(Rig& r,const char* phase){
 }
 void primary(){
  seed();preset_archive::Collection accepted;
- {Rig r;accepted=r.capture();for(unsigned i=0;i<8;++i)check(accepted.values[i][0]==i+1,"v0.2 P1-P8 migration values");auto backup=r.json();auto imported=r.importFile(backup);check(!strcmp(imported.reason,"applied"),"JSON adoption succeeds before capacity regression");}
+ {Rig r;check(r.capture().present==0,"fresh installation empty");
+  for(unsigned i=0;i<8;++i){r.controller.setChannel(1,int(i+1));check(r.physical.savePreset(i),"first and subsequent current-format Saves");r.drain(r.a);r.drain(r.b);}
+  accepted=r.capture();for(unsigned i=0;i<8;++i)check(accepted.values[i][0]==i+1,"eight current-format values");auto backup=r.json();auto imported=r.importFile(backup);check(!strcmp(imported.reason,"applied"),"JSON replacement succeeds");}
  reboot(); // No new import/export after this boot: reproduces persistent failure.
  {Rig r;check(same(r.capture(),accepted),"import persists reboot");mutations(r,"fresh boot physical Save after imported bank");auto before=r.json();check(r.exportFile()==before,"latest export includes Save/Delete");mutations(r,"physical Save immediately after export");
   auto cancelled=r.importFile(before,true);check(!strcmp(cancelled.reason,"cancelled"),"cancel import");mutations(r,"Save after cancelled import");auto failed=r.importFile("{bad}");check(!strcmp(failed.reason,"invalid"),"failed validation");mutations(r,"Save after failed import");
@@ -94,24 +96,24 @@ void primary(){
   for(unsigned i=0;i<48;++i){r.controller.setChannel(1,int(50+i));check(r.physical.savePreset(6),"repeated Save");check(r.physical.clearPreset(6),"repeated Delete");r.drain(r.a);r.drain(r.b);}
   accepted=r.capture();unrelated();
   nvs_handle_t h;check(!nvs_open("dmxpreset",NVS_READONLY,&h),"bounded keys");
-  for(unsigned i=1;i<=8;++i){char key[4];snprintf(key,sizeof(key),"p%u",i);size_t n=0;check(nvs_get_blob(h,key,nullptr,&n)==ESP_ERR_NVS_NOT_FOUND,"all obsolete legacy blobs reclaimed");}
+  for(unsigned i=1;i<=8;++i){char key[4];snprintf(key,sizeof(key),"p%u",i);size_t n=0;check(nvs_get_blob(h,key,nullptr,&n)==ESP_ERR_NVS_NOT_FOUND,"current-format operations never create legacy keys");}
   for(const char* key:{"xbank0","xbank1"}){size_t n=0;check(!nvs_get_blob(h,key,nullptr,&n)&&n==preset_archive::Store::bytes,"two bounded generations reused");}nvs_close(h);}
  reboot();{Rig r;check(same(r.capture(),accepted),"repeated mutations persist reboot");check(!r.controller.presetExists(6),"deleted slot stays deleted");check(r.controller.loadPreset(0)==DmxController::Result::ok,"explicit load still works");unrelated();nvs_stats_t stats;check(!nvs_get_stats("nvs",&stats),"stats");printf("PASS real NVS primary: fresh-boot physical/web Save/Delete, import/export/cancel/failure, 48 repeated cycles, reboot, peers, DMX/blackout; used=%u free=%u total=%u\n",unsigned(stats.used_entries),unsigned(stats.free_entries),unsigned(stats.total_entries));}
 }
 bool capture(preset_archive::Collection& out){PresetStore storage;out={};return storage.captureCollection(out)==DmxPresetStorage::SlotState::valid;}
 void interrupted(){
- for(bool adopted:{false,true}){
+ for(bool existing:{false,true}){
   seed();preset_archive::Collection old;check(capture(old),"initial collection");
-  if(adopted){PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"adopt before interruption");}
+  if(existing){PresetStore s;old.present=255;for(unsigned i=0;i<8;++i)memset(old.values[i],int(i+1),512);check(s.replaceAll(old,{})==preset_archive::Commit::ok,"initial current-format bank");}
   const auto image=flash.data;auto next=old;next.values[0][22]=237;next.present=0x81;
   flash.writes=0;{PresetStore s;check(s.replaceAll(next,{})==preset_archive::Commit::ok,"count flash boundaries");}
   const unsigned writes=flash.writes;
   for(bool after:{false,true})for(unsigned cut=1;cut<=writes;++cut){
    unmount();flash.data=image;mount();flash.writes=0;flash.cut=cut;flash.after=after;
    try{PresetStore s;s.replaceAll(next,{});}catch(Cut&){}
-   reboot();preset_archive::Collection recovered;check(capture(recovered),"recover every interrupted cleanup/write");
+   reboot();preset_archive::Collection recovered;check(capture(recovered),"recover every interrupted current-format write");
    check(same(recovered,old)||same(recovered,next),"atomic old-or-new collection, never mixture");unrelated();
-   PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"retry after interrupted staging/cleanup");
+   PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"retry after interrupted staging");
   }
   for(unsigned cut=1;cut<=writes;++cut){
    unmount();flash.data=image;mount();flash.writes=0;flash.cut=cut;flash.torn=true;
@@ -125,13 +127,13 @@ void interrupted(){
    {PresetStore s;s.replaceAll(next,{});}reboot();preset_archive::Collection recovered;
    check(capture(recovered)&&(same(recovered,old)||same(recovered,next)),"flash-error recovery");unrelated();
   }
-  printf("PASS real NVS interruptions: adopted=%u flash boundaries=%u, before/after cuts and errors; selected collection and unrelated data retained\n",adopted,writes);
+  printf("PASS real NVS interruptions: existing=%u flash boundaries=%u, before/after cuts and errors; selected collection and unrelated data retained\n",existing,writes);
  }
 }
 void capacity(){
- seed();preset_archive::Collection old;check(capture(old),"capacity baseline");
- {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"capacity adoption");uint8_t p[513]{};p[1]=42;check(s.save(0,p),"reclaim before genuine exhaustion");}
- check(capture(old),"capture after reclaim");
+ seed();preset_archive::Collection old;old.present=255;memset(old.values,24,sizeof(old.values));
+ {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"capacity initial bank");uint8_t p[513]{};p[1]=42;check(s.save(0,p),"current-format Save before genuine exhaustion");}
+ check(capture(old),"capacity authoritative snapshot");
  {PresetArchiveKv kv(true);uint8_t active=2;check(kv.selector(active)==preset_archive::Io::ok&&kv.erase(active^1)&&kv.commit(),"remove only inactive test bank before exhaustion");}
  nvs_handle_t h;check(!nvs_open("capacity",NVS_READWRITE,&h),"capacity ns");
  uint8_t extra[128];memset(extra,65,sizeof(extra));unsigned count=0;
@@ -144,27 +146,43 @@ void capacity(){
 }
 void guards(){
  seed();preset_archive::Collection old;check(capture(old),"guard baseline");
- {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"guard adoption");}
+ {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"guard initial bank");}
  const auto image=flash.data;
- // Read-only Load/Export/capture must not trigger reclamation.
- flash.writes=0;check(capture(old)&&flash.writes==0,"read-only does not reclaim");
+ // Read-only Load/Export/capture must not write.
+ flash.writes=0;check(capture(old)&&flash.writes==0,"read-only never writes");
  nvs_handle_t h;check(!nvs_open("dmxpreset",NVS_READWRITE,&h),"guard namespace");
- size_t size=0;check(!nvs_get_blob(h,"p1",nullptr,&size)&&size==513,"legacy retained until first bank-backed mutation");
+ size_t size=0;check(nvs_get_blob(h,"p1",nullptr,&size)==ESP_ERR_NVS_NOT_FOUND,"no obsolete key created");
  check(!nvs_set_u8(h,"xactive",7),"corrupt selector");nvs_close(h);flash.writes=0;
- {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::failed&&flash.writes==0,"invalid selector forbids cleanup");}
+ {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::failed&&flash.writes==0,"invalid selector forbids writes");}
  unmount();flash.data=image;mount();check(!nvs_open("dmxpreset",NVS_READWRITE,&h),"CRC guard namespace");
  std::vector<uint8_t> bank(preset_archive::Store::bytes);size=bank.size();check(!nvs_get_blob(h,"xbank0",bank.data(),&size),"read bank");bank[42]^=1;check(!nvs_erase_key(h,"xbank0"),"prepare CRC corruption");check(!nvs_set_blob(h,"xbank0",bank.data(),size),"damage CRC");nvs_close(h);flash.writes=0;
- {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::failed&&flash.writes==0,"invalid active CRC forbids cleanup");}unrelated();
- puts("PASS real NVS guards: read-only operations, invalid selector and corrupt selected CRC never reclaim legacy data");
+ {PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::failed&&flash.writes==0,"invalid active CRC forbids writes");}unrelated();
+ puts("PASS real NVS guards: read-only operations, invalid selector and corrupt selected CRC never mutate selected data");
 }
-void legacy(){
- seed();{PresetStore s;check(s.saveClearedMask(2),"native legacy tombstone");}
- reboot();{Rig r;check(!r.controller.presetExists(1),"v0.2 logical deletion retained");r.controller.setChannel(23,211);check(r.physical.savePreset(1),"legacy Save restores deleted slot");check(r.physical.clearPreset(0),"legacy Delete");}
- reboot();preset_archive::Collection old;check(capture(old)&&!(old.present&1)&&(old.present&2)&&old.values[1][22]==211,"v0.2 mutations and metadata persist");
+void freshAndObsolete(){
+ seed();uint8_t obsolete[513];memset(obsolete,31,sizeof(obsolete));blob("dmxpreset","p1",obsolete,sizeof(obsolete));uint8_t tombstone=0;blob("dmxmeta","cleared",&tombstone,1);
+ flash.writes=0;preset_archive::Collection empty;check(capture(empty)&&empty.present==0&&flash.writes==0,"obsolete records ignored without conversion/erase");
  unsigned calls=0;preset_archive::Gate gate;gate.context=&calls;gate.check=[](void* p){return ++*static_cast<unsigned*>(p)==1;};
- {PresetStore s;auto next=old;next.values[1][22]=240;check(s.replaceAll(next,gate)==preset_archive::Commit::failed,"cancel first adoption after candidate write");}
- reboot();preset_archive::Collection recovered;check(capture(recovered)&&same(recovered,old),"cancelled candidate never selected");
- {Rig r;r.controller.setChannel(23,212);check(r.physical.savePreset(1),"legacy Save after cancelled candidate");check(r.physical.clearPreset(2),"legacy Delete after cancelled candidate");}unrelated();
- puts("PASS real NVS v0.2 tombstones/Save/Delete/reboot and cancelled first-import candidate recovery");
+ {PresetStore s;auto next=empty;next.present=1;next.values[0][22]=240;check(s.replaceAll(next,gate)==preset_archive::Commit::failed,"cancel first publication after candidate write");}
+ reboot();check(capture(empty)&&empty.present==0,"unselected candidate invisible after reboot");
+ {Rig r;r.controller.setChannel(23,212);check(r.physical.savePreset(1),"first Save after cancelled candidate");check(r.physical.clearPreset(1),"Delete after first Save");}
+ reboot();check(capture(empty)&&!empty.present,"empty selected collection persists");
+ nvs_handle_t h;check(!nvs_open("dmxpreset",NVS_READONLY,&h),"obsolete probe namespace");uint8_t read[513];size_t n=sizeof(read);check(!nvs_get_blob(h,"p1",read,&n)&&n==sizeof(read)&&!memcmp(read,obsolete,n),"obsolete data untouched");nvs_close(h);
+ check(!nvs_open("dmxmeta",NVS_READONLY,&h),"obsolete metadata namespace");n=1;check(!nvs_get_blob(h,"cleared",read,&n)&&read[0]==0,"obsolete metadata untouched");nvs_close(h);unrelated();
+ puts("PASS real NVS fresh empty, ignored obsolete records, cancelled first candidate, Save/Delete/reboot without migration or cleanup writes");
 }
-int main(){setvbuf(stdout,nullptr,_IONBF,0);primary();interrupted();capacity();guards();legacy();unmount();}
+void mutationCuts(){
+ for(bool deleting:{false,true}){
+  seed();preset_archive::Collection old;old.present=255;memset(old.values,18,sizeof(old.values));{PresetStore s;check(s.replaceAll(old,{})==preset_archive::Commit::ok,"mutation initial bank");}
+  auto next=old;if(deleting)next.present&=~1U;else next.values[0][0]=91;
+  const auto image=flash.data;auto mutate=[&](){PresetStore s;if(deleting)return s.erase(0);uint8_t packet[513]{};memcpy(packet+1,next.values[0],512);return s.save(0,packet);};
+  flash.writes=0;check(mutate(),"count Save/Delete boundaries");const unsigned writes=flash.writes;
+  for(unsigned variant=0;variant<5;++variant)for(unsigned at=1;at<=writes;++at){
+   unmount();flash.data=image;mount();flash.writes=0;flash.after=variant==1||variant==4;flash.torn=variant==2;
+   if(variant<3)flash.cut=at;else flash.fail=at;
+   try{mutate();}catch(Cut&){}reboot();preset_archive::Collection recovered;check(capture(recovered)&&(same(recovered,old)||same(recovered,next)),"Save/Delete cut/error old-or-new");unrelated();
+  }
+  printf("PASS real NVS %s: %u flash boundaries, before/after/torn cuts and API errors\n",deleting?"Delete":"Save",writes);
+ }
+}
+int main(){setvbuf(stdout,nullptr,_IONBF,0);primary();interrupted();capacity();guards();freshAndObsolete();mutationCuts();unmount();}

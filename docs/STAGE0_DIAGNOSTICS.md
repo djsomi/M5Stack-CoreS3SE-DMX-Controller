@@ -1,7 +1,8 @@
-# Stage 0 Hardware Baseline Diagnostics
+# Hardware and memory diagnostics
 
-Temporary diagnostics only, based on v0.2.0 / `32c0571`. No Wi-Fi, controller
-extraction, partition changes, or DMX scheduling changes are included.
+Bounded diagnostics for the current Unit/Base firmware. Normal builds keep them
+off; standard diagnostics do not enable suspended touch-register experiments.
+See [testing and acceptance limits](TESTING.md).
 
 ## Enable and Build
 
@@ -170,10 +171,3 @@ External baseline measurements still needed:
 - Test both Unit/Battery Bottom and Base/external PSU with representative load,
   termination/cabling and fixture behavior. Capture blackout's exact zero and
   restore-entry behavior separately from memory logs.
-
-Hardware data awaited before Stage 1: actual board/flash/PSRAM identification;
-free/minimum/largest-block measurements at all requested transitions; shared
-canvas pointer reuse and navigation stability; preset success and retained
-values; disabled-build DMX timing/coherence captures; and power/speaker/sleep
-regression observations. Wi-Fi memory overhead is intentionally not measured in
-Stage 0 because the radio remains unimplemented/off.

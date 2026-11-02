@@ -85,7 +85,7 @@ int main(){
     lock.ms=11000;send(fresh,"{\"v\":1,\"id\":2,\"type\":\"maintenance.request\",\"action\":\"power_off\"}");assert(result(fresh)==M::Result::busy);
     send(peer,"{\"v\":1,\"id\":4,\"type\":\"channel.set\",\"channel\":1,\"value\":12}");dispatcher.process();assert(controller.channel(1)==99);
     authority.poll(11001,11001000,true);assert(hw.executions==1&&hw.zeros==0&&hw.retired==0);
-    assert(storage.saves==0&&storage.metadata_writes==0&&controller.workingPacket()[0]==0);
+    assert(storage.saves==0&&storage.erases==0&&controller.workingPacket()[0]==0);
     for(const char* bad:{"{\"v\":1,\"id\":9,\"type\":\"maintenance.approve\"}",
         "{\"v\":1,\"id\":9,\"type\":\"maintenance.request\",\"action\":\"erase\"}",
         "{\"v\":1,\"id\":9,\"type\":\"maintenance.cancel\",\"request\":0}"}){

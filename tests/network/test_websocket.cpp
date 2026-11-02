@@ -357,7 +357,7 @@ void webPresetBlackoutOperations() {
     for(const auto text:invalid) {
         r.clock+=1001;r.send(a,text);r.apply();
         CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error);drain();
-        CHECK(r.storage.saves==0&&r.storage.metadata_writes==0&&r.controller.revision()==0&&pub.calls==0&&!r.controller.blackoutActive());
+        CHECK(r.storage.saves==0&&r.storage.erases==0&&r.controller.revision()==0&&pub.calls==0&&!r.controller.blackoutActive());
     }
     send("preset.load",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.domain==unsigned(DmxController::Result::empty));drain();
     r.dispatcher.executeLocal(ControllerCommand::channelCommand(CommandType::set_channel,1,77));drain();
@@ -375,15 +375,16 @@ void webPresetBlackoutOperations() {
     r.clock+=1001;r.send(a,channel(++id,1,99));r.apply();drain();CHECK(r.controller.outputPacket()[1]==0);
     send("preset.save",8);CHECK(r.storage.packets[7][1]==99&&r.controller.outputPacket()[1]==0);bulkAck(CommandStatus::applied);
     send("preset.load",1);CHECK(r.controller.channel(1)==77&&r.controller.outputPacket()[1]==0);bulkAck(CommandStatus::applied);
-    const auto beforeClear=pub.calls;send("preset.clear",8);CHECK(pub.calls==beforeClear&&r.storage.mask==128&&r.storage.packets[7][1]==99&&!r.controller.presetExists(7));bulkAck(CommandStatus::applied);
+    const auto beforeClear=pub.calls;send("preset.clear",8);CHECK(pub.calls==beforeClear&&r.storage.erases==1&&r.storage.states[7]==DmxPresetStorage::SlotState::missing&&!r.controller.presetExists(7));bulkAck(CommandStatus::applied);
     r.clock+=1001;r.send(a,blackout(++id,true));r.apply();CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::ack&&r.event.result==CommandStatus::no_change);drain();
     r.clock+=1001;r.send(a,blackout(++id,false));r.apply();CHECK(r.controller.channel(1)==12&&r.controller.outputPacket()[1]==12);bulkAck(CommandStatus::applied);
     const auto writes=r.storage.saves;const auto stable=r.controller.revision();
     r.storage.fail_save=true;send("preset.save",2);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();
     CHECK(r.storage.saves==writes&&r.controller.revision()==stable&&r.controller.channel(1)==12);r.storage.fail_save=false;
-    r.storage.fail_metadata_write=true;send("preset.save",8);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();
-    CHECK(r.storage.saves==writes+1&&r.storage.mask==128&&r.controller.revision()==stable&&!r.controller.presetExists(7));
-    send("preset.clear",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();CHECK(r.controller.presetExists(0));r.storage.fail_metadata_write=false;
+    r.storage.fail_inspect=true;send("preset.save",8);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error&&r.event.domain==unsigned(DmxController::Result::read_failed));drain();
+    CHECK(r.storage.saves==writes&&r.storage.states[7]==DmxPresetStorage::SlotState::missing&&r.controller.revision()==stable);r.storage.fail_inspect=false;
+    CHECK(!r.controller.presetExists(7));
+    r.storage.fail_erase=true;send("preset.clear",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error&&r.event.domain==unsigned(DmxController::Result::write_failed));drain();CHECK(r.controller.presetExists(0)&&r.storage.erases==1);r.storage.fail_erase=false;
     r.storage.fail_load=true;send("preset.load",1);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error&&r.event.result==CommandStatus::storage_error);drain();CHECK(r.controller.channel(1)==12);r.storage.fail_load=false;
     r.storage.states[2]=DmxPresetStorage::SlotState::corrupt;
     send("preset.load",3);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe);CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::error);drain();
@@ -397,9 +398,9 @@ void webPresetBlackoutOperations() {
     const auto stableOutput=pub.calls;
     r.clock+=1001;r.send(b,presetCommand(2,"preset.save",3));r.send(c,presetCommand(2,"preset.clear",1));r.apply();r.apply();drain();
     CHECK(r.controller.presetExists(2)&&!r.controller.presetExists(0)&&r.controller.channel(1)==44&&pub.calls==stableOutput);
-    const auto metadataWrites=r.storage.metadata_writes;
+    const auto erases=r.storage.erases;
     r.send(c,presetCommand(2,"preset.clear",1));r.apply();CHECK(r.bridge.take(c,r.event)&&r.event.kind==Kind::error&&r.event.reason&&!strcmp(r.event.reason,"id_order"));drain();
-    CHECK(r.storage.metadata_writes==metadataWrites);
+    CHECK(r.storage.erases==erases);
     r.dispatcher.setSenderActive(false);r.send(b,presetCommand(3,"preset.load",3));r.bridge.ownerPoll(false);
     bool universe=false;while(r.bridge.take(b,r.event))if(r.event.kind==Kind::universe)universe=true;
     CHECK(!universe&&r.controller.channel(1)==44);
@@ -419,7 +420,7 @@ void presetObservationRecovery() {
     CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==1);const auto update=r.event.sequence;
     CHECK(r.bridge.take(b,r.event)&&r.event.kind==Kind::universe&&r.event.presets[1]==1&&r.event.sequence==update);
     CHECK(r.bridge.take(a,r.event)&&r.event.kind==Kind::snapshot&&r.event.id==2&&r.event.sequence>update&&r.event.presets[1]==1);
-    CHECK(r.storage.saves==0&&r.storage.metadata_writes==0&&r.controller.channel(1)==0);
+    CHECK(r.storage.saves==0&&r.storage.erases==0&&r.controller.channel(1)==0);
     const auto reads=r.storage.inspections;
     r.send(a,R"({"v":1,"id":3,"type":"state.request"})");r.apply();CHECK(r.storage.inspections==reads);r.drain(a);r.drain(b);
 }

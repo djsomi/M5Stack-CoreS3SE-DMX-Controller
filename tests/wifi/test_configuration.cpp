@@ -130,6 +130,6 @@ int main(){
         assert(!strstr(output,"\"password\":"));
     }
     assert(authority.approve(0));assert(hw.begins==1);bridge.close(token);authority.poll(1);assert(authority.applying());
-    assert(storage.saves==0&&storage.metadata_writes==0&&controller.revision()==0);
+    assert(storage.saves==0&&storage.erases==0&&controller.revision()==0);
     puts("PASS Wi-Fi approval/CANCEL/60s/wrap/disconnect/revision/conflict; V1/V2 journal power cuts, durable failures, rollback/reset; strict Base64, real Bridge and no outbound password/NVS domain writes");
 }

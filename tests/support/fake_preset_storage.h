@@ -6,18 +6,19 @@
 struct FakeStorage : DmxPresetStorage {
     uint8_t packets[preset_count][packet_size] = {};
     SlotState states[preset_count];
-    uint8_t mask = 0;
+    bool fail_inspect = false;
     bool fail_load = false;
     bool fail_save = false;
-    bool fail_metadata_read = false;
-    bool fail_metadata_write = false;
+    bool fail_erase = false;
     unsigned saves = 0;
-    unsigned metadata_writes = 0;
+    unsigned erases = 0;
 
     FakeStorage() {
         for (auto& state : states) state = SlotState::missing;
     }
-    SlotState inspect(uint8_t slot) override { return states[slot]; }
+    SlotState inspect(uint8_t slot) override {
+        return fail_inspect ? SlotState::error : states[slot];
+    }
     bool load(uint8_t slot, uint8_t* packet) override {
         if (fail_load || states[slot] != SlotState::valid) return false;
         memcpy(packet, packets[slot], packet_size);
@@ -30,15 +31,10 @@ struct FakeStorage : DmxPresetStorage {
         ++saves;
         return true;
     }
-    bool loadClearedMask(uint8_t& value) override {
-        if (fail_metadata_read) return false;
-        value = mask;
-        return true;
-    }
-    bool saveClearedMask(uint8_t value) override {
-        if (fail_metadata_write) return false;
-        mask = value;
-        ++metadata_writes;
+    bool erase(uint8_t slot) override {
+        if (fail_erase) return false;
+        states[slot] = SlotState::missing;
+        ++erases;
         return true;
     }
 };

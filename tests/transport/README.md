@@ -53,7 +53,7 @@ These tests validate software transitions against a deliberately adverse UART
 model. They do not establish actual MMIO event latency/order, electrical DMX
 integrity, break/MAB duration, analog RS-485 quality, fixture acceptance or the
 absence of experimental Base glitches. Follow the separate hardware checklist
-in `docs/STAGE3_TRANSPORT_IMPLEMENTATION.md` before committing this candidate.
+in `docs/TESTING.md` before committing this candidate.
 
 ## Sender CLASH policy regression
 
@@ -66,4 +66,4 @@ No temporary event-history or USB diagnostics are part of this suite/hotfix.
 
 An optional second argument to `test_patch.py` supplies a previous fully patched
 library to verify rejection without writes of the old fatal-CLASH revision.
-See `docs/STAGE3E_PRODUCTION_HOTFIX.md` for scope and validation.
+See `docs/TESTING.md` for scope and validation.

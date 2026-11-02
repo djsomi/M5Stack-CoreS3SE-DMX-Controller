@@ -1,6 +1,10 @@
 # v0.3.0 source-distribution inventory and validation
 
-Frozen firmware source: `59d73dde675b3e873c6d7bbdf0e7b0c9fc5c568b`, annotated `v0.3.0`. Firmware input fingerprint remains `cbffd12e6339693294b46b2fe1ee1ba698c5d887bd223a2486f9c20aa0faa232`. This is an unpublished publication supplement; no runtime source, accepted image, tag or NVS data is changed.
+This is the unchanged dependency/source-material inventory used by the cleaned
+v0.3.0 configuration. The final application source is the commit recorded in
+BUILD_INFO.json. Older application archive checksums and relink records below
+are historical validation evidence, not the final cleaned application package.
+No old archive or tag is silently relabeled.
 
 The reviewed manifest is [licenses/source_materials/manifest.json](../licenses/source_materials/manifest.json). It inventories **112 component groups, 2,818 dependency files, 1,316 exact exclusions and 37 notice/source items**. Every retained dependency file has its exact path, length, SHA-256, component and classification. All exclusions list the original hash and a reason. They are omissions from new archives, not deletions from installed dependencies or historical archives.
 
@@ -51,7 +55,7 @@ The complete 1,316-path list is `excluded_files` in the manifest. Aggregate reas
 
 Total excluded: **1,316 files / 87,241,563 bytes**. Firmware and dependency source text is never edited to make exclusions work.
 
-## Final local archives
+## Historical local validation archives
 
 | Archive | Bytes | Members | SHA-256 |
 |---|---:|---:|---|

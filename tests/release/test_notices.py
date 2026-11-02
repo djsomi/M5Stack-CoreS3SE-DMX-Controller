@@ -72,7 +72,13 @@ class NoticeTests(unittest.TestCase):
         self.assertIn("completed in v0.3.0", readme)
         self.assertIn("before use in any untrusted environment", readme)
         self.assertIn("accessibility limitation", readme)
-        self.assertIn("Separate Base migration", readme)
+        self.assertIn("Base remains experimental", readme)
+        installation = (ROOT / "docs/V0_3_0_INSTALLATION.md").read_text(encoding="utf-8")
+        self.assertIn("v0.2.0 → v0.3.0: clean installation", installation)
+        self.assertIn("Existing current v0.3.0 → updated v0.3.0: retain data", installation)
+        self.assertIn("erase_flash", installation)
+        self.assertIn("0x10000", installation)
+        self.assertIn("can erase NVS even without a separate erase command", installation)
         for name in ["THIRD_PARTY_NOTICES.md", "docs/V0_3_0_PUBLICATION_READINESS.md",
                      "docs/V0_3_0_INSTALLATION.md", "docs/V0_3_0_RELEASE_NOTES_DRAFT.md"]:
             path = ROOT / name

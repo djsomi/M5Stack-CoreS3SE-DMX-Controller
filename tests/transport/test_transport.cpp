@@ -568,7 +568,7 @@ static void maintenanceZeroAndRetirement() {
     CHECK(shutdown.quiesce(hw.now)==DeviceMaintenance::Step::ready);
     CHECK(h.transport.receiverReady()&&!dmx_tx_owned(&h.f.object.tx));
     CHECK(h.controller.revision()==revision&&h.controller.channel(21)==91);
-    CHECK(h.storage.saves==0&&h.storage.metadata_writes==0);
+    CHECK(h.storage.saves==0&&h.storage.erases==0);
     puts("PASS maintenance adapter: active immutable packet, ordered blackout barriers, three real ISR-qualified 513-byte zeros, clash isolation and safe retirement; Controller/NVS unchanged");
 }
 

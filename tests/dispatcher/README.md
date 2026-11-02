@@ -33,4 +33,4 @@ tested Stage 1 commit `0e43640e57519e47177b08fae9c0b86ff8b0e9d9`.
 
 These are not tests of actual touch hardware, visual rendering, real NVS, task
 concurrency, DMX electrical timing, or packet coherence. No cross-task safety is
-implemented or claimed. Perform the hardware checklist in `docs/STAGE2_DISPATCHER.md`.
+implemented or claimed. Perform the hardware checklist in `docs/TESTING.md`.

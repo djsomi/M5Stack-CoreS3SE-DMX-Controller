@@ -1,5 +1,6 @@
 """Host-only provenance/archive boundaries; no device, Git mutation or credentials."""
 import ast
+import historical_documents
 import copy
 import hashlib
 import json
@@ -26,6 +27,7 @@ class ReleaseTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="release-test-", dir=ROOT / "dist")
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+        self.documents = historical_documents.restore(self.folder / "historical-documents")
 
     def test_single_version_source(self):
         self.assertEqual(provenance.versions(ROOT), ("0.3.0", "0.3.0"))
@@ -106,12 +108,12 @@ class ReleaseTests(unittest.TestCase):
 
     def make_zip(self, extra=False, wrong_hash=False):
         notices.copy(ROOT, self.folder)
-        candidate.copy_documentation(ROOT, self.folder)
+        candidate.copy_documentation(self.documents, self.folder)
         for name in candidate.MEMBERS - {"SHA256SUMS.txt", *notices.FILES, *candidate.RELEASE_DOCUMENTS}:
             (self.folder / name).write_bytes(name.encode())
         (self.folder / "manifest.json").write_text(json.dumps(
             {"distribution_notices": notices.file_manifest(ROOT), "release_candidate": True,
-             "distribution_documentation": candidate.documentation_manifest(ROOT)}), encoding="utf-8")
+             "distribution_documentation": candidate.documentation_manifest(self.documents)}), encoding="utf-8")
         sums = ''.join(hashlib.sha256((self.folder / name).read_bytes()).hexdigest()+"  "+name+"\n"
                        for name in sorted(candidate.MEMBERS - {"SHA256SUMS.txt"}))
         if wrong_hash:
@@ -126,15 +128,15 @@ class ReleaseTests(unittest.TestCase):
         return zpath
 
     def test_zip_members_and_every_internal_checksum(self):
-        candidate.verify_zip(self.make_zip(), self.folder)
+        candidate.verify_zip(self.make_zip(), self.folder, self.documents)
 
     def test_extra_private_or_full_image_rejected(self):
         with self.assertRaises(ValueError):
-            candidate.verify_zip(self.make_zip(extra=True), self.folder)
+            candidate.verify_zip(self.make_zip(extra=True), self.folder, self.documents)
 
     def test_bad_checksum_rejected(self):
         with self.assertRaises(ValueError):
-            candidate.verify_zip(self.make_zip(wrong_hash=True), self.folder)
+            candidate.verify_zip(self.make_zip(wrong_hash=True), self.folder, self.documents)
 
     def rewrite_zip(self, path, change):
         with zipfile.ZipFile(path) as archive:
@@ -157,23 +159,23 @@ class ReleaseTests(unittest.TestCase):
         path = self.make_zip()
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("manifest.json"))
-            self.assertEqual(manifest["distribution_documentation"], candidate.documentation_manifest(ROOT))
+            self.assertEqual(manifest["distribution_documentation"], candidate.documentation_manifest(self.documents))
             for row in manifest["distribution_documentation"]:
                 self.assertEqual(candidate.sha(archive.read(row["path"])), row["sha256"])
                 self.assertIn(row["sha256"]+"  "+row["path"], archive.read("SHA256SUMS.txt").decode())
-        candidate.verify_zip(path, self.folder)
+        candidate.verify_zip(path, self.folder, self.documents)
 
     def test_missing_or_modified_document_rejected_even_with_updated_checksums(self):
         for name in candidate.RELEASE_DOCUMENTS:
             with self.subTest(name=name, defect="missing"):
                 path = self.make_zip()
                 self.rewrite_zip(path, lambda files: files.pop(name))
-                with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder)
+                with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder, self.documents)
             with self.subTest(name=name, defect="modified"):
                 path = self.make_zip()
                 self.rewrite_zip(path, lambda files: files.update({name: files[name]+b"changed\n"}))
                 with self.assertRaisesRegex(ValueError, "modified release document"):
-                    candidate.verify_zip(path, self.folder)
+                    candidate.verify_zip(path, self.folder, self.documents)
 
     def test_forged_document_fingerprint_and_stable_classification_rejected(self):
         path = self.make_zip()
@@ -183,20 +185,20 @@ class ReleaseTests(unittest.TestCase):
             files["manifest.json"] = candidate.dump(manifest)
         self.rewrite_zip(path, forge)
         with self.assertRaisesRegex(ValueError, "documentation manifest"):
-            candidate.verify_zip(path, self.folder)
+            candidate.verify_zip(path, self.folder, self.documents)
         path = self.make_zip()
         def stable(files):
             manifest = json.loads(files["manifest.json"]);manifest["release_candidate"] = False
             files["manifest.json"] = candidate.dump(manifest)
         self.rewrite_zip(path, stable)
         with self.assertRaisesRegex(ValueError, "stable release classification"):
-            candidate.verify_zip(path, self.folder)
+            candidate.verify_zip(path, self.folder, self.documents)
 
     def test_duplicate_or_unapproved_document_archive_member_rejected(self):
         for name in ("KNOWN_ISSUES.md", "docs/FT6336U_THDIFF_ABA_TEST.md", "logs/private.txt"):
             path = self.make_zip()
             with zipfile.ZipFile(path, "a") as archive: archive.writestr(name, b"not permitted")
-            with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder)
+            with self.assertRaises(ValueError): candidate.verify_zip(path, self.folder, self.documents)
 
     def document_source(self):
         root = self.folder / "document-inputs"

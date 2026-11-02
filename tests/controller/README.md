@@ -4,7 +4,7 @@ These tests compile the actual firmware Controller, not a translated model.
 They use in-memory preset storage and a selected-channel observer. No Arduino,
 display, NVS device, PlatformIO native environment, or networking is required.
 They do not validate the ESP32 NVS adapter, real display/touch behavior, or DMX
-electrical output; those require the hardware checks in `docs/STAGE1_CONTROLLER.md`.
+electrical output; those require the hardware checks in `docs/TESTING.md`.
 
 From the repository root with any C++11 compiler, for example:
 
@@ -28,4 +28,4 @@ Coverage includes channels 1 and 512 and invalid indices, values 0..255 and
 invalid values, clamped adjustments, zero start code, monotonic notifications,
 selected-channel synchronization, exact blackout entry restoration, edits and
 preset loads during blackout, preset save/load/copy/clear, persisted logical
-occupancy, invalid slots, and storage/metadata failures.
+occupancy, invalid slots, and storage inspect/read/save/erase failures.

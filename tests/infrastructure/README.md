@@ -30,5 +30,5 @@ g++ -std=c++11 -Wall -Wextra -Werror -Iinclude .pio/build/cores3se_unit/generate
 Run the resulting executable. Existing Controller/Dispatcher/transport tests
 remain required. The post-build hook also validates real images, their SHA256
 and segment checksums, exact layout, source/asset identity and linker retention.
-See `docs/STAGE4B_IMPLEMENTATION.md` for fresh-build evidence and the deliberately
+See `docs/TESTING.md` for fresh-build evidence and the deliberately
 separate, unexecuted device migration/rollback procedure.

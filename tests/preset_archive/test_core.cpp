@@ -39,27 +39,36 @@ void parser(){
 }
 void persistence(){
  const auto a=first();auto b=a;b.present=2;memset(b.values,222,sizeof(b.values));Store store;MemoryKv kv;
- assert(store.replace(kv,a,{})==Commit::ok&&kv.active==0);assert(store.load(kv)==Store::State::active&&store.mask()==a.present);
+ assert(store.load(kv)==Store::State::empty&&store.mask()==0);
+ for(unsigned slot=0;slot<slots;++slot)for(unsigned ch=0;ch<channels;++ch)assert(store.values(slot)[ch]==0);
+ assert(store.publish(kv,{})==Commit::ok&&kv.active==0);
+ Store empty_boot;assert(empty_boot.load(kv)==Store::State::active&&empty_boot.mask()==0);
+ for(unsigned slot=0;slot<slots;++slot)for(unsigned ch=0;ch<channels;++ch)assert(empty_boot.values(slot)[ch]==0);
+ assert(store.replace(kv,a,{})==Commit::ok&&kv.active==1);assert(store.load(kv)==Store::State::active&&store.mask()==a.present);
  MemoryKv baseline=kv;kv.step=0;assert(store.replace(kv,b,{})==Commit::ok);const unsigned operations=kv.step;
  for(bool existing:{false,true})for(bool after:{false,true})for(unsigned failure=1;failure<=operations+2;++failure){
   MemoryKv model=existing?baseline:MemoryKv{};model.step=0;model.fail=failure;model.after=after;Store attempt;const auto result=attempt.replace(model,b,{});(void)result;
-  model.fail=0;model.step=0;Store boot;auto state=boot.load(model);assert(state==Store::State::active||state==Store::State::legacy);
+  model.fail=0;model.step=0;Store boot;auto state=boot.load(model);assert(state==Store::State::active||(!existing&&state==Store::State::empty));
   if(state==Store::State::active){bool old=boot.mask()==a.present&&!memcmp(boot.values(0),a.values,sizeof(a.values));bool fresh=boot.mask()==b.present&&!memcmp(boot.values(0),b.values,sizeof(b.values));assert((existing&&old)||fresh);}
  }
- for(bool existing:{false,true})for(unsigned cut=1;cut<=operations+2;++cut){MemoryKv model=existing?baseline:MemoryKv{};model.step=0;model.cut=cut;try{Store attempt;attempt.replace(model,b,{});}catch(Cut&){}model.cut=0;Store boot;auto state=boot.load(model);assert(state==Store::State::active||state==Store::State::legacy);if(state==Store::State::active)assert((existing&&boot.mask()==a.present&&!memcmp(boot.values(0),a.values,sizeof(a.values)))||(boot.mask()==b.present&&!memcmp(boot.values(0),b.values,sizeof(b.values))));}
+ for(bool existing:{false,true})for(unsigned cut=1;cut<=operations+2;++cut){MemoryKv model=existing?baseline:MemoryKv{};model.step=0;model.cut=cut;try{Store attempt;attempt.replace(model,b,{});}catch(Cut&){}model.cut=0;Store boot;auto state=boot.load(model);assert(state==Store::State::active||(!existing&&state==Store::State::empty));if(state==Store::State::active)assert((existing&&boot.mask()==a.present&&!memcmp(boot.values(0),a.values,sizeof(a.values)))||(boot.mask()==b.present&&!memcmp(boot.values(0),b.values,sizeof(b.values))));}
+ kv=baseline;kv.active=-1;assert(store.load(kv)==Store::State::empty&&store.mask()==0); // Reused Store must forget prior selection; orphan banks are invisible.
+ for(unsigned slot=0;slot<slots;++slot)for(unsigned ch=0;ch<channels;++ch)assert(store.values(slot)[ch]==0);
+ assert(store.replace(kv,b,{})==Commit::ok&&kv.active==0);
  kv=baseline;for(unsigned i=0;i<12;++i){Store next;assert(next.replace(kv,i&1?a:b,{})==Commit::ok);} // Reclaim only inactive generation.
  kv=baseline;kv.bank[kv.active][100]^=1;assert(store.load(kv)==Store::State::corrupt);assert(store.replace(kv,b,{})==Commit::failed);
  kv=baseline;Gate gate;gate.check=[](void*){return false;};assert(store.replace(kv,b,gate)==Commit::failed);assert(kv.active==baseline.active);
  // Disconnect/cancel after the candidate has been written and verified, but
  // before the visibility boundary, must retain the selected old generation.
  unsigned checks=0;gate.context=&checks;gate.check=[](void* p){return ++*static_cast<unsigned*>(p)==1;};kv=baseline;assert(store.replace(kv,b,gate)==Commit::failed&&checks==2&&kv.active==baseline.active);
- puts("PASS atomic generations: every API failure/before-after mutation, simulated reboot/power interruption, legacy-first import, repeated replacements, CRC fail-closed and cancellation; never mixed visible slots");
+ puts("PASS atomic generations: first empty publication, every API failure/before-after mutation, simulated reboot/power interruption, current-format first import, repeated replacements, CRC fail-closed and cancellation; never mixed visible slots");
 }
 struct Storage:FakeStorage{
  Commit outcome=Commit::ok;
- bool fail_after_save=false;
+ bool fail_after_save=false,fail_after_erase=false;
+ bool erase(uint8_t slot)override{const bool ok=FakeStorage::erase(slot);return ok&&!fail_after_erase;}
  bool save(uint8_t slot,const uint8_t* packet)override{const bool ok=FakeStorage::save(slot,packet);return ok&&!fail_after_save;}
- Commit replaceAll(const Collection& c,const Gate& gate)override{if(!gate.allowed())return Commit::failed;if(outcome==Commit::failed)return outcome;for(unsigned i=0;i<8;++i){states[i]=c.present&(1U<<i)?SlotState::valid:SlotState::missing;packets[i][0]=0;memcpy(packets[i]+1,c.values[i],512);}mask=uint8_t(~c.present);return outcome;}
+ Commit replaceAll(const Collection& c,const Gate& gate)override{if(!gate.allowed())return Commit::failed;if(outcome==Commit::failed)return outcome;for(unsigned i=0;i<8;++i){states[i]=c.present&(1U<<i)?SlotState::valid:SlotState::missing;packets[i][0]=0;memcpy(packets[i]+1,c.values[i],512);}return outcome;}
 };
 struct Mutex:websocket_bridge::Lock{uint32_t now=100;void enter()override{}void leave()override{}uint32_t nowMs()const override{return now;}};
 void domain(){
@@ -73,6 +82,10 @@ void domain(){
  assert(c.stageArchive(data.data(),data.size(),c.presetRevision(),{})==DmxController::Result::ok);command.payload.archive_token=c.archiveToken();
  storage.fail_after_save=true;c.setChannel(1,17);assert(c.savePreset(3)==DmxController::Result::write_failed);storage.fail_after_save=false;
  assert(d.executeLocal(command).domain==DmxController::Result::archive_conflict); // A failed API can still have changed flash.
+ assert(c.stageArchive(data.data(),data.size(),c.presetRevision(),{})==DmxController::Result::ok);command.payload.archive_token=c.archiveToken();
+ c.loadPreset(3);assert(c.loadedPreset()==4);storage.fail_after_erase=true;
+ assert(c.clearPreset(3)==DmxController::Result::write_failed&&!c.presetExists(3)&&c.loadedPreset()==0);storage.fail_after_erase=false;
+ assert(d.executeLocal(command).domain==DmxController::Result::archive_conflict); // Failed delete may have committed; occupancy must be refreshed.
  assert(c.captureArchive()==DmxController::Result::ok);auto exported=json(c.archive());Collection parsed;assert(parse(exported.data(),exported.size(),parsed)&&!(parsed.present&1));
  const auto live=c.channel(1);storage.outcome=Commit::uncertain;assert(c.stageArchive(data.data(),data.size(),c.presetRevision(),{})==DmxController::Result::ok);command.payload.archive_token=c.archiveToken();
  auto uncertain=d.executeLocal(command);assert(uncertain.domain==DmxController::Result::archive_uncertain&&uncertain.status==CommandStatus::storage_error&&c.channel(1)==live&&publications==0);

@@ -49,6 +49,6 @@ python -B tests/network/check_softap_integration.py --dhcp-header dist/stage5c-h
 
 The DHCP tests verify real call arguments and propagate simulated SDK errors;
 they do not deliver real leases or establish iOS cellular routing. Follow
-`docs/STAGE5C_SOFTAP_USABILITY.md` for fresh/renewed leases, local reset and
+`docs/TESTING.md` for fresh/renewed leases, local reset and
 multi-station hardware acceptance. The manual probe now expects Stage 5C status
 fields and remains a read-only, explicitly invoked HTTP check.

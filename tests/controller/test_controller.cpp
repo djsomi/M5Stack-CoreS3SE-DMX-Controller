@@ -95,15 +95,16 @@ static void everySlotAndValue() {
         CHECK(controller.clearPreset(slot) == Result::ok);
         CHECK(!controller.presetExists(slot));
     }
-    CHECK(storage.mask == 0xff);
+    CHECK(storage.erases == DmxController::preset_count);
+    for (auto state : storage.states) CHECK(state == SlotState::missing);
     for (uint8_t slot = 0; slot < DmxController::preset_count; ++slot) {
         CHECK(controller.savePreset(slot) == Result::ok);
         CHECK(controller.presetExists(slot));
         CHECK(controller.loadPreset(slot) == Result::ok);
         checkStartCode(controller);
     }
-    CHECK(storage.mask == 0);
-    puts("PASS all 256 values and all eight preset/mask positions");
+    for (auto state : storage.states) CHECK(state == SlotState::valid);
+    puts("PASS all 256 values and all eight preset positions");
 }
 
 static void atomicPatchesAndNoOps() {
@@ -191,14 +192,14 @@ static void presetsAndOccupancy() {
     CHECK(controller.copyPreset(0, 7) == Result::occupied);
     CHECK(controller.channel(21) == 123);
     CHECK(controller.clearPreset(7) == Result::ok);
-    CHECK(storage.states[7] == SlotState::valid); // CLEAR retains the legacy blob.
-    CHECK(storage.mask == 0x80 && !controller.presetExists(7));
+    CHECK(storage.states[7] == SlotState::missing && storage.erases == 1);
+    CHECK(!controller.presetExists(7));
     CHECK(controller.loadPreset(7) == Result::empty);
     {
         DmxController rebooted(storage);
         CHECK(!rebooted.presetExists(7)); // Logical occupancy survives reboot.
         CHECK(rebooted.copyPreset(0, 7) == Result::ok);
-        CHECK(rebooted.presetExists(7) && storage.mask == 0);
+        CHECK(rebooted.presetExists(7) && storage.states[7] == SlotState::valid);
     }
     // Use a fresh instance after simulated reboot; there are no external writers.
     DmxController rebooted(storage);
@@ -208,14 +209,14 @@ static void presetsAndOccupancy() {
     CHECK(rebooted.clearPreset(0) == Result::ok);
     CHECK(rebooted.setChannel(21, 66) == Result::ok);
     CHECK(rebooted.savePreset(0) == Result::ok);
-    CHECK(storage.mask == 0 && rebooted.presetExists(0));
-    storage.packets[0][0] = 99; // Old data must never introduce a nonzero start code.
+    CHECK(storage.states[0] == SlotState::valid && rebooted.presetExists(0));
+    storage.packets[0][0] = 99; // Stored data must never introduce a nonzero start code.
     CHECK(rebooted.loadPreset(0) == Result::ok);
     checkStartCode(rebooted);
     CHECK(rebooted.copyPreset(0, 1) == Result::ok);
     CHECK(storage.packets[1][0] == 0);
     CHECK(rebooted.channel(21) == 66 && rebooted_selection.value == 66);
-    puts("PASS preset save/load/copy/clear, legacy start code, persisted occupancy");
+    puts("PASS preset save/load/copy/clear, normalized start code, persisted occupancy");
 }
 
 static void presetFailures() {
@@ -248,27 +249,41 @@ static void presetFailures() {
     storage.fail_save = true;
     CHECK(controller.savePreset(1) == Result::write_failed);
     CHECK(controller.copyPreset(0, 1) == Result::write_failed);
+    CHECK(storage.states[1] == SlotState::missing && storage.saves == 0);
     storage.fail_save = false;
-    storage.fail_metadata_write = true;
-    CHECK(controller.clearPreset(0) == Result::metadata_failed);
-    CHECK(storage.mask == 0 && controller.presetExists(0));
+    storage.fail_erase = true;
+    CHECK(controller.clearPreset(0) == Result::write_failed);
+    CHECK(storage.states[0] == SlotState::valid && controller.presetExists(0));
+    CHECK(storage.erases == 0);
     CHECK(controller.revision() == revision && controller.channel(21) == 12);
     checkStartCode(controller);
     {
         FakeStorage failed;
-        failed.fail_metadata_read = true;
+        failed.fail_inspect = true;
         DmxController other(failed);
         CHECK(other.presetState(0) == SlotState::error);
-        CHECK(other.savePreset(0) == Result::metadata_failed);
-        CHECK(failed.saves == 0);
-        failed.fail_metadata_read = false;
+        CHECK(other.savePreset(0) == Result::read_failed);
+        CHECK(other.loadPreset(0) == Result::read_failed);
+        CHECK(other.copyPreset(0, 1) == Result::read_failed);
+        CHECK(other.clearPreset(0) == Result::read_failed);
+        CHECK(failed.saves == 0 && failed.erases == 0 && other.revision() == 0);
+        failed.fail_inspect = false;
         CHECK(other.savePreset(0) == Result::ok); // Read errors are not cached as empty.
         CHECK(other.clearPreset(0) == Result::ok);
-        failed.fail_metadata_write = true;
-        CHECK(other.savePreset(0) == Result::metadata_failed);
-        CHECK(!other.presetExists(0)); // Failed reactivation must not change RAM occupancy.
+        failed.fail_save = true;
+        CHECK(other.savePreset(0) == Result::write_failed);
+        CHECK(!other.presetExists(0)); // Failed save must not change occupancy.
+        failed.fail_save = false;
+        CHECK(other.savePreset(0) == Result::ok && other.presetExists(0));
+        failed.fail_erase = true;
+        const auto stable = other.revision();
+        CHECK(other.clearPreset(0) == Result::write_failed);
+        CHECK(other.presetExists(0) && other.revision() == stable && failed.erases == 1);
+        failed.fail_erase = false;
+        CHECK(other.clearPreset(0) == Result::ok && !other.presetExists(0));
+        CHECK(failed.erases == 2);
     }
-    puts("PASS invalid slots, corrupt/read/write/metadata errors, retry semantics");
+    puts("PASS invalid slots, corrupt/inspect/read/save/erase errors, retry semantics");
 }
 
 
@@ -299,9 +314,10 @@ void loadedProvenance() {
     CHECK(c.loadPreset(4) != Result::ok && c.loadedPreset() == 3);
     storage.fail_load = false;
     c.savePreset(6); CHECK(c.loadedPreset() == 3); // Saving another slot does not claim or clear a load.
-    storage.fail_metadata_write = true;
-    CHECK(c.clearPreset(2) == Result::metadata_failed && c.loadedPreset() == 0);
-    storage.fail_metadata_write = false;
+    storage.fail_erase = true;
+    CHECK(c.clearPreset(2) == Result::write_failed && c.loadedPreset() == 0);
+    CHECK(c.presetExists(2));
+    storage.fail_erase = false;
     c.loadPreset(2); c.setBlackout(true); c.setChannel(1,81); c.setBlackout(false);
     CHECK(c.loadedPreset() == 3 && !c.loadedPresetModified());
     DmxChannelValue patch[]={{1,82},{512,1}}; c.setChannels(patch,2);

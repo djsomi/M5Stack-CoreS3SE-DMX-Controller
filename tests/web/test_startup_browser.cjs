@@ -38,7 +38,8 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(check,ms=5000){const end=Date.now()+ms;while(!check()){if(Date.now()>end)throw Error('test deadline');await sleep(10);}}
 const ready=page=>page.waitForFunction(()=>document.documentElement.dataset.uiReady==='monitor'&&document.querySelector('.connection').dataset.live==='true',null,{timeout:5000});
 const socketCount=page=>page.evaluate(()=>window.__headerSockets.filter(s=>s.readyState===1).length);
-const mutationCount=page=>page.evaluate(()=>(window.__headerSockets||[]).flatMap(s=>s.sent).filter(r=>r.type!=='state.request').length);
+// wifi.get is the existing read-only credential-state subscription, not a mutation.
+const mutationCount=page=>page.evaluate(()=>(window.__headerSockets||[]).flatMap(s=>s.sent).filter(r=>r.type!=='state.request'&&r.type!=='wifi.get').length);
 function versionTwo(){
   const next=new Map(originals);let html=zlib.gunzipSync(originals.get('/').body).toString();
   for(const name of ['core.js','ui.js']){
