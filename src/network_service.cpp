@@ -282,7 +282,7 @@ int io(httpd_handle_t, int fd, char* data, size_t length, int flags, bool writin
     }
     if(!s || !s->budget.allow(esp_timer_get_time(),0,writing)) return HTTPD_SOCK_ERR_FAIL;
     const size_t used=writing?s->budget.sent:s->budget.received;
-    const size_t limit=writing?stage5::max_tx_bytes:stage5::max_rx_bytes;
+    const size_t limit=writing?s->budget.txLimit():stage5::max_rx_bytes;
     const size_t amount=std::min(size_t(256),std::min(length,limit-used));
     if(!amount) return HTTPD_SOCK_ERR_FAIL;
     const int64_t remaining=stage5::session_us-(esp_timer_get_time()-s->budget.opened);
@@ -568,9 +568,10 @@ esp_err_t serve(httpd_req_t* r) {
     if(response.status==406) return reject(r,"406 Not Acceptable");
     if(response.status!=200) return reject(r,"503 Service Unavailable");
     const auto* asset=response.asset;
+    connection->budget.icon_response=!strcmp(asset->content_type,"image/png");
     security(r,response.cache);
     httpd_resp_set_type(r,asset->content_type);
-    httpd_resp_set_hdr(r,"Content-Encoding","gzip");
+    if(!strcmp(asset->content_encoding,"gzip"))httpd_resp_set_hdr(r,"Content-Encoding","gzip");
     httpd_resp_set_hdr(r,"Vary","Accept-Encoding");
     // Library emits exact Content-Length; fixed const flash bytes, no inflation/copy.
     return finish(r,httpd_resp_send(r,reinterpret_cast<const char*>(asset->data),asset->size));

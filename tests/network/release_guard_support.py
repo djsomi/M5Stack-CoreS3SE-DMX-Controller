@@ -1,14 +1,48 @@
 """Remove only reviewed read-only release identity additions for historical guards."""
 from pathlib import Path
 import subprocess
+import hashlib
 from fader_guard_support import prior as before_fader
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "9fdf07ee02340003e2ac4efc3daf61ce8c787062"
 
 
+def before_icons(name, text):
+    if name == "scripts/web_asset_pipeline.py" and "ICONS = " in text:
+        assert hashlib.sha256(text.encode()).hexdigest() == "669655d0068efe55226f97f5892f33ef3b29eac8c9e58d46adebe1e2c245202f", "Unreviewed PNG pipeline delta"
+        text = subprocess.check_output(['git', '-c', 'safe.directory='+ROOT.as_posix(), 'show',
+            '9ba9445f453db585fa86cea3c5c5e32248714c47:'+name], cwd=ROOT).decode('utf-8')
+    # Exact inverse of the PNG route additions; keep historical whole-file guards.
+    icon_changes = {
+        "src/network_service.cpp": (
+            ('    const size_t limit=writing?s->budget.txLimit():stage5::max_rx_bytes;\n',
+             '    const size_t limit=writing?stage5::max_tx_bytes:stage5::max_rx_bytes;\n'),
+            ('    connection->budget.icon_response=!strcmp(asset->content_type,"image/png");\n', ''),
+            ('    if(!strcmp(asset->content_encoding,"gzip"))httpd_resp_set_hdr(r,"Content-Encoding","gzip");\n',
+             '    httpd_resp_set_hdr(r,"Content-Encoding","gzip");\n')),
+        "src/http_policy.h": (
+            ('constexpr size_t max_icon_bytes = 32768;\n', ''),
+            ('    bool icon_response = false;\n    size_t txLimit() const { return icon_response ? max_icon_bytes + 1024 : max_tx_bytes; }\n', '')),
+        "src/http_policy.cpp": (
+            ('    const bool icon=!strcmp(asset->content_type,"image/png");\n'
+             '    if(!icon&&!acceptsGzip(encoding)) return {406,nullptr,"no-store"};\n'
+             '    if(asset->size>(icon?max_icon_bytes:max_asset_bytes)) return {503,nullptr,"no-store"};\n'
+             '    if(icon) return {200,asset,"no-cache"};\n',
+             '    if(!acceptsGzip(encoding)) return {406,nullptr,"no-store"};\n'
+             '    if(asset->size>max_asset_bytes) return {503,nullptr,"no-store"};\n'),
+            ('    const size_t limit = writing ? txLimit() : max_rx_bytes;\n',
+             '    const size_t limit = writing ? max_tx_bytes : max_rx_bytes;\n')),
+    }
+    for new, old in icon_changes.get(name, ()):
+        if new in text:
+            assert text.count(new) == 1, "Unexpected icon delta: " + name
+            text = text.replace(new, old, 1)
+    return text
+
+
 def prior(name, text):
-    text = before_fader(name, text)
+    text = before_fader(name, before_icons(name, text))
     if name == "src/hardware_diagnostics.cpp":
         text = text.replace('#include "touch_configuration_snapshot.h"\n', '', 1)
         text = text.replace('    touch_configuration::captureStartup();\n', '', 1)

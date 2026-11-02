@@ -50,8 +50,8 @@ def input_manifest(root):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue
             data = path.read_bytes()
-            if path.suffix != ".gz":
+            if path.suffix not in (".gz", ".png"):
                 data = data.replace(b"\r\n", b"\n")
             rows.append(dict(path=path.relative_to(root).as_posix(),
                              sha256=hashlib.sha256(data).hexdigest(), bytes=len(data)))
-    return dict(schema=1, normalization="LF for text; gzip bytes unchanged", files=rows)
+    return dict(schema=1, normalization="LF for text; gzip/PNG bytes unchanged", files=rows)

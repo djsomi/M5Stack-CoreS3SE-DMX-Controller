@@ -90,12 +90,12 @@ class PipelineTests(unittest.TestCase):
 
     def test_manifest_actual_bodies_corruption_missing(self):
         manifest = assets.verify(self.root)
-        self.assertEqual(len(manifest["assets"]), 4)
+        self.assertEqual(len(manifest["assets"]), 6)
         for entry in manifest["assets"]:
             data = (self.root / "web/generated" / entry["file"]).read_bytes()
-            self.assertLessEqual(len(data), 16384)
+            self.assertLessEqual(len(data), 32768 if entry["content_type"] == "image/png" else 16384)
             self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
-            self.assertEqual(len(gzip.decompress(data)), entry["original_size"])
+            self.assertEqual(len(gzip.decompress(data) if entry["content_encoding"] == "gzip" else data), entry["original_size"])
         path = self.root / "web/generated/ui.js.gz"; data = path.read_bytes()
         path.write_bytes(data[:-1])
         with self.assertRaises(ValueError): assets.verify(self.root)

@@ -14,18 +14,28 @@ int main() {
     for(size_t i=0;i<web_assets::bundle().count;++i) {
         const auto& a=web_assets::bundle().assets[i];
         const auto r=assetResponse(a.path,"gzip");
+        const bool icon=!strcmp(a.content_type,"image/png");
         assert(r.status==200 && r.asset==&a && r.asset->size==a.size);
-        assert(!strcmp(r.asset->content_encoding,"gzip"));
-        assert(std::string(r.cache).find(i?"immutable":"no-store")!=std::string::npos);
-        assert(assetResponse(a.path,"identity").status==406);
-        assert(assetResponse(a.path,nullptr).status==406);
+        assert(!strcmp(r.asset->content_encoding,icon?"identity":"gzip"));
+        assert(std::string(r.cache).find(icon?"no-cache":(i?"immutable":"no-store"))!=std::string::npos);
+        assert(assetResponse(a.path,"identity").status==(icon?200:406));
+        assert(assetResponse(a.path,nullptr).status==(icon?200:406));
         // Simulate actual bounded fragmented sending for every real compressed asset.
-        Budget b;b.opened=100;
+        Budget b;b.opened=100;b.icon_response=icon;
         size_t offset=0;
         while(offset<a.size) {size_t n=(a.size-offset)>7?7:a.size-offset;assert(b.allow(100+offset,n,true));offset+=n;}
         assert(b.sent==a.size);
     }
     assert(assetResponse("/unknown","gzip").status==404);
+    for(const char* path:{"/apple-touch-icon.png","/favicon-32x32.png"}) {
+        const auto r=assetResponse(path,nullptr);
+        assert(r.status==200&&!strcmp(r.asset->content_type,"image/png"));
+        assert(r.asset->data[0]==0x89&&r.asset->data[1]=='P');
+    }
+    Budget icon;icon.icon_response=true;
+    assert(icon.allow(1,max_icon_bytes+1024,true));assert(!icon.allow(2,1,true));
+    assert(!icon.allow(session_us,0,true)); // Larger icon allowance never extends the deadline.
+    Budget text;assert(!text.allow(1,max_tx_bytes+1,true));
     assert(assetResponse("/../","gzip").status==404 && assetResponse(nullptr,"gzip").status==404);
     Budget slow;slow.opened=10;
     for(int i=0;i<30;++i) assert(slow.allow(10+i*100000,1,false));

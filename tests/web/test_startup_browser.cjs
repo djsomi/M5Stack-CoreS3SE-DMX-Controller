@@ -25,8 +25,8 @@ const server=http.createServer((req,res)=>{
     if(fault.mode==='wrong')data=zlib.gzipSync(Buffer.from('window.wrongVersion=true;'));
     if(fault.mode==='empty')data=zlib.gzipSync(Buffer.alloc(0));
   }
-  res.writeHead(200,{'Content-Type':entry.content_type,'Content-Encoding':'gzip','Content-Length':data.length,
-    'Cache-Control':req.url==='/'?'no-store':'public, max-age=31536000, immutable','Connection':'close',
+  res.writeHead(200,{'Content-Type':entry.content_type,...(entry.content_encoding==='gzip'?{'Content-Encoding':'gzip'}:{}),'Content-Length':data.length,
+    'Cache-Control':entry.content_type==='image/png'?'no-cache':(req.url==='/'?'no-store':'public, max-age=31536000, immutable'),'Connection':'close',
     'X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; connect-src 'self' ws://192.168.4.1; frame-ancestors 'none'; base-uri 'none'"});
   const finish=()=>{record.finished=Date.now();res.end(data);};
   if(fault?.kind===kind&&fault.mode==='partial'){res.write(data.subarray(0,Math.floor(data.length/2)));res.destroy();return;}
@@ -60,6 +60,14 @@ function versionTwo(){
   try{
     // Native cache and wire gzip/SRI; no request interception that would disable cache.
     let f=await open();await ready(f.page);assert.equal(await socketCount(f.page),1);assert.equal(await mutationCount(f.page),0);
+    for(const name of ['apple-touch-icon.png','favicon-32x32.png']){
+      const response=await f.page.request.get(url+name);
+      assert.equal(response.status(),200);assert.equal(response.headers()['content-type'],'image/png');
+      assert.equal(response.headers()['content-encoding'],undefined);
+      assert.deepEqual(await response.body(),byName(name)&&originals.get('/'+name).body);
+    }
+    assert.deepEqual(await f.page.locator('link[rel="icon"]').getAttribute('href'),'/favicon-32x32.png');
+    assert.deepEqual(await f.page.locator('link[rel="apple-touch-icon"]').getAttribute('href'),'/apple-touch-icon.png');
     const cold=requests.slice(),core=cold.find(r=>r.path===byName('core.js').path),ui=cold.find(r=>r.path===byName('ui.js').path);
     assert.ok(core&&ui&&ui.at>=core.finished,'UI starts after completed Core response');
     const before=requests.length;await f.page.reload();await ready(f.page);

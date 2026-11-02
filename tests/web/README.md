@@ -1,7 +1,7 @@
 # Web UI and embedded asset tests
 
-The production UI uses four deterministic gzip resources: HTML, CSS, Core JS and
-UI JS. Core loads UI after its execution, with content hashes/SRI and strict
+The production UI uses four deterministic gzip resources (HTML, CSS, Core JS and
+UI JS) plus two byte-identical PNG icons. Core loads UI after its execution, with content hashes/SRI and strict
 budgets. All active Editor, Preset, Backup, Settings and Maintenance behavior is
 exercised by the current frontend tests; this is no longer a non-live preview.
 
@@ -21,7 +21,8 @@ frontend source changes. The generator uses standard-library deterministic gzip;
 no node/npm dependency is needed for firmware asset generation. Match the pinned
 Python/zlib environment documented by the pipeline tests if byte identity differs.
 Generated assets must match the composer, manifest, hashes and 16 KiB per-asset
-limit. Do not modify generated files independently.
+limit. PNG icons have a separate 32 KiB cap; their fixed routes use revalidation
+and work without gzip negotiation. Do not modify generated files independently.
 
 ## Optional browser suites
 

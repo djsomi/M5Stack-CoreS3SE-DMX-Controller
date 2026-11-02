@@ -50,14 +50,16 @@ bool allowedOrigin(const char* origin) {
 Response assetResponse(const char* uri,const char* encoding) {
     const auto* asset=uri?web_assets::find(uri):nullptr;
     if(!asset) return {404,nullptr,"no-store"};
-    if(!acceptsGzip(encoding)) return {406,nullptr,"no-store"};
-    if(asset->size>max_asset_bytes) return {503,nullptr,"no-store"};
+    const bool icon=!strcmp(asset->content_type,"image/png");
+    if(!icon&&!acceptsGzip(encoding)) return {406,nullptr,"no-store"};
+    if(asset->size>(icon?max_icon_bytes:max_asset_bytes)) return {503,nullptr,"no-store"};
+    if(icon) return {200,asset,"no-cache"};
     return {200,asset,!strcmp(uri,"/")?"no-store":"public, max-age=31536000, immutable"};
 }
 bool Budget::allow(int64_t now, size_t bytes, bool writing) {
     if (now < opened || now - opened >= session_us) return false;
     size_t& used = writing ? sent : received;
-    const size_t limit = writing ? max_tx_bytes : max_rx_bytes;
+    const size_t limit = writing ? txLimit() : max_rx_bytes;
     if (used > limit || bytes > limit - used) return false;
     used += bytes; return true;
 }

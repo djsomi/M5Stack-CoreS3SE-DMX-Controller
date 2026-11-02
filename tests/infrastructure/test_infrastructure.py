@@ -38,9 +38,37 @@ class InfrastructureTests(unittest.TestCase):
         manifest = assets.verify(self.root)
         for entry in manifest["assets"]:
             data = (one / entry["file"]).read_bytes()
-            self.assertEqual(len(data), entry["gzip_size"])
-            self.assertEqual(len(gzip.decompress(data)), entry["original_size"])
-            self.assertEqual(data[3:8], b"\x00" * 5)
+            self.assertEqual(len(data), entry.get("gzip_size", entry.get("size")))
+            if entry["content_encoding"] == "gzip":
+                self.assertEqual(len(gzip.decompress(data)), entry["original_size"])
+                self.assertEqual(data[3:8], b"\x00" * 5)
+            else:
+                self.assertEqual(data, (self.root / "web/src" / entry["source"]).read_bytes())
+
+    def test_icon_links_bytes_and_failure_checks(self):
+        html = gzip.decompress((self.root / "web/generated/index.html.gz").read_bytes()).decode()
+        for name, dimensions in assets.ICONS.items():
+            self.assertIn('href="/' + name + '"', html)
+            self.assertIn('sizes="%dx%d"' % dimensions, html)
+            generated = self.root / "web/generated" / name
+            original = generated.read_bytes()
+            generated.write_bytes(original[:-1])
+            with self.assertRaisesRegex(ValueError, "PNG icon"):
+                assets.verify(self.root)
+            generated.write_bytes(original)
+            source = self.root / "web/src" / name
+            source.write_bytes(original[:16] + b"\x00" * 8 + original[24:])
+            with self.assertRaisesRegex(ValueError, "PNG icon"):
+                assets.verify(self.root)
+            source.write_bytes(original)
+            generated.unlink()
+            with self.assertRaisesRegex(ValueError, "inventory"):
+                assets.verify(self.root)
+            generated.write_bytes(original)
+        extra = self.root / "web/generated/unexpected.png"
+        extra.write_bytes(b"unexpected")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            assets.verify(self.root)
 
     def test_missing_invalid_and_stale_inputs_rejected(self):
         path = self.root / "web/src/core.js"

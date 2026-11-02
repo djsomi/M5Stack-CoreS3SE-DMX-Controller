@@ -4,12 +4,12 @@
       "content_encoding": "gzip",
       "content_type": "text/html; charset=utf-8",
       "file": "index.html.gz",
-      "gzip_size": 5360,
-      "original_size": 21662,
+      "gzip_size": 5418,
+      "original_size": 21816,
       "path": "/",
-      "sha256": "1fba443a434e4a0e2ab83d117300f36f1cce88eb58ade334b4cca8da355473aa",
+      "sha256": "de3c5ba32a85ac3ba234b5783ad85519fb432e51faf117a8dd0f9fd781bd095a",
       "source": "index.html",
-      "source_sha256": "07856df823cc32492ae848e64440532ae48eba80ca2dd6e3b8c11f4c170fc975"
+      "source_sha256": "fa01402c217e7f6b85c76da625b5ccc70c93f49d4c38dcefc7916f627d48e7b7"
     },
     {
       "content_encoding": "gzip",
@@ -43,9 +43,31 @@
       "sha256": "643032fba7aa3c714a50823d6fa17834eee3e1b1ed7727e5b2c4733674047c40",
       "source": "ui.js",
       "source_sha256": "2181aa1594f6db1ad32046fd70ec468888cdd230336792148f33e02e85a997a3"
+    },
+    {
+      "content_encoding": "identity",
+      "content_type": "image/png",
+      "file": "apple-touch-icon.png",
+      "original_size": 22397,
+      "path": "/apple-touch-icon.png",
+      "sha256": "e98b3bce86a57ffafe48bc7addd2ad7fc32dc50cc63020b7ce79ceb5dba183ac",
+      "size": 22397,
+      "source": "apple-touch-icon.png",
+      "source_sha256": "e98b3bce86a57ffafe48bc7addd2ad7fc32dc50cc63020b7ce79ceb5dba183ac"
+    },
+    {
+      "content_encoding": "identity",
+      "content_type": "image/png",
+      "file": "favicon-32x32.png",
+      "original_size": 1750,
+      "path": "/favicon-32x32.png",
+      "sha256": "4fa27fa8b195b75475cf9e63fb44daee077e4e558af8b7488b951a30007266f3",
+      "size": 1750,
+      "source": "favicon-32x32.png",
+      "source_sha256": "4fa27fa8b195b75475cf9e63fb44daee077e4e558af8b7488b951a30007266f3"
     }
   ],
-  "bundle_sha256": "e8ad985d1791e93f58b064532cdb63cfe5af5131a791bc50876b13e1231090aa",
+  "bundle_sha256": "26da8833ae6439dfe85b1865f7d3491d41f2dd0d3d384da35020354bf62f220c",
   "generator": {
     "python": "3.11.7",
     "zlib": "1.2.13"

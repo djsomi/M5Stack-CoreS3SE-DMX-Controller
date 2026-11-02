@@ -26,12 +26,13 @@ with a.output.open('x',encoding='utf-8') as log:
         finally: c.close()
     for entry in manifest['assets']:
         code,h,b=get(entry['path'])
-        assert code==200 and h.get('Content-Encoding')=='gzip'
-        assert int(h['Content-Length'])==len(b)==entry['gzip_size']
+        compressed=entry['content_encoding']=='gzip'
+        assert code==200 and h.get('Content-Encoding')==('gzip' if compressed else None)
+        assert int(h['Content-Length'])==len(b)==entry.get('gzip_size',entry.get('size'))
         assert hashlib.sha256(b).hexdigest()==entry['sha256']
-        assert len(gzip.decompress(b))==entry['original_size']
+        assert len(gzip.decompress(b) if compressed else b)==entry['original_size']
         assert h['Content-Type']==entry['content_type']
-        assert ('no-store' if entry['path']=='/' else 'immutable') in h['Cache-Control']
+        assert ('no-cache' if not compressed else ('no-store' if entry['path']=='/' else 'immutable')) in h['Cache-Control']
     assert get('/unknown')[0]==404
     assert get('/',encoding='identity')[0]==406
     assert get('/',host='untrusted.example')[0]==403

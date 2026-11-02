@@ -5,7 +5,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/'tests/network'))
 from wifi_power_guard_support import prior as before_wifi_power
-from release_guard_support import prior as before_release
+from release_guard_support import prior as before_release, before_icons
 from thdiff_guard_support import prior as before_thdiff
 BASE='3730ea421a5a10d6f2be4451df6328e18c1e3aa1'
 def read(name):return (ROOT/name).read_text(encoding='utf-8')
@@ -36,7 +36,7 @@ for signature in ['    void performOriginalPowerOff(','    void sendDmxZeroBefor
     assert function(view,signature)==function(old('src/view_sender.h'),signature),'Changed accepted function: '+signature
 for signature in ['int io(','esp_err_t serve(','void stationEvent(']:
     assert function(before_release('src/network_service.cpp',net),signature)==function(old('src/network_service.cpp'),signature)
-worker=function(before_wifi_power('src/network_service.cpp',net),'void worker(')
+worker=function(before_wifi_power('src/network_service.cpp',before_icons('src/network_service.cpp',net)),'void worker(')
 assert worker.replace('            if(!wifiChange(netif)){error=ESP_FAIL;break;}\n','')==function(old('src/network_service.cpp'),'void worker(')
 prepare=function(net,'void prepare(')
 assert prepare.index('wifi_credentials::recover')<prepare.index('const bool exists=storage.isKey("ap1")')

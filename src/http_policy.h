@@ -5,6 +5,7 @@
 namespace stage5 {
 constexpr size_t max_header_value = 256;
 constexpr size_t max_asset_bytes = 16384;
+constexpr size_t max_icon_bytes = 32768;
 constexpr size_t max_rx_bytes = 2048;
 constexpr size_t max_tx_bytes = 20480;
 constexpr int64_t session_us = 3000000;
@@ -16,6 +17,8 @@ Response assetResponse(const char* uri, const char* encoding);
 struct Budget {
     int64_t opened = 0;
     size_t received = 0, sent = 0;
+    bool icon_response = false;
+    size_t txLimit() const { return icon_response ? max_icon_bytes + 1024 : max_tx_bytes; }
     bool allow(int64_t now, size_t bytes, bool writing);
 };
 }

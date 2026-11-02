@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import io
 import json
+import struct
 from pathlib import Path
 import sys
 import zlib
@@ -12,6 +13,7 @@ import web_ui_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("index.html", "style.css", "core.js", "ui.js")
+ICONS = {"apple-touch-icon.png": (180, 180), "favicon-32x32.png": (32, 32)}
 MIME = {"index.html": "text/html; charset=utf-8",
         "style.css": "text/css; charset=utf-8",
         "core.js": "text/javascript; charset=utf-8",
@@ -20,6 +22,7 @@ TOKENS = (b"{{STYLE_URL}}", b"{{CORE_URL}}", b"{{UI_URL}}", b"{{CORE_INTEGRITY}}
 GENERATOR = {"python": "3.11.7", "zlib": "1.2.13"}
 LIMIT = 256 * 1024
 MAX_ASSET_BYTES = 16384  # Existing src/http_policy.h HTTP cap; never silently expand.
+MAX_ICON_BYTES = 32768  # Separate bounded PNG allowance; text/JS caps are unchanged.
 
 
 def sha(data):
@@ -45,6 +48,13 @@ def source_files(root):
     for token in TOKENS:
         if result["index.html"].count(token) != 1:
             raise ValueError("index.html must contain exactly one " + token.decode())
+    for name, dimensions in ICONS.items():
+        data = (root / "web/src" / name).read_bytes()
+        if (len(data) < 33 or len(data) > MAX_ICON_BYTES or
+                data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" or
+                struct.unpack(">II", data[16:24]) != dimensions):
+            raise ValueError("invalid/oversized PNG icon: " + name)
+        result[name] = data  # Binary bytes must never undergo newline normalization.
     return result
 
 
@@ -60,6 +70,7 @@ def rendered(root):
     urls = {name: "/" + name.rsplit(".", 1)[0] + "." + sha(sources[name])[:16] + "." + name.rsplit(".", 1)[1]
             for name in INPUTS if name != "index.html"}
     urls["index.html"] = "/"
+    urls.update({name: "/" + name for name in ICONS})
     bodies = dict(sources)
     replacements = {b"{{STYLE_URL}}": urls["style.css"], b"{{CORE_URL}}": urls["core.js"], b"{{UI_URL}}": urls["ui.js"]}
     for name in ("core", "ui"):
@@ -85,6 +96,11 @@ def generate(root=ROOT, output=None):
         entries.append(dict(source=name, source_sha256=sha(sources[name]), path=urls[name],
                             file=name + ".gz", content_type=MIME[name], content_encoding="gzip",
                             original_size=len(bodies[name]), gzip_size=len(blob), sha256=sha(blob)))
+    for name in ICONS:
+        blob = sources[name]; blobs[name] = blob
+        entries.append(dict(source=name, source_sha256=sha(blob), path=urls[name], file=name,
+                            content_type="image/png", content_encoding="identity",
+                            original_size=len(blob), size=len(blob), sha256=sha(blob)))
     manifest = dict(schema=1, generator=GENERATOR, assets=entries, bundle_sha256=sha(canonical(entries)))
     if sum(len(b) for b in blobs.values()) > LIMIT:
         raise ValueError("compressed asset budget exceeded")
@@ -101,13 +117,13 @@ def verify(root=ROOT):
     if not (folder / "manifest.json").is_file():
         raise ValueError("missing generated assets; run python scripts/web_asset_pipeline.py --generate")
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-    if {p.name for p in folder.glob("*.gz")} != {name + ".gz" for name in INPUTS}:
+    if {p.name for p in folder.iterdir() if p.is_file()} != {name + ".gz" for name in INPUTS} | set(ICONS) | {"manifest.json"}:
         raise ValueError("unexpected/missing generated asset inventory")
     sources, urls, bodies = rendered(root)
     if manifest.get("schema") != 1 or manifest.get("generator") != GENERATOR:
         raise ValueError("unsupported asset manifest/generator")
     assets = manifest.get("assets", [])
-    if len(assets) != len(INPUTS) or manifest.get("bundle_sha256") != sha(canonical(assets)):
+    if len(assets) != len(INPUTS) + len(ICONS) or manifest.get("bundle_sha256") != sha(canonical(assets)):
         raise ValueError("invalid asset count/bundle hash")
     total = 0
     for entry, name in zip(assets, INPUTS):
@@ -122,6 +138,14 @@ def verify(root=ROOT):
         if gzip.decompress(blob) != bodies[name]:
             raise ValueError("gzip round-trip mismatch: " + name)
         total += len(blob)
+    for entry, name in zip(assets[len(INPUTS):], ICONS):
+        blob = (folder / name).read_bytes()
+        expected = dict(source=name, source_sha256=sha(sources[name]), path=urls[name], file=name,
+                        content_type="image/png", content_encoding="identity",
+                        original_size=len(blob), size=len(blob), sha256=sha(blob))
+        if entry != expected or blob != sources[name]:
+            raise ValueError("stale/invalid PNG icon: " + name)
+        total += len(blob)
     if total > LIMIT:
         raise ValueError("compressed asset budget exceeded")
     return manifest
@@ -134,7 +158,7 @@ def build_source_digest(root=ROOT):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue
             data = path.read_bytes()
-            if path.suffix != ".gz":
+            if path.suffix not in (".gz", ".png"):
                 data = data.replace(b"\r\n", b"\n")
             rows.append((path.relative_to(root).as_posix(), sha(data)))
     rows.append(("platformio.ini", sha((root / "platformio.ini").read_bytes().replace(b"\r\n", b"\n"))))
@@ -153,8 +177,8 @@ def emit_cpp(root, destination, profile, source_digest, provenance=None):
         lines.append("};")
     lines.append("const web_assets::Asset assets[] = {")
     for index, a in enumerate(manifest["assets"]):
-        lines.append('{%s,%s,"gzip",asset_%d,%d,%d,%s},' % (
-            json.dumps(a["path"]), json.dumps(a["content_type"]), index, a["gzip_size"],
+        lines.append('{%s,%s,%s,asset_%d,%d,%d,%s},' % (
+            json.dumps(a["path"]), json.dumps(a["content_type"]), json.dumps(a["content_encoding"]), index, a.get("gzip_size", a.get("size")),
             a["original_size"], json.dumps(a["sha256"])))
     lines += ['};', '}', 'extern "C" {',
               'extern const web_assets::Bundle web_asset_bundle = {assets,%d,%s,%s,%s,"cores3se-16m-ota6-v1"};' % (
